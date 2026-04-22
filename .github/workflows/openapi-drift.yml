@@ -31,7 +31,8 @@ jobs:
       - run: uv python install 3.12
       - name: Install backend deps
         working-directory: backend
-        run: uv sync --frozen || uv sync
+        # --all-packages — see backend.yml for the why
+        run: uv sync --frozen --all-packages || uv sync --all-packages
 
       - name: Install frontend deps
         working-directory: frontend

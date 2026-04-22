@@ -54,7 +54,9 @@ jobs:
           cache-dependency-glob: 'backend/uv.lock'
 
       - run: uv python install 3.12
-      - run: uv sync --frozen || uv sync
+      # --all-packages is required: the workspace root has no runtime deps,
+      # so plain `uv sync` leaves .venv/bin empty (no alembic, arq, uvicorn).
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
 
       - run: uv run ruff check .
       - run: uv run ruff format --check .

@@ -23,10 +23,16 @@ backend/
 ## Develop
 
 ```bash
-uv sync                                # first time — installs workspace deps
+uv sync --all-packages                 # first time — installs every workspace member
 uv run uvicorn api.main:app --reload   # API on :8000, hot reload
 uv run arq workers.settings.WorkerSettings   # consolidated worker
 ```
+
+> **Why `--all-packages`?** The workspace root (`backend/pyproject.toml`) has no
+> runtime dependencies — it's just a workspace definition. Plain `uv sync` would
+> install nothing. `--all-packages` tells uv to install every member (api,
+> ai_core, integrations, db, config_resolver, shared) and their transitive deps,
+> so console scripts like `alembic`, `arq`, `uvicorn` land in `.venv/bin`.
 
 Common checks:
 

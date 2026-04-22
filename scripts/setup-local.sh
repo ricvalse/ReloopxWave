@@ -20,8 +20,11 @@ fi
 echo "⇢ Installing frontend deps"
 (cd frontend && pnpm install --frozen-lockfile=false)
 
-echo "⇢ Syncing backend workspace"
-(cd backend && uv sync)
+echo "⇢ Syncing backend workspace (all members)"
+# --all-packages installs every workspace member's deps into the shared venv.
+# Without it, plain `uv sync` only installs the root project — which has no
+# runtime deps — and `.venv/bin` comes out empty (no alembic, arq, uvicorn).
+(cd backend && uv sync --all-packages)
 
 echo "✓ Setup complete. Next:"
 echo "    (term 1) cd backend && uv run uvicorn api.main:app --reload"

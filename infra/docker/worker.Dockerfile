@@ -23,7 +23,10 @@ COPY backend/services ./services
 COPY backend/libs ./libs
 COPY backend/workers ./workers
 
-RUN uv sync --frozen --no-dev
+# --all-packages installs every workspace member into the venv. Without it,
+# uv only installs the workspace root (which has no runtime deps), so `arq`
+# never lands in /app/.venv/bin.
+RUN uv sync --frozen --no-dev --all-packages
 
 COPY infra/docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
 RUN chmod +x /usr/local/bin/worker-entrypoint.sh

@@ -17,7 +17,7 @@ The `integrations` table stores per-merchant secrets encrypted with AES-256-GCM.
 
 ```bash
 cd backend
-uv sync
+uv sync --all-packages
 uv run python -c "from shared.crypto import generate_kek_base64; print(generate_kek_base64())"
 ```
 

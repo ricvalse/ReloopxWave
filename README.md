@@ -31,7 +31,7 @@ pnpm install
 
 # Backend
 cd ../backend
-uv sync
+uv sync --all-packages   # installs every workspace member; plain `uv sync` leaves the venv empty
 
 # Local env
 cp .env.example .env   # fill in Supabase URL, anon + service role keys, etc.

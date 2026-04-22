@@ -27,7 +27,11 @@ COPY backend/services ./services
 COPY backend/libs ./libs
 COPY backend/workers ./workers
 
-RUN uv sync --frozen --no-dev
+# --all-packages installs every workspace member (api, ai_core, integrations,
+# db, config_resolver, shared) into the venv. Without it, uv only installs the
+# workspace root which has no runtime deps, so alembic / arq / fastapi never
+# land in /app/.venv/bin.
+RUN uv sync --frozen --no-dev --all-packages
 
 # Migration metadata.
 COPY backend/alembic.ini ./alembic.ini
