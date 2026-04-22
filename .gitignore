@@ -1,0 +1,54 @@
+# ---- Node / frontend ----
+node_modules/
+.next/
+.turbo/
+.vercel/
+dist/
+build/
+out/
+*.tsbuildinfo
+.eslintcache
+
+# ---- Python / backend ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---- Env & secrets ----
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ---- Tool / IDE ----
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+
+# ---- Build artefacts ----
+*.log
+logs/
+tmp/
+.cache/
+
+# ---- Generated code (checked in by the drift workflow only) ----
+# frontend/packages/api-client/src/generated.ts is committed; do not ignore it.
+
+# ---- Supabase CLI local ----
+supabase/.branches/
+supabase/.temp/
+
+# ---- Railway / Vercel local ----
+.railway/

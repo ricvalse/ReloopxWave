@@ -1,0 +1,34 @@
+# Keep the build context small — only `backend/` + `infra/` are needed for Docker.
+.git
+.github
+.vscode
+.idea
+
+# Frontend monorepo — never built from Docker.
+frontend/
+
+# Docs + design files.
+docs/
+*.md
+!backend/README.md
+
+# Local-only artifacts.
+.env
+.env.*
+!.env.example
+
+# Python build / test caches.
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.venv/
+**/.coverage
+**/htmlcov/
+
+# Node (defensive — none in backend, but if files leak)
+**/node_modules/
+
+# OS
+.DS_Store

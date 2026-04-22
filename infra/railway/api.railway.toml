@@ -1,0 +1,46 @@
+# Reference config for the Railway `api` service.
+#
+# Railway does NOT auto-discover this file when the build is Dockerfile-based —
+# it lives here as documentation of what to set in the Railway UI. The
+# Dockerfile + entrypoint own the start command and port binding.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "infra/docker/api.Dockerfile"
+# Build context = repo root (default when dockerfilePath is repo-relative).
+
+[deploy]
+# `startCommand` is left empty on purpose — the Dockerfile CMD
+# (api-entrypoint.sh) runs migrations then uvicorn on $PORT.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+numReplicas = 1   # bump after the migration race is no longer an issue
+
+# Required env vars (set via Railway dashboard or `railway variables set`):
+#   ENVIRONMENT=production
+#   LOG_LEVEL=info
+#   SUPABASE_URL=https://<ref>.supabase.co
+#   SUPABASE_ANON_KEY=...
+#   SUPABASE_SERVICE_ROLE_KEY=...
+#   SUPABASE_JWT_SECRET=...
+#   SUPABASE_DB_URL=postgres://postgres:<pwd>@db.<ref>.supabase.co:5432/postgres
+#       (the api auto-rewrites this to postgresql+asyncpg://; raw Supabase
+#        connection string works as-is)
+#   REDIS_URL=${{Redis.REDIS_URL}}   <- linked from the Railway Redis addon
+#   OPENAI_API_KEY=...
+#   ANTHROPIC_API_KEY=...                  (optional; only if fallback enabled)
+#   ANTHROPIC_FALLBACK_ENABLED=false
+#   GHL_CLIENT_ID=...
+#   GHL_CLIENT_SECRET=...
+#   WHATSAPP_APP_SECRET=...
+#   WHATSAPP_VERIFY_TOKEN=...
+#   INTEGRATIONS_KEK_BASE64=...   (32 bytes base64; generate with `uv run python -c
+#                                  "from shared.crypto import generate_kek_base64; print(generate_kek_base64())"`)
+#   SENTRY_DSN_BACKEND=...                 (optional)
+#   POSTHOG_KEY=...                        (optional)
+#
+# Optional knobs:
+#   WEB_CONCURRENCY=2     (uvicorn worker count; default 2)
+#   RUN_MIGRATIONS=1      (set to 0 to skip alembic on boot)

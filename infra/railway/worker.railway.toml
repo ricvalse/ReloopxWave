@@ -1,0 +1,20 @@
+# Reference config for the Railway `worker` service (consolidated ARQ).
+# Documentation only — set these in the Railway UI for the worker service.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "infra/docker/worker.Dockerfile"
+
+[deploy]
+# `startCommand` left empty; the Dockerfile CMD (worker-entrypoint.sh) runs `arq`.
+# No healthcheck — ARQ doesn't expose HTTP; Railway will rely on process liveness.
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+numReplicas = 1
+
+# Scale-to-zero is OFF in production: first WhatsApp message after an idle
+# period must not pay a cold-start. Configure min replicas = 1 in the UI.
+
+# Env vars: same set as the api service (DB, Redis, OpenAI, GHL, WhatsApp, KEK,
+# Sentry). All workers share the same secret bag so reuse the same Railway
+# variable group across services.

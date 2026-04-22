@@ -1,0 +1,51 @@
+name: openapi-drift
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/packages/api-client/**'
+      - 'scripts/generate-api-types.sh'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'backend/uv.lock'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: uv python install 3.12
+      - name: Install backend deps
+        working-directory: backend
+        run: uv sync --frozen || uv sync
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Regenerate OpenAPI types
+        env:
+          OPENAPI_SOURCE: http://127.0.0.1:8000/openapi.json
+        run: ./scripts/generate-api-types.sh
+
+      - name: Fail if generated types drift from committed file
+        run: |
+          if ! git diff --quiet frontend/packages/api-client/src/generated.ts; then
+            echo "::error::OpenAPI types are out of sync. Run ./scripts/generate-api-types.sh and commit the result."
+            git --no-pager diff frontend/packages/api-client/src/generated.ts
+            exit 1
+          fi
