@@ -1,12 +1,14 @@
 import { PageHeader } from '@reloop/ui';
+import { SettingsPanel } from '@/components/settings/settings-panel';
 
 export default function SettingsPage() {
   return (
     <>
-      <PageHeader title="Impostazioni" description="Configurazioni globali, API keys, webhook." />
-      <div className="p-6 text-sm text-muted-foreground">
-        TODO: gestione secrets (solo read), webhook health, feature flags (leggibili dal DB via Realtime).
-      </div>
+      <PageHeader
+        title="Impostazioni"
+        description="Informazioni tenant, team, webhook health."
+      />
+      <SettingsPanel />
     </>
   );
 }
