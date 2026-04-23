@@ -4,17 +4,18 @@ Section 5.5: in production we register all handlers under a single
 WorkerSettings class to avoid idle Railway instances. The domain split into
 conversation/scheduler/fine_tuning stays at the module level for clarity.
 """
+
 from __future__ import annotations
 
 from arq.connections import RedisSettings
 
 from db import get_engine
 from shared import configure_logging, get_settings
-from workers.conversation.handlers import handle_inbound_message
+from workers.conversation.handlers import handle_ghl_event, handle_inbound_message
 from workers.fine_tuning.handlers import (
-    fine_tune_train,
-    fine_tune_evaluate,
     fine_tune_deploy,
+    fine_tune_evaluate,
+    fine_tune_train,
 )
 from workers.runtime import build_runtime
 from workers.scheduler.handlers import (
@@ -42,6 +43,8 @@ class WorkerSettings:
     functions = [
         # queue: wa:inbound
         handle_inbound_message,
+        # queue: ghl:events
+        handle_ghl_event,
         # queue: scheduler:jobs
         followup_no_answer,
         reactivate_dormant_leads,

@@ -1,13 +1,17 @@
+import { Suspense } from 'react';
 import { PageHeader } from '@reloop/ui';
+import { IntegrationsPanel } from '@/components/integrations/integrations-panel';
 
 export default function IntegrationsPage() {
   return (
     <>
-      <PageHeader title="Integrazioni" description="Stato connessioni GHL e WhatsApp." />
-      <div className="p-6 text-sm text-muted-foreground">
-        TODO: cards con stato OAuth (GHL) e numero verificato (Meta WhatsApp). Trigger riautenticazione
-        via <code>/integrations/ghl/oauth/start</code>.
-      </div>
+      <PageHeader
+        title="Integrazioni"
+        description="Stato connessioni GoHighLevel e WhatsApp Cloud."
+      />
+      <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Caricamento…</div>}>
+        <IntegrationsPanel />
+      </Suspense>
     </>
   );
 }

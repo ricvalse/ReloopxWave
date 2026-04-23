@@ -519,7 +519,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Ghl Oauth Callback */
+        /**
+         * Ghl Oauth Callback
+         * @description Public callback — no JWT. The signed `state` is what ties the round-trip
+         *     back to a merchant, so it must validate before we touch any DB row.
+         */
         get: operations["ghl_oauth_callback_integrations_ghl_oauth_callback_get"];
         put?: never;
         post?: never;
@@ -676,6 +680,23 @@ export interface components {
              * @default professionale-amichevole
              */
             tone: string;
+        };
+        /** ConnectionOut */
+        ConnectionOut: {
+            /** Provider */
+            provider: string;
+            /** Connected */
+            connected: boolean;
+            /** Status */
+            status: string;
+            /** External Account Id */
+            external_account_id: string | null;
+            /** Expires At */
+            expires_at: number | null;
+            /** Meta */
+            meta: {
+                [key: string]: unknown;
+            };
         };
         /** EscalationConfig */
         EscalationConfig: {
@@ -864,6 +885,11 @@ export interface components {
              */
             max_followups: number;
         };
+        /** OAuthStartResponse */
+        OAuthStartResponse: {
+            /** Authorize Url */
+            authorize_url: string;
+        };
         /** OverridesIn */
         OverridesIn: {
             /** Overrides */
@@ -998,6 +1024,16 @@ export interface components {
              */
             cold_threshold: number;
         };
+        /** StatusOut */
+        StatusOut: {
+            /**
+             * Merchant Id
+             * Format: uuid
+             */
+            merchant_id: string;
+            /** Connections */
+            connections: components["schemas"]["ConnectionOut"][];
+        };
         /** TemplateIn */
         TemplateIn: {
             /** Name */
@@ -1108,6 +1144,15 @@ export interface components {
             weight: number;
             /** Prompt Template Id */
             prompt_template_id?: string | null;
+        };
+        /** WhatsAppVerifyIn */
+        WhatsAppVerifyIn: {
+            /** Phone Number Id */
+            phone_number_id: string;
+            /** Access Token */
+            access_token: string;
+            /** Display Phone */
+            display_phone?: string | null;
         };
     };
     responses: never;
@@ -2281,9 +2326,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OAuthStartResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2317,9 +2360,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2342,7 +2383,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WhatsAppVerifyIn"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2350,9 +2395,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ConnectionOut"];
                 };
             };
             /** @description Validation Error */
@@ -2368,7 +2411,10 @@ export interface operations {
     };
     integration_status_integrations_status_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -2383,9 +2429,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StatusOut"];
                 };
             };
             /** @description Validation Error */
@@ -2472,7 +2516,9 @@ export interface operations {
     ghl_inbound_webhooks_ghl__merchant_id__post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "x-gohighlevel-signature"?: string;
+            };
             path: {
                 merchant_id: string;
             };

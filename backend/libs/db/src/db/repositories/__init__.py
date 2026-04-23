@@ -3,6 +3,7 @@ from db.repositories.analytics import AnalyticsRepository
 from db.repositories.conversation import ConversationRepository, ReminderCandidate
 from db.repositories.integration import (
     IntegrationRepository,
+    IntegrationStatus,
     ResolvedGHLIntegration,
     ResolvedWhatsAppIntegration,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "CategoryCount",
     "ConversationRepository",
     "IntegrationRepository",
+    "IntegrationStatus",
     "KnowledgeBaseRepository",
     "LeadRepository",
     "MerchantRepository",
