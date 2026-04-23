@@ -59,7 +59,13 @@ class Settings(BaseSettings):
     whatsapp_graph_base_url: str = "https://graph.facebook.com/v21.0"
 
     public_api_base_url: str = ""
+    public_web_admin_url: str = ""
     public_web_merchant_url: str = ""
+
+    # Comma-separated allowlist for CORS. If empty we fall back to the two
+    # `public_web_*_url` values. `"*"` is deliberately NOT supported in prod
+    # because `allow_credentials=True` forbids the wildcard.
+    cors_allowed_origins: str = ""
 
     integrations_kek_base64: str = Field(
         default="", description="AES-256-GCM key-encryption key, base64-encoded"

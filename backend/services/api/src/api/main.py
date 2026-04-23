@@ -32,7 +32,9 @@ from api.routers import (
     users,
     webhooks,
 )
-from shared import configure_logging, get_settings, init_posthog, init_sentry
+from shared import Settings, configure_logging, get_logger, get_settings, init_posthog, init_sentry
+
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -66,12 +68,19 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    origins = _resolve_cors_origins(settings)
+    if not origins and settings.environment != "local":
+        logger.warning(
+            "cors.no_origins_configured",
+            hint="set CORS_ALLOWED_ORIGINS or PUBLIC_WEB_ADMIN_URL + PUBLIC_WEB_MERCHANT_URL",
+        )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.environment == "local" else [],
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["x-trace-id"],
     )
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
@@ -98,6 +107,31 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 
     return app
+
+
+def _resolve_cors_origins(settings: Settings) -> list[str]:
+    """Resolve which browser origins are allowed to call the API.
+
+    Order:
+      1. `CORS_ALLOWED_ORIGINS` env (comma-separated) — explicit wins.
+      2. `PUBLIC_WEB_ADMIN_URL` + `PUBLIC_WEB_MERCHANT_URL` — the two apps.
+      3. Local dev: the Next.js defaults on 3000/3001.
+      4. Empty list (warned above) — every cross-origin call will 403.
+    """
+    if settings.cors_allowed_origins:
+        return [o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()]
+    if settings.environment == "local":
+        return [
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3001",
+        ]
+    urls: list[str] = []
+    for url in (settings.public_web_admin_url, settings.public_web_merchant_url):
+        if url:
+            urls.append(url.rstrip("/"))
+    return urls
 
 
 app = create_app()
