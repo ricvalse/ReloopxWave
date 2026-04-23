@@ -1,6 +1,8 @@
 # Railway deploy guide
 
-End-to-end steps to deploy the Reloop AI backend (FastAPI + ARQ worker) to Railway. Frontend stays on Vercel — see `frontend/README.md`.
+End-to-end steps to deploy all of Reloop AI (FastAPI + ARQ worker + both Next.js apps) to Railway. This replaces the original split of frontend-on-Vercel / backend-on-Railway — keeping everything in one provider trades Vercel's Next.js-specific perks (edge CDN, preview URLs, `next/image` optimization) for one bill, one login, and private networking between frontend and API.
+
+> Architecture note: the system design doc (`reloop-ai-architettura.md`, section 13.1) still references Vercel. That split remains a valid target — the Dockerfiles here are a pragmatic first-ship, not a permanent rejection of the original plan.
 
 ## Prerequisites
 
@@ -30,13 +32,15 @@ railway login
 railway init    # creates a new project; pick a name like "reloop-ai-prod"
 ```
 
-Then in the Railway dashboard, **add three resources** to the project:
+Then in the Railway dashboard, **add five resources** to the project:
 
 | Service | Type | What it runs |
 |---|---|---|
 | `redis` | Database addon → Redis | ARQ queues + config cache + dedup keys |
 | `api` | GitHub Repo (this repo) | FastAPI + alembic migrations |
 | `worker` | GitHub Repo (this repo, same one) | Consolidated ARQ worker |
+| `web-admin` | GitHub Repo (this repo, same one) | Next.js agency control panel |
+| `web-merchant` | GitHub Repo (this repo, same one) | Next.js merchant portal |
 
 ### 3. Configure the `api` service
 
@@ -58,6 +62,35 @@ In the service settings:
 - **Healthcheck**: leave blank
 - **Replicas**: 1, **disable scale-to-zero** (cold start would hurt first-message latency — section 15 of the architecture doc)
 
+### 4a. Configure the `web-admin` and `web-merchant` services
+
+Both Next.js apps share one `infra/docker/web.Dockerfile`, parameterised by `APP_NAME`. Per-service settings:
+
+- **Source**: same repo + branch as `api`
+- **Build**: Dockerfile, path `infra/docker/web.Dockerfile`
+- **Watch Paths** *(optional)*: `frontend/**`, `infra/docker/web.Dockerfile`
+- **Networking**: enable a public domain (Railway injects `$PORT`; the Next standalone server reads it)
+- **Healthcheck**: path `/` (Next returns 200 at root once the server is up)
+- **Replicas**: 1
+
+Service variables (per service — the two `APP_NAME` values differ):
+
+```text
+APP_NAME=web-admin                       # or web-merchant on the other service
+RAILWAY_DOCKERFILE_PATH=infra/docker/web.Dockerfile
+
+# NEXT_PUBLIC_* are inlined into the JS bundle at build time. They must also
+# be declared as ARG in the Dockerfile (they already are) — Railway forwards
+# matching service vars as build args.
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
+NEXT_PUBLIC_API_BASE_URL=https://<your-api-domain>.up.railway.app
+NEXT_PUBLIC_SENTRY_DSN=                  # optional
+NEXT_PUBLIC_POSTHOG_KEY=                 # optional
+```
+
+The web services don't need Supabase service-role, DB URL, or the KEK — those are backend-only.
+
 ### 5. Wire shared environment variables
 
 Both services need the same env. Easiest path: create a Railway **shared variable group** and attach to both. Required keys:
@@ -71,7 +104,17 @@ SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_ANON_KEY=<from Project Settings → API>
 SUPABASE_SERVICE_ROLE_KEY=<from Project Settings → API>
 SUPABASE_JWT_SECRET=<from Project Settings → API → JWT Settings>
-SUPABASE_DB_URL=postgres://postgres:<db-password>@db.<project-ref>.supabase.co:5432/postgres
+# Use the Supavisor POOLER URL (session mode, port 5432), not the direct
+# db.<ref>.supabase.co endpoint. The direct endpoint is IPv6-only and Railway
+# egress can't reach it reliably. Pooler has IPv4 and works everywhere.
+#
+# Find it in Supabase dashboard → Project Settings → Database → Connection
+# pooling → "Session" mode → URI. The format is:
+#   postgresql://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+#
+# Use port 5432 (session mode), NOT 6543 (transaction mode) — asyncpg +
+# Alembic rely on prepared statements that transaction mode breaks.
+SUPABASE_DB_URL=postgresql://postgres.<project-ref>:<db-password>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
 # --- Redis (link from the Railway addon) ---
 REDIS_URL=${{Redis.REDIS_URL}}
@@ -157,6 +200,8 @@ Railway keeps every prior deploy. To roll back: open the api or worker service �
 | Webhook returns 401 | `WHATSAPP_APP_SECRET` mismatch | Re-paste from Meta App → Webhooks. |
 | Healthcheck fails with timeout | App didn't bind to `$PORT` | Make sure the api service uses the Dockerfile, not a custom `startCommand` overriding the entrypoint. |
 | `Invalid base64` on boot | `INTEGRATIONS_KEK_BASE64` malformed | Regenerate; must decode to exactly 32 bytes. |
+| `OSError: [Errno 101] Network is unreachable` to Supabase | `SUPABASE_DB_URL` points at the direct (IPv6-only) endpoint | Switch to the Supavisor pooler URL (`postgres.<ref>@aws-0-<region>.pooler.supabase.com:5432`). |
+| Redis connection refused at `localhost:6379` | `REDIS_URL` not set on the service | Set `REDIS_URL=${{Redis.REDIS_URL}}` on **both** api and worker. |
 
 ## Staging vs production
 

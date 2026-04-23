@@ -12,6 +12,16 @@
 
 set -e
 
+# Crash-on-boot backoff. Railway restarts failed containers immediately, which
+# — combined with Supavisor's ECIRCUITBREAKER on repeated auth failures — can
+# lock the whole project out of the DB for ~15 minutes. Sleeping before the
+# first DB touch gives a bad deploy time to be noticed and rolled back before
+# it hammers the pooler. Override with MIGRATION_BACKOFF_SECONDS=0 if needed.
+BACKOFF="${MIGRATION_BACKOFF_SECONDS:-5}"
+if [ "${BACKOFF}" -gt 0 ] 2>/dev/null; then
+  sleep "${BACKOFF}"
+fi
+
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   echo "▶ alembic upgrade head"
   alembic upgrade head
