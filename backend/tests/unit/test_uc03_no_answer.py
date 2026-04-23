@@ -6,19 +6,18 @@ Stubs the DB + WhatsApp send. Checks that:
   - A candidate at max_followups is skipped.
   - Redis dedup prevents a double send when invoked back-to-back.
 """
+
 from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any
-from unittest.mock import AsyncMock
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from workers.scheduler import no_answer
 
 from db import ReminderCandidate, ResolvedWhatsAppIntegration
-from workers.scheduler import no_answer
 
 
 @dataclass
@@ -51,7 +50,7 @@ def candidate(integration: ResolvedWhatsAppIntegration) -> ReminderCandidate:
         tenant_id=integration.tenant_id,
         wa_phone_number_id=integration.phone_number_id,
         wa_contact_phone="39333000000",
-        last_message_at=datetime.now(tz=timezone.utc) - timedelta(hours=3),
+        last_message_at=datetime.now(tz=UTC) - timedelta(hours=3),
         reminders_sent=0,
         last_reminder_at=None,
     )
@@ -95,6 +94,7 @@ def _patch_session(
         def __init__(self, session): ...
         async def list_reminder_candidates(self, *, max_followups, min_idle_minutes=30):
             return []
+
         async def record_reminder_sent(self, conversation_id):
             if record_reminder_calls is not None:
                 record_reminder_calls.append(conversation_id)
@@ -109,6 +109,7 @@ def _patch_session(
         def __init__(self, *, access_token, phone_number_id): ...
         async def send_text(self, *, to_phone, text):
             return {"messages": [{"id": "wamid.ok"}]}
+
         async def close(self): ...
 
     monkeypatch.setattr(no_answer, "tenant_session", fake_tenant_session)
@@ -122,6 +123,7 @@ def _patch_session(
 
 # ---- tests ---------------------------------------------------------------
 
+
 async def test_sends_first_reminder_when_idle_past_threshold(
     monkeypatch: pytest.MonkeyPatch, candidate, integration
 ) -> None:
@@ -134,9 +136,7 @@ async def test_sends_first_reminder_when_idle_past_threshold(
         analytics_events=events,
     )
 
-    did_send = await no_answer._maybe_send_reminder(
-        candidate, redis=FakeRedis(), kek="unused"
-    )
+    did_send = await no_answer._maybe_send_reminder(candidate, redis=FakeRedis(), kek="unused")
 
     assert did_send is True
     assert record_calls == [candidate.conversation_id]
@@ -147,8 +147,10 @@ async def test_sends_first_reminder_when_idle_past_threshold(
 async def test_skips_when_last_reminder_too_recent(
     monkeypatch: pytest.MonkeyPatch, candidate, integration
 ) -> None:
-    fresh_candidate = candidate.__class__(
-        **{**candidate.__dict__, "reminders_sent": 1, "last_reminder_at": datetime.now(tz=timezone.utc)}
+    fresh_candidate = replace(
+        candidate,
+        reminders_sent=1,
+        last_reminder_at=datetime.now(tz=UTC),
     )
     record_calls: list = []
     _patch_session(monkeypatch, integration=integration, record_reminder_calls=record_calls)
@@ -163,9 +165,7 @@ async def test_skips_when_last_reminder_too_recent(
 async def test_skips_when_at_max_followups(
     monkeypatch: pytest.MonkeyPatch, candidate, integration
 ) -> None:
-    capped = candidate.__class__(
-        **{**candidate.__dict__, "reminders_sent": 2}
-    )
+    capped = replace(candidate, reminders_sent=2)
     record_calls: list = []
     _patch_session(monkeypatch, integration=integration, record_reminder_calls=record_calls)
 

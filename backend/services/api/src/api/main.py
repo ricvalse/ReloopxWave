@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from arq import create_pool
 from arq.connections import RedisSettings
@@ -32,13 +32,15 @@ from api.routers import (
     users,
     webhooks,
 )
-from shared import configure_logging, get_settings
+from shared import configure_logging, get_settings, init_posthog, init_sentry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(level=settings.log_level, environment=settings.environment)
+    init_sentry(settings, component="api")
+    app.state.posthog = init_posthog(settings)
     await init_db(settings.supabase_db_url)
 
     # ARQ pool for enqueueing from webhook handlers. One shared pool per process.

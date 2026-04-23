@@ -7,6 +7,7 @@ from shared.errors import (
     PermissionDeniedError,
 )
 from shared.logging import configure_logging, get_logger
+from shared.observability import init_posthog, init_sentry
 from shared.settings import Settings, get_settings
 
 __all__ = [
@@ -22,4 +23,6 @@ __all__ = [
     "encrypt_secret",
     "get_logger",
     "get_settings",
+    "init_posthog",
+    "init_sentry",
 ]
