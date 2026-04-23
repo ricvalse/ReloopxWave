@@ -21,6 +21,7 @@ from workers.fine_tuning.handlers import (
 )
 from workers.runtime import build_runtime
 from workers.scheduler.handlers import (
+    build_analytics_export,
     daily_kpi_rollup,
     followup_no_answer,
     integration_health_check,
@@ -56,6 +57,7 @@ class WorkerSettings:
         objection_extraction,
         kb_reindex,
         integration_health_check,
+        build_analytics_export,
         # queue: ft:pipeline
         fine_tune_train,
         fine_tune_evaluate,

@@ -378,8 +378,38 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Request Export */
+        /**
+         * Request Export
+         * @description Enqueue a background CSV export for the caller's tenant.
+         *
+         *     Returns immediately with an `export_id`. Poll `GET /analytics/exports/{id}/download`
+         *     for a signed Supabase Storage URL once the worker finishes. Large tenants may
+         *     take a minute; Supabase returns 404 on the signed URL until the file exists.
+         */
         post: operations["request_export_analytics_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/exports/{export_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Export
+         * @description Return a signed URL for the export CSV if it's ready.
+         *
+         *     Raises 404 with a domain error if the worker hasn't produced the file yet —
+         *     that's the canonical "still pending" signal.
+         */
+        get: operations["download_export_analytics_exports__export_id__download_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -743,6 +773,36 @@ export interface components {
             primary_metric: string;
             /** Min Sample Size */
             min_sample_size: number;
+        };
+        /** ExportDownload */
+        ExportDownload: {
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /** Signed Url */
+            signed_url: string;
+            /** Expires In Seconds */
+            expires_in_seconds: number;
+        };
+        /** ExportOut */
+        ExportOut: {
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /** Status */
+            status: string;
+        };
+        /** ExportRequest */
+        ExportRequest: {
+            /**
+             * Since Days
+             * @default 30
+             */
+            since_days: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2045,6 +2105,43 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_export_analytics_exports__export_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                export_id: string;
+            };
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
             /** @description Successful Response */
@@ -2053,9 +2150,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ExportDownload"];
                 };
             };
             /** @description Validation Error */
@@ -2577,6 +2672,7 @@ export enum ApiPaths {
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
+    download_export_analytics_exports__export_id__download_get = "/analytics/exports/{export_id}/download",
     playground_turn_playground_turn_post = "/playground/turn",
     list_experiments_ab_test__get = "/ab-test/",
     create_experiment_ab_test__post = "/ab-test/",
