@@ -11,6 +11,7 @@ from typing import Any
 
 from shared import get_logger
 from workers.scheduler.integration_health import integration_health_check  # re-export
+from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
 from workers.scheduler.reactivation import reactivate_dormant_leads  # re-export
 
@@ -24,12 +25,6 @@ __all__ = [
     "objection_extraction",
     "reactivate_dormant_leads",
 ]
-
-
-async def daily_kpi_rollup(ctx: dict[str, Any]) -> dict[str, Any]:
-    """Aggregate analytics_events into pre-computed KPI tables for dashboards."""
-    logger.info("worker.daily_kpi_rollup.started")
-    raise NotImplementedError
 
 
 async def objection_extraction(ctx: dict[str, Any], conversation_id: str) -> dict[str, Any]:

@@ -4,6 +4,7 @@ Used by the indexer (to fetch KB uploads) and the analytics exporter (to drop
 signed CSVs). Going direct to Storage via HTTP avoids the full supabase-py
 dependency for a couple of endpoints.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -23,6 +24,34 @@ class SupabaseStorage:
         self._base = project_url.rstrip("/") + "/storage/v1"
         self._auth = {"Authorization": f"Bearer {service_role_key}", "apikey": service_role_key}
         self._bucket = bucket
+
+    async def upload_bytes(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """Upsert `data` at `<bucket>/<path>`. Used by FT dataset export +
+        analytics CSV export. Idempotent — running twice overwrites the object.
+        """
+        url = f"{self._base}/object/{self._bucket}/{path.lstrip('/')}"
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.put(
+                url,
+                headers={
+                    **self._auth,
+                    "Content-Type": content_type,
+                    "x-upsert": "true",
+                },
+                content=data,
+            )
+            if resp.status_code >= 400:
+                raise IntegrationError(
+                    f"Supabase Storage upload failed ({resp.status_code})",
+                    error_code="storage_upload_failed",
+                    body=resp.text[:300],
+                )
 
     async def download(self, path: str) -> bytes:
         url = f"{self._base}/object/{self._bucket}/{path.lstrip('/')}"
@@ -50,5 +79,7 @@ class SupabaseStorage:
                 )
             signed = resp.json().get("signedURL") or resp.json().get("signedUrl", "")
             if not signed:
-                raise IntegrationError("sign response missing signedURL", error_code="storage_sign_missing")
+                raise IntegrationError(
+                    "sign response missing signedURL", error_code="storage_sign_missing"
+                )
             return self._base.rsplit("/storage/v1", 1)[0] + "/storage/v1" + signed
