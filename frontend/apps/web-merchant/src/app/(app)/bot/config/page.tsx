@@ -1,16 +1,14 @@
 import { PageHeader } from '@reloop/ui';
+import { BotConfigPanel } from '@/components/bot-config/bot-config-panel';
 
 export default function BotConfigPage() {
   return (
     <>
       <PageHeader
         title="Configurazione bot"
-        description="Prompt, tono, regole. Tutti i parametri seguono la cascata merchant → agenzia → system."
+        description="Cascata merchant → agenzia → sistema. Le chiavi bloccate non sono sovrascrivibili."
       />
-      <div className="p-6 text-sm text-muted-foreground">
-        TODO: form react-hook-form + zod sullo schema <code>BotConfigSchema</code>, con badge
-        Inherited/Customized/Locked accanto a ogni campo (vedi sez. 9.5).
-      </div>
+      <BotConfigPanel />
     </>
   );
 }

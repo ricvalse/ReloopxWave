@@ -39,8 +39,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Regenerate OpenAPI types
-        env:
-          OPENAPI_SOURCE: http://127.0.0.1:8000/openapi.json
+        # Default OPENAPI_SOURCE=offline: imports the FastAPI app directly so we
+        # don't need Postgres/Redis services in this workflow.
         run: ./scripts/generate-api-types.sh
 
       - name: Fail if generated types drift from committed file

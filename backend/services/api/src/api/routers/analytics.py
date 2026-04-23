@@ -1,19 +1,22 @@
 """UC-11 / UC-12 — analytics endpoints."""
+
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import ConfigKey, ConfigResolver
 from db import AnalyticsRepository
-from shared import PermissionDeniedError
+from integrations import SupabaseStorage
+from shared import IntegrationError, PermissionDeniedError, get_logger, get_settings
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 class MerchantKpisOut(BaseModel):
@@ -88,13 +91,78 @@ async def agency_kpis(
                 "bookings_created": r.bookings_created,
                 "conversion_rate": r.conversion_rate,
             }
-            for r in sorted(
-                ranking, key=lambda r: (r.conversion_rate, r.leads_total), reverse=True
-            )
+            for r in sorted(ranking, key=lambda r: (r.conversion_rate, r.leads_total), reverse=True)
         ],
     )
 
 
-@router.post("/exports")
-async def request_export(ctx: CurrentContext) -> dict:
-    raise NotImplementedError("CSV export via Supabase Storage — follow-up")
+class ExportRequest(BaseModel):
+    since_days: int = Field(default=30, ge=1, le=365)
+
+
+class ExportOut(BaseModel):
+    export_id: UUID
+    status: str
+
+
+class ExportDownload(BaseModel):
+    export_id: UUID
+    signed_url: str
+    expires_in_seconds: int
+
+
+@router.post("/exports", response_model=ExportOut, status_code=202)
+async def request_export(
+    payload: ExportRequest, ctx: CurrentContext, request: Request
+) -> ExportOut:
+    """Enqueue a background CSV export for the caller's tenant.
+
+    Returns immediately with an `export_id`. Poll `GET /analytics/exports/{id}/download`
+    for a signed Supabase Storage URL once the worker finishes. Large tenants may
+    take a minute; Supabase returns 404 on the signed URL until the file exists.
+    """
+    export_id = uuid4()
+    arq = request.app.state.arq
+    await arq.enqueue_job(
+        "build_analytics_export",
+        str(ctx.tenant_id),
+        str(export_id),
+        since_days=payload.since_days,
+        _job_id=f"analytics:export:{export_id}",
+    )
+    logger.info(
+        "analytics.export.requested",
+        actor_id=str(ctx.actor_id),
+        tenant_id=str(ctx.tenant_id),
+        export_id=str(export_id),
+        since_days=payload.since_days,
+    )
+    return ExportOut(export_id=export_id, status="pending")
+
+
+@router.get("/exports/{export_id}/download", response_model=ExportDownload)
+async def download_export(export_id: UUID, ctx: CurrentContext) -> ExportDownload:
+    """Return a signed URL for the export CSV if it's ready.
+
+    Raises 404 with a domain error if the worker hasn't produced the file yet —
+    that's the canonical "still pending" signal.
+    """
+    settings = get_settings()
+    storage = SupabaseStorage(
+        project_url=settings.supabase_url,
+        service_role_key=settings.supabase_service_role_key,
+        bucket=settings.supabase_exports_bucket,
+    )
+    path = f"{ctx.tenant_id}/{export_id}.csv"
+    expires = 3600
+    try:
+        signed = await storage.create_signed_url(path, expires_in_seconds=expires)
+    except IntegrationError:
+        # Supabase returns 4xx when the object doesn't exist yet; surface that
+        # as "still pending" rather than a generic integration failure.
+        raise IntegrationError(
+            "Export not ready yet",
+            error_code="export_not_ready",
+            export_id=str(export_id),
+        ) from None
+    return ExportDownload(export_id=export_id, signed_url=signed, expires_in_seconds=expires)

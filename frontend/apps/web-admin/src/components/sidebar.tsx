@@ -11,7 +11,7 @@ const nav = [
 export function Sidebar() {
   return (
     <nav className="flex h-full flex-col gap-1 p-4">
-      <div className="mb-6 px-2 text-lg font-semibold">Reloop Admin</div>
+      <div className="mb-6 px-2 text-lg font-semibold">Admin</div>
       {nav.map((item) => (
         <Link
           key={item.href}

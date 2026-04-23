@@ -34,10 +34,11 @@ class Settings(BaseSettings):
         if v.startswith("postgresql+asyncpg://"):
             return v
         if v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
         if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://"):]
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
         return v
+
     supabase_kb_bucket: str = "kb-documents"
     supabase_ft_bucket: str = "ft-training-data"
     supabase_exports_bucket: str = "analytics-exports"
@@ -50,13 +51,23 @@ class Settings(BaseSettings):
 
     ghl_client_id: str = ""
     ghl_client_secret: str = ""
+    ghl_webhook_secret: str = ""
+    ghl_oauth_state_secret: str = ""
+    ghl_redirect_uri: str = ""
     whatsapp_app_secret: str = ""
     whatsapp_verify_token: str = ""
+    whatsapp_graph_base_url: str = "https://graph.facebook.com/v21.0"
 
-    integrations_kek_base64: str = Field(default="", description="AES-256-GCM key-encryption key, base64-encoded")
+    public_api_base_url: str = ""
+    public_web_merchant_url: str = ""
+
+    integrations_kek_base64: str = Field(
+        default="", description="AES-256-GCM key-encryption key, base64-encoded"
+    )
 
     sentry_dsn_backend: str = ""
     posthog_key: str = ""
+    posthog_host: str = "https://eu.posthog.com"
 
 
 @lru_cache

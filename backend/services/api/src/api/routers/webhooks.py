@@ -4,12 +4,15 @@ The contract from section 7.3:
 - respond 200 synchronously (Meta/GHL have short timeouts)
 - enqueue the event on the right ARQ queue and return immediately
 """
+
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 
+from integrations.ghl.signatures import verify_ghl_signature
 from integrations.whatsapp.webhook import parse_inbound_payload, verify_whatsapp_signature
 from shared import get_logger, get_settings
 
@@ -36,7 +39,7 @@ async def whatsapp_inbound(
     phone_number_id: str,
     request: Request,
     x_hub_signature_256: str = Header(default=""),
-) -> dict:
+) -> dict[str, Any]:
     settings = get_settings()
     body = await request.body()
     if not verify_whatsapp_signature(
@@ -74,8 +77,42 @@ async def whatsapp_inbound(
 
 
 @router.post("/ghl/{merchant_id}")
-async def ghl_inbound(merchant_id: UUID, request: Request) -> dict:
+async def ghl_inbound(
+    merchant_id: UUID,
+    request: Request,
+    x_gohighlevel_signature: str = Header(default=""),
+) -> dict[str, Any]:
+    settings = get_settings()
     body = await request.body()
-    logger.info("webhook.ghl.inbound", merchant_id=str(merchant_id), bytes=len(body))
-    # TODO: validate GHL signature + enqueue on `ghl:events`.
-    return {"accepted": True}
+    if not verify_ghl_signature(
+        shared_secret=settings.ghl_webhook_secret,
+        payload=body,
+        signature_header=x_gohighlevel_signature,
+    ):
+        logger.warning(
+            "webhook.ghl.signature_rejected",
+            merchant_id=str(merchant_id),
+            bytes=len(body),
+        )
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+
+    event_type = str(payload.get("type") or payload.get("event") or "unknown")
+    arq = request.app.state.arq
+    await arq.enqueue_job(
+        "handle_ghl_event",
+        str(merchant_id),
+        event_type,
+        payload,
+        _queue_name="ghl:events",
+    )
+    logger.info(
+        "webhook.ghl.inbound.enqueued",
+        merchant_id=str(merchant_id),
+        event_type=event_type,
+    )
+    return {"accepted": True, "event_type": event_type}

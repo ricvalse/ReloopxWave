@@ -13,6 +13,7 @@ dependencies = [
     "sentry-sdk>=2.18.0",
     "arq>=0.26.1",
     "redis>=5.2.0",
+    "posthog>=3.5.0",
     "ai_core",
     "integrations",
     "db",

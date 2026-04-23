@@ -1,12 +1,5 @@
-import { PageHeader } from '@reloop/ui';
+import { TemplatesPanel } from '@/components/templates/templates-panel';
 
 export default function TemplatesPage() {
-  return (
-    <>
-      <PageHeader title="Template bot" description="UC-10 — default agenzia." />
-      <div className="p-6 text-sm text-muted-foreground">
-        TODO: BotTemplateEditor con preview prompt e toggle <code>locked_by_agency</code>.
-      </div>
-    </>
-  );
+  return <TemplatesPanel />;
 }

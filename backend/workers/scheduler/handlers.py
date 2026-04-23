@@ -4,30 +4,32 @@ Cadence is configured per-merchant via the config cascade (section 9.4).
 The handlers here are thin facades; real logic lives in dedicated modules so
 ARQ's registration surface stays ergonomic.
 """
+
 from __future__ import annotations
 
+from typing import Any
+
 from shared import get_logger
+from workers.scheduler.analytics_export import build_analytics_export  # re-export
+from workers.scheduler.integration_health import integration_health_check  # re-export
+from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
 from workers.scheduler.reactivation import reactivate_dormant_leads  # re-export
 
 logger = get_logger(__name__)
 
 __all__ = [
+    "build_analytics_export",
     "daily_kpi_rollup",
     "followup_no_answer",
+    "integration_health_check",
     "kb_reindex",
     "objection_extraction",
     "reactivate_dormant_leads",
 ]
 
 
-async def daily_kpi_rollup(ctx: dict) -> dict:
-    """Aggregate analytics_events into pre-computed KPI tables for dashboards."""
-    logger.info("worker.daily_kpi_rollup.started")
-    raise NotImplementedError
-
-
-async def objection_extraction(ctx: dict, conversation_id: str) -> dict:
+async def objection_extraction(ctx: dict[str, Any], conversation_id: str) -> dict[str, Any]:
     """UC-13 — run the objection classifier on a completed conversation.
 
     Real implementation lives in `workers.scheduler.objections`.
@@ -37,7 +39,7 @@ async def objection_extraction(ctx: dict, conversation_id: str) -> dict:
     return await extract_for_conversation(ctx, conversation_id=conversation_id)
 
 
-async def kb_reindex(ctx: dict, doc_id: str) -> dict:
+async def kb_reindex(ctx: dict[str, Any], doc_id: str) -> dict[str, Any]:
     """Re-chunk and re-embed a KB doc after it changes.
 
     Real implementation lives in `workers.scheduler.kb_reindex`.
