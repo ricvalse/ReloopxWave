@@ -1,7 +1,7 @@
 import createClient, { type Middleware } from 'openapi-fetch';
 import type { paths } from './generated';
 
-export type { paths } from './generated';
+export type { components, paths } from './generated';
 
 export type ReloopClient = ReturnType<typeof createClient<paths>>;
 

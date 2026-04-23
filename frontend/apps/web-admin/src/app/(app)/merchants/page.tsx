@@ -1,15 +1,14 @@
 import { PageHeader } from '@reloop/ui';
+import { MerchantList } from '@/components/merchants/merchant-list';
 
 export default function MerchantsPage() {
   return (
     <>
       <PageHeader
         title="Merchant"
-        description="Lista, creazione, sospensione. UC-10, UC-11, UC-12."
+        description="UC-10/11/12 — lista, onboarding, sospensione dei merchant del tenant."
       />
-      <div className="p-6 text-sm text-muted-foreground">
-        TODO: MerchantTable con filtri, ranking, drill-down verso <code>/merchants/[id]</code>.
-      </div>
+      <MerchantList />
     </>
   );
 }
