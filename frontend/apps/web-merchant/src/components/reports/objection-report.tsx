@@ -30,6 +30,7 @@ export function ObjectionReport() {
   });
 
   const total = (query.data ?? []).reduce((acc, c) => acc + c.count, 0);
+  const maxCount = Math.max(1, ...(query.data ?? []).map((c) => c.count));
 
   if (query.isLoading) {
     return <p className="text-sm text-muted-foreground">Caricamento…</p>;
@@ -55,7 +56,7 @@ export function ObjectionReport() {
                 <div className="relative h-6 flex-1 rounded bg-muted">
                   <div
                     className="h-full rounded bg-primary"
-                    style={{ width: `${(c.count / Math.max(1, query.data![0].count)) * 100}%` }}
+                    style={{ width: `${(c.count / maxCount) * 100}%` }}
                   />
                 </div>
                 <span className="w-10 text-right text-sm tabular-nums">{c.count}</span>

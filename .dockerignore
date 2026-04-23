@@ -1,23 +1,26 @@
-# Keep the build context small — only `backend/` + `infra/` are needed for Docker.
+# Shared ignore for every Dockerfile in this repo (backend api+worker,
+# frontend web-admin+web-merchant). A single file keeps backend and frontend
+# Docker builds consistent; contexts can be narrowed per-Dockerfile later if
+# upload size ever becomes a real concern.
+
+# ---- Git / editors ----
 .git
 .github
 .vscode
 .idea
 
-# Frontend monorepo — never built from Docker.
-frontend/
-
-# Docs + design files.
+# ---- Docs + design files ----
 docs/
 *.md
 !backend/README.md
+!frontend/README.md
 
-# Local-only artifacts.
+# ---- Local env files ----
 .env
 .env.*
 !.env.example
 
-# Python build / test caches.
+# ---- Python build / test caches ----
 **/__pycache__/
 **/*.py[cod]
 **/.pytest_cache/
@@ -27,8 +30,16 @@ docs/
 **/.coverage
 **/htmlcov/
 
-# Node (defensive — none in backend, but if files leak)
+# ---- Node build artifacts (always re-installed in builder stage) ----
 **/node_modules/
+**/.next/
+**/.turbo/
+**/.vercel/
+**/dist/
+**/build/
+**/out/
+**/*.tsbuildinfo
+**/.eslintcache
 
-# OS
+# ---- OS ----
 .DS_Store
