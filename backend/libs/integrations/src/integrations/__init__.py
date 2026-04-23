@@ -1,4 +1,5 @@
 from integrations.ghl.client import GHLClient
+from integrations.supabase_admin import InvitedUser, SupabaseAdminClient
 from integrations.supabase_storage import SupabaseStorage
 from integrations.whatsapp.client import WhatsAppClient
 from integrations.whatsapp.webhook import (
@@ -9,6 +10,8 @@ from integrations.whatsapp.webhook import (
 
 __all__ = [
     "GHLClient",
+    "InvitedUser",
+    "SupabaseAdminClient",
     "SupabaseStorage",
     "WhatsAppClient",
     "WhatsAppInboundEvent",
