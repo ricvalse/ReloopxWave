@@ -4,8 +4,8 @@ import type { ReactNode } from 'react';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'Reloop Admin',
-  description: "Pannello agenzia Reloop — gestione merchant, analytics, template bot.",
+  title: 'Admin',
+  description: 'Pannello agenzia — gestione merchant, analytics, template bot.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

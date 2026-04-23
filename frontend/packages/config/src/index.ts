@@ -2,11 +2,11 @@ export * from './env';
 
 export const appBrand = {
   admin: {
-    name: 'Reloop Admin',
+    name: 'Admin',
     primaryColor: 'hsl(221 83% 53%)',
   },
   merchant: {
-    name: 'Reloop Merchant',
+    name: 'Merchant',
     primaryColor: 'hsl(160 84% 39%)',
   },
 } as const;

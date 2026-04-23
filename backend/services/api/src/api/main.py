@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="Reloop AI API",
+        title="API",
         version="0.1.0",
         lifespan=lifespan,
     )
