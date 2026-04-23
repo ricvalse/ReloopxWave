@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     sentry_dsn_backend: str = ""
     posthog_key: str = ""
+    posthog_host: str = "https://eu.posthog.com"
 
 
 @lru_cache

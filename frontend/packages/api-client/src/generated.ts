@@ -253,7 +253,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get Overrides
+         * @description Read the raw merchant overrides (what the merchant portal shows as
+         *     'Customized' values) alongside the agency default template's `locked_keys`.
+         *     Used by the bot-config form to decide Inherited vs Customized vs Locked
+         *     per field without re-implementing the cascade.
+         */
+        get: operations["get_overrides_bot_config__merchant_id__overrides_get"];
         /** Update Overrides */
         put: operations["update_overrides_bot_config__merchant_id__overrides_put"];
         post?: never;
@@ -957,6 +964,20 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** OverridesOut */
+        OverridesOut: {
+            /**
+             * Merchant Id
+             * Format: uuid
+             */
+            merchant_id: string;
+            /** Overrides */
+            overrides: {
+                [key: string]: unknown;
+            };
+            /** Locked Keys */
+            locked_keys: string[];
+        };
         /** PipelineConfig */
         PipelineConfig: {
             /**
@@ -1134,6 +1155,17 @@ export interface components {
             locked_keys: string[];
             /** Is Default */
             is_default: boolean;
+        };
+        /** TenantCreate */
+        TenantCreate: {
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** TenantOut */
         TenantOut: {
@@ -1318,17 +1350,19 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantCreate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TenantOut"];
                 };
             };
             /** @description Validation Error */
@@ -1804,6 +1838,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BotConfigSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_overrides_bot_config__merchant_id__overrides_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OverridesOut"];
                 };
             };
             /** @description Validation Error */
@@ -2663,6 +2730,7 @@ export enum ApiPaths {
     create_template_bot_config_templates_post = "/bot-config/templates",
     update_template_bot_config_templates__template_id__put = "/bot-config/templates/{template_id}",
     resolved_config_bot_config__merchant_id__resolved_get = "/bot-config/{merchant_id}/resolved",
+    get_overrides_bot_config__merchant_id__overrides_get = "/bot-config/{merchant_id}/overrides",
     update_overrides_bot_config__merchant_id__overrides_put = "/bot-config/{merchant_id}/overrides",
     create_doc_knowledge_base__merchant_id__docs_post = "/knowledge-base/{merchant_id}/docs",
     list_docs_knowledge_base__merchant_id__docs_get = "/knowledge-base/{merchant_id}/docs",

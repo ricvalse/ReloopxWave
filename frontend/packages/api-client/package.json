@@ -10,7 +10,6 @@
     "./generated": "./src/generated.ts"
   },
   "scripts": {
-    "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "generate": "../../../scripts/generate-api-types.sh"
   },

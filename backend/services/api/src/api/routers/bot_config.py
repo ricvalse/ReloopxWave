@@ -1,6 +1,7 @@
 """Bot config + agency templates — UC-10 hosts agency defaults, merchant route
 applies the cascade + respects `locked_keys`.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -14,13 +15,14 @@ from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import BotConfigSchema, ConfigKey
 from db import BotTemplateRepository
-from db.models import BotConfig, Merchant
+from db.models import BotConfig
 from shared import NotFoundError, PermissionDeniedError
 
 router = APIRouter()
 
 
 # ---- Templates (UC-10) ---------------------------------------------------
+
 
 class TemplateIn(BaseModel):
     name: str
@@ -105,6 +107,7 @@ async def update_template(
 
 # ---- Merchant config resolved view + overrides ---------------------------
 
+
 @router.get("/{merchant_id}/resolved", response_model=BotConfigSchema)
 async def resolved_config(
     merchant_id: UUID, session: DBSession, ctx: CurrentContext
@@ -122,6 +125,37 @@ async def resolved_config(
 
 class OverridesIn(BaseModel):
     overrides: dict[str, Any]
+
+
+class OverridesOut(BaseModel):
+    merchant_id: UUID
+    overrides: dict[str, Any]
+    locked_keys: list[str]
+
+
+@router.get("/{merchant_id}/overrides", response_model=OverridesOut)
+async def get_overrides(merchant_id: UUID, session: DBSession, ctx: CurrentContext) -> OverridesOut:
+    """Read the raw merchant overrides (what the merchant portal shows as
+    'Customized' values) alongside the agency default template's `locked_keys`.
+    Used by the bot-config form to decide Inherited vs Customized vs Locked
+    per field without re-implementing the cascade.
+    """
+    _assert_merchant(ctx, merchant_id)
+    row = (
+        await session.execute(select(BotConfig).where(BotConfig.merchant_id == merchant_id))
+    ).scalar_one_or_none()
+    overrides = dict(row.overrides or {}) if row else {}
+
+    repo = BotTemplateRepository(session)
+    templates = await repo.list_for_tenant(ctx.tenant_id)
+    default_tmpl = next((t for t in templates if t.is_default), None)
+    locked = list(default_tmpl.locked_keys or []) if default_tmpl else []
+
+    return OverridesOut(
+        merchant_id=merchant_id,
+        overrides=overrides,
+        locked_keys=locked,
+    )
 
 
 @router.put("/{merchant_id}/overrides")
@@ -157,6 +191,7 @@ async def update_overrides(
 
 # ---- helpers -------------------------------------------------------------
 
+
 def _tmpl_out(t) -> TemplateOut:
     return TemplateOut(
         id=t.id,
@@ -172,16 +207,16 @@ def _validate_defaults(bag: dict[str, Any]) -> None:
     try:
         BotConfigSchema.model_validate(bag)
     except Exception as e:
-        raise PermissionDeniedError(f"Invalid config bag: {e}", error_code="invalid_config_bag")
+        raise PermissionDeniedError(
+            f"Invalid config bag: {e}", error_code="invalid_config_bag"
+        ) from e
 
 
 def _validate_locked_keys(keys: list[str]) -> None:
     known = {k.value for k in ConfigKey}
     bad = [k for k in keys if k not in known]
     if bad:
-        raise PermissionDeniedError(
-            f"Unknown config keys: {bad}", error_code="unknown_locked_keys"
-        )
+        raise PermissionDeniedError(f"Unknown config keys: {bad}", error_code="unknown_locked_keys")
 
 
 def _assert_merchant(ctx, merchant_id: UUID) -> None:

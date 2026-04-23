@@ -101,6 +101,107 @@ class SupabaseAdminClient:
                 error_code="supabase_invite_missing_id",
                 body=body,
             )
+        invited = InvitedUser(id=UUID(str(user_id)), email=email.lower())
+
+        # `data` lands in raw_user_meta_data (user-writable). For security we
+        # mirror the same claims into app_metadata (service-role-writable only)
+        # so the JWT hook can safely promote them without worrying about
+        # client-side tampering.
+        await self.set_app_metadata(
+            user_id=invited.id,
+            tenant_id=tenant_id,
+            merchant_id=merchant_id,
+            role=role,
+        )
+        return invited
+
+    async def set_app_metadata(
+        self,
+        *,
+        user_id: UUID,
+        tenant_id: UUID,
+        merchant_id: UUID | None,
+        role: str,
+    ) -> None:
+        """PUT /admin/users/{id} with the canonical claim triple.
+
+        The backend's JWT hook treats `app_metadata` as the authoritative
+        source for `tenant_id`, `merchant_id`, and `role` — keep this call
+        idempotent so re-running an invite refreshes claims without churn.
+        """
+        url = f"{self._base}/auth/v1/admin/users/{user_id}"
+        payload: dict[str, Any] = {
+            "app_metadata": {
+                "tenant_id": str(tenant_id),
+                "merchant_id": str(merchant_id) if merchant_id else None,
+                "role": role,
+            }
+        }
+        try:
+            resp = await self._http.put(url, json=payload, headers=self._headers())
+        except httpx.HTTPError as e:
+            raise IntegrationError(
+                "Supabase app_metadata transport failure",
+                error_code="supabase_app_metadata_transport",
+                reason=str(e),
+            ) from e
+        if resp.status_code >= 400:
+            raise IntegrationError(
+                "Supabase rejected app_metadata update",
+                error_code="supabase_app_metadata_rejected",
+                status_code=resp.status_code,
+                body=resp.text[:500],
+            )
+
+    async def create_user(
+        self,
+        *,
+        email: str,
+        tenant_id: UUID,
+        merchant_id: UUID | None,
+        role: str,
+        password: str | None = None,
+    ) -> InvitedUser:
+        """Create a user directly (no invite email). Useful for bootstrapping
+        a super_admin via CLI script where there's no inbox to receive a link.
+        """
+        url = f"{self._base}/auth/v1/admin/users"
+        payload: dict[str, Any] = {
+            "email": email.lower(),
+            "email_confirm": True,
+            "app_metadata": {
+                "tenant_id": str(tenant_id),
+                "merchant_id": str(merchant_id) if merchant_id else None,
+                "role": role,
+            },
+        }
+        if password:
+            payload["password"] = password
+
+        try:
+            resp = await self._http.post(url, json=payload, headers=self._headers())
+        except httpx.HTTPError as e:
+            raise IntegrationError(
+                "Supabase create_user transport failure",
+                error_code="supabase_create_user_transport",
+                reason=str(e),
+            ) from e
+
+        if resp.status_code >= 400:
+            raise IntegrationError(
+                "Supabase rejected user creation",
+                error_code="supabase_create_user_rejected",
+                status_code=resp.status_code,
+                body=resp.text[:500],
+            )
+        body = resp.json()
+        user_id = body.get("id") or body.get("user", {}).get("id")
+        if not user_id:
+            raise IntegrationError(
+                "Supabase user creation returned no id",
+                error_code="supabase_create_user_missing_id",
+                body=body,
+            )
         return InvitedUser(id=UUID(str(user_id)), email=email.lower())
 
     def _headers(self) -> dict[str, str]:

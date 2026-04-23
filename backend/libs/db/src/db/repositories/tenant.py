@@ -36,6 +36,22 @@ class TenantRepository:
         stmt = select(Tenant).where(Tenant.slug == slug)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def create(
+        self,
+        *,
+        slug: str,
+        name: str,
+        settings: dict[str, Any] | None = None,
+    ) -> Tenant:
+        """Insert a tenant. Only super_admin sessions can execute this — RLS
+        policy `super_admin_bypass_tenants` (migration 0005) is what lets the
+        WITH CHECK pass; regular callers hit the isolation policy and fail.
+        """
+        tenant = Tenant(slug=slug, name=name, settings=settings or {})
+        self._session.add(tenant)
+        await self._session.flush()
+        return tenant
+
     async def update(
         self,
         tenant_id: UUID,

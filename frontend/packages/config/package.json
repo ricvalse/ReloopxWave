@@ -10,7 +10,6 @@
     "./env": "./src/env.ts"
   },
   "scripts": {
-    "lint": "eslint src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -60,13 +60,18 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
 
     assert str(invited.id) == user_id
     assert invited.email == "alice@example.com"
-    assert len(captured) == 1
-    call = captured[0]
-    assert call["method"] == "POST"
-    assert call["url"] == "https://proj.supabase.co/auth/v1/admin/invite"
-    assert call["headers"]["apikey"] == "sr-123"
-    assert call["headers"]["authorization"] == "Bearer sr-123"
-    assert call["body"] == {
+    # Two calls: the invite itself (POST /invite) + the follow-up
+    # set_app_metadata PUT /admin/users/{id} so claims land in
+    # app_metadata (service-role only) rather than raw_user_meta_data
+    # (user-writable).
+    assert len(captured) == 2
+
+    invite = captured[0]
+    assert invite["method"] == "POST"
+    assert invite["url"] == "https://proj.supabase.co/auth/v1/admin/invite"
+    assert invite["headers"]["apikey"] == "sr-123"
+    assert invite["headers"]["authorization"] == "Bearer sr-123"
+    assert invite["body"] == {
         "email": "alice@example.com",
         "data": {
             "tenant_id": str(tenant_id),
@@ -74,6 +79,17 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
             "role": "merchant_admin",
         },
         "redirect_to": "https://example.com/welcome",
+    }
+
+    app_meta = captured[1]
+    assert app_meta["method"] == "PUT"
+    assert app_meta["url"] == f"https://proj.supabase.co/auth/v1/admin/users/{user_id}"
+    assert app_meta["body"] == {
+        "app_metadata": {
+            "tenant_id": str(tenant_id),
+            "merchant_id": str(merchant_id),
+            "role": "merchant_admin",
+        }
     }
 
 

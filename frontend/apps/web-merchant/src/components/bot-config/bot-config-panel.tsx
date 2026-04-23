@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
@@ -8,8 +8,131 @@ import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 
 type BotConfig = components['schemas']['BotConfigSchema'];
+type OverridesOut = components['schemas']['OverridesOut'];
 
 type OverrideBag = Record<string, Record<string, unknown>>;
+type FormState = Record<string, unknown>; // flat, dotted keys
+
+type FieldKind = 'int' | 'float' | 'text' | 'bool';
+
+type FieldDef = {
+  key: string; // dotted path, e.g. "no_answer.first_reminder_min"
+  label: string;
+  kind: FieldKind;
+  min?: number;
+  max?: number;
+  step?: number;
+};
+
+type SectionDef = {
+  section: string; // top-level key, e.g. "no_answer"
+  title: string;
+  description: string;
+  fields: FieldDef[];
+};
+
+const SECTIONS: SectionDef[] = [
+  {
+    section: 'no_answer',
+    title: 'No answer (UC-03)',
+    description: 'Follow-up se il lead non risponde.',
+    fields: [
+      { key: 'no_answer.first_reminder_min', label: '1° reminder (min)', kind: 'int', min: 30, max: 480 },
+      { key: 'no_answer.second_reminder_min', label: '2° reminder (min)', kind: 'int', min: 720, max: 2880 },
+      { key: 'no_answer.max_followups', label: 'Max follow-up', kind: 'int', min: 1, max: 4 },
+    ],
+  },
+  {
+    section: 'reactivation',
+    title: 'Reactivation (UC-06)',
+    description: 'Riattivazione lead dormienti.',
+    fields: [
+      { key: 'reactivation.dormant_days', label: 'Giorni dormienza', kind: 'int', min: 30, max: 180 },
+      { key: 'reactivation.interval_days', label: 'Intervallo tentativi (giorni)', kind: 'int', min: 3, max: 30 },
+      { key: 'reactivation.max_attempts', label: 'Max tentativi', kind: 'int', min: 1, max: 5 },
+    ],
+  },
+  {
+    section: 'scoring',
+    title: 'Scoring (UC-05)',
+    description: 'Soglie per classificare hot / cold.',
+    fields: [
+      { key: 'scoring.hot_threshold', label: 'Hot threshold', kind: 'int', min: 50, max: 100 },
+      { key: 'scoring.cold_threshold', label: 'Cold threshold', kind: 'int', min: 0, max: 50 },
+    ],
+  },
+  {
+    section: 'rag',
+    title: 'RAG (UC-07)',
+    description: 'Retrieval dalla knowledge base.',
+    fields: [
+      { key: 'rag.top_k', label: 'Top K', kind: 'int', min: 3, max: 10 },
+      { key: 'rag.min_score', label: 'Soglia minima', kind: 'float', min: 0.5, max: 0.9, step: 0.05 },
+    ],
+  },
+  {
+    section: 'pipeline',
+    title: 'Pipeline (UC-04)',
+    description: 'Quando il bot promuove un lead.',
+    fields: [
+      { key: 'pipeline.advance_threshold', label: 'Soglia avanzamento', kind: 'int', min: 0, max: 100 },
+      { key: 'pipeline.qualified_stage_id', label: 'GHL qualified stage ID', kind: 'text' },
+    ],
+  },
+  {
+    section: 'booking',
+    title: 'Booking (UC-02)',
+    description: 'Default calendario e durata appuntamenti.',
+    fields: [
+      { key: 'booking.default_duration_min', label: 'Durata default (min)', kind: 'int', min: 15, max: 240 },
+      { key: 'booking.lookahead_days', label: 'Lookahead (giorni)', kind: 'int', min: 1, max: 60 },
+      { key: 'booking.default_calendar_id', label: 'Calendar ID default', kind: 'text' },
+    ],
+  },
+  {
+    section: 'schedule',
+    title: 'Orari',
+    description: 'Orari attivi, messaggio fuori orario, timezone.',
+    fields: [
+      { key: 'schedule.active_hours', label: 'Orari attivi', kind: 'text' },
+      { key: 'schedule.off_hours_message', label: 'Messaggio fuori orario', kind: 'text' },
+      { key: 'schedule.timezone', label: 'Timezone', kind: 'text' },
+    ],
+  },
+  {
+    section: 'bot',
+    title: 'Bot',
+    description: 'Lingua e tono del bot.',
+    fields: [
+      { key: 'bot.language', label: 'Lingua', kind: 'text' },
+      { key: 'bot.tone', label: 'Tono', kind: 'text' },
+    ],
+  },
+  {
+    section: 'escalation',
+    title: 'Escalation',
+    description: 'Abilita routing a gpt-5.2 per casi complessi.',
+    fields: [
+      { key: 'escalation.enabled', label: 'Abilitata', kind: 'bool' },
+    ],
+  },
+  {
+    section: 'privacy',
+    title: 'Privacy',
+    description: 'Retention dati conversazioni.',
+    fields: [
+      { key: 'privacy.retention_months', label: 'Retention (mesi)', kind: 'int', min: 6, max: 60 },
+    ],
+  },
+  {
+    section: 'ab_test',
+    title: 'A/B testing',
+    description: 'Defaults sperimentazione.',
+    fields: [
+      { key: 'ab_test.min_sample', label: 'Min sample size', kind: 'int', min: 50, max: 1000 },
+    ],
+  },
+];
 
 async function loadMerchantId(): Promise<string | null> {
   const supabase = getBrowserSupabase();
@@ -20,7 +143,6 @@ async function loadMerchantId(): Promise<string | null> {
 
 export function BotConfigPanel() {
   const queryClient = useQueryClient();
-  const [overridesJson, setOverridesJson] = useState<string>('{}');
   const [formError, setFormError] = useState<string | null>(null);
 
   const merchantQuery = useQuery({
@@ -43,27 +165,59 @@ export function BotConfigPanel() {
     },
   });
 
-  const lockedKeys = useQuery({
-    queryKey: ['bot-config', 'locked-keys'],
-    queryFn: async (): Promise<string[]> => {
+  const overridesQuery = useQuery({
+    queryKey: ['bot-config', 'overrides', merchantId],
+    enabled: !!merchantId,
+    queryFn: async (): Promise<OverridesOut> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/templates' as never, {} as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides' as never, {
+        params: { path: { merchant_id: merchantId } },
+      } as never);
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
-      const templates = data as Array<{ is_default: boolean; locked_keys: string[] }>;
-      const defaultTpl = templates.find((t) => t.is_default) ?? templates[0];
-      return defaultTpl?.locked_keys ?? [];
+      return data as OverridesOut;
     },
   });
 
+  const resolvedFlat = useMemo<FormState>(
+    () => (resolvedQuery.data ? flatten(resolvedQuery.data as Record<string, unknown>) : {}),
+    [resolvedQuery.data],
+  );
+  const overridesFlat = useMemo<FormState>(
+    () => (overridesQuery.data ? flatten(overridesQuery.data.overrides) : {}),
+    [overridesQuery.data],
+  );
+  const lockedSet = useMemo(
+    () => new Set(overridesQuery.data?.locked_keys ?? []),
+    [overridesQuery.data],
+  );
+
+  // Form state holds current input values (flat dotted keys). Starts as
+  // resolved values; user edits flow into it. Separate dirty set marks keys
+  // the user has touched, so we save only those.
+  const [form, setForm] = useState<FormState>({});
+  const [dirty, setDirty] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setForm(resolvedFlat);
+    setDirty(new Set());
+  }, [resolvedFlat]);
+
   const save = useMutation({
-    mutationFn: async (body: OverrideBag) => {
+    mutationFn: async () => {
       if (!merchantId) throw new Error('Merchant context mancante');
+      // Keep existing overrides for keys the user didn't touch, layer the
+      // dirty keys on top. Locked keys get stripped server-side.
+      const bag: FormState = { ...overridesFlat };
+      for (const key of dirty) {
+        bag[key] = form[key];
+      }
+      const nested = inflate(bag);
       const api = getApiClient();
       const { data, error } = await api.PUT(
         '/bot-config/{merchant_id}/overrides' as never,
         {
           params: { path: { merchant_id: merchantId } },
-          body: { overrides: body },
+          body: { overrides: nested },
         } as never,
       );
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
@@ -71,15 +225,28 @@ export function BotConfigPanel() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['bot-config', 'resolved', merchantId] });
-      setOverridesJson('{}');
+      void queryClient.invalidateQueries({ queryKey: ['bot-config', 'overrides', merchantId] });
+      setDirty(new Set());
       setFormError(null);
     },
     onError: (err) => setFormError(err instanceof Error ? err.message : 'Errore salvataggio'),
   });
 
-  const sections = useMemo(() => describeSections(resolvedQuery.data), [resolvedQuery.data]);
+  const resetField = (key: string) => {
+    setForm((prev) => ({ ...prev, [key]: resolvedFlat[key] }));
+    setDirty((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
 
-  if (merchantQuery.isLoading || resolvedQuery.isLoading) {
+  const resetAll = () => {
+    setForm(resolvedFlat);
+    setDirty(new Set());
+  };
+
+  if (merchantQuery.isLoading || resolvedQuery.isLoading || overridesQuery.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Caricamento configurazione…</div>;
   }
   if (!merchantId) {
@@ -102,181 +269,270 @@ export function BotConfigPanel() {
       <div className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
         <p className="font-medium">Come funziona</p>
         <p className="mt-1 text-muted-foreground">
-          I valori che vedi sono quelli <strong>risolti</strong> — cascata
-          merchant → agenzia → sistema (§9). Per sovrascrivere un valore, usa
-          l&apos;editor in fondo alla pagina: salva solo le chiavi che vuoi
-          personalizzare.
+          Ogni campo mostra il valore risolto dalla cascata merchant → agenzia → sistema
+          (§9). Modifica solo i campi che vuoi personalizzare; i campi bloccati
+          dall&apos;agenzia non sono modificabili.
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {sections.map((s) => (
-          <SectionCard
-            key={s.key}
-            section={s}
-            lockedKeys={lockedKeys.data ?? []}
-          />
-        ))}
-      </div>
+      {SECTIONS.map((s) => (
+        <SectionCard
+          key={s.section}
+          section={s}
+          form={form}
+          overridesFlat={overridesFlat}
+          resolvedFlat={resolvedFlat}
+          lockedSet={lockedSet}
+          dirty={dirty}
+          onChange={(key, value) => {
+            setForm((prev) => ({ ...prev, [key]: value }));
+            setDirty((prev) => new Set(prev).add(key));
+          }}
+          onReset={resetField}
+        />
+      ))}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Override personalizzati</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Incolla solo le sezioni da sovrascrivere (es.{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">
-              {'{"rag": {"top_k": 7}}'}
-            </code>
-            ). Le chiavi bloccate dall&apos;agenzia vengono ignorate lato backend.
-          </p>
-          <textarea
-            rows={8}
-            value={overridesJson}
-            onChange={(e) => setOverridesJson(e.target.value)}
-            className="block w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
-            placeholder='{"rag": {"top_k": 7}}'
-          />
-          {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
-          <div className="flex justify-end">
-            <Button
-              disabled={save.isPending || overridesJson.trim() === ''}
-              onClick={() => {
-                setFormError(null);
-                try {
-                  const parsed = JSON.parse(overridesJson || '{}');
-                  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-                    throw new Error('JSON deve essere un oggetto (es. {"rag": {"top_k": 7}}).');
-                  }
-                  save.mutate(parsed as OverrideBag);
-                } catch (e) {
-                  setFormError(e instanceof Error ? e.message : 'JSON non valido');
-                }
-              }}
-            >
-              {save.isPending ? 'Salvataggio…' : 'Salva override'}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {formError ? (
+        <p className="text-sm text-destructive">{formError}</p>
+      ) : null}
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={resetAll} disabled={dirty.size === 0 || save.isPending}>
+          Scarta modifiche
+        </Button>
+        <Button onClick={() => save.mutate()} disabled={dirty.size === 0 || save.isPending}>
+          {save.isPending ? 'Salvataggio…' : `Salva (${dirty.size})`}
+        </Button>
+      </div>
     </div>
   );
 }
 
-type Section = {
-  key: string;
-  title: string;
-  description: string;
-  fields: Array<{ key: string; label: string; value: unknown }>;
-};
-
-function describeSections(resolved: BotConfig | undefined): Section[] {
-  if (!resolved) return [];
-  return [
-    {
-      key: 'no_answer',
-      title: 'No answer (UC-03)',
-      description: 'Follow-up se il lead non risponde.',
-      fields: [
-        { key: 'no_answer.first_reminder_min', label: '1° reminder (min)', value: resolved.no_answer?.first_reminder_min },
-        { key: 'no_answer.second_reminder_min', label: '2° reminder (min)', value: resolved.no_answer?.second_reminder_min },
-        { key: 'no_answer.max_followups', label: 'Max follow-up', value: resolved.no_answer?.max_followups },
-      ],
-    },
-    {
-      key: 'reactivation',
-      title: 'Reactivation (UC-06)',
-      description: 'Riattivazione lead dormienti.',
-      fields: [
-        { key: 'reactivation.dormant_days', label: 'Giorni dormienza', value: resolved.reactivation?.dormant_days },
-        { key: 'reactivation.interval_days', label: 'Intervallo tentativi (giorni)', value: resolved.reactivation?.interval_days },
-        { key: 'reactivation.max_attempts', label: 'Max tentativi', value: resolved.reactivation?.max_attempts },
-      ],
-    },
-    {
-      key: 'scoring',
-      title: 'Scoring (UC-05)',
-      description: 'Soglie per classificare hot / cold.',
-      fields: [
-        { key: 'scoring.hot_threshold', label: 'Hot threshold', value: resolved.scoring?.hot_threshold },
-        { key: 'scoring.cold_threshold', label: 'Cold threshold', value: resolved.scoring?.cold_threshold },
-      ],
-    },
-    {
-      key: 'rag',
-      title: 'RAG (UC-07)',
-      description: 'Retrieval dalla knowledge base.',
-      fields: [
-        { key: 'rag.top_k', label: 'Top K', value: resolved.rag?.top_k },
-        { key: 'rag.min_score', label: 'Soglia minima', value: resolved.rag?.min_score },
-      ],
-    },
-    {
-      key: 'schedule',
-      title: 'Orari & lingua',
-      description: 'Orari attivi, messaggio fuori orario, lingua del bot.',
-      fields: [
-        { key: 'schedule.active_hours', label: 'Orari attivi', value: resolved.schedule?.active_hours },
-        { key: 'schedule.timezone', label: 'Timezone', value: resolved.schedule?.timezone },
-        { key: 'bot.language', label: 'Lingua bot', value: resolved.bot?.language },
-        { key: 'bot.tone', label: 'Tono bot', value: resolved.bot?.tone },
-      ],
-    },
-    {
-      key: 'booking',
-      title: 'Booking (UC-02)',
-      description: 'Default calendario e durata appuntamenti.',
-      fields: [
-        { key: 'booking.default_duration_min', label: 'Durata default (min)', value: resolved.booking?.default_duration_min },
-        { key: 'booking.lookahead_days', label: 'Lookahead (giorni)', value: resolved.booking?.lookahead_days },
-        { key: 'booking.default_calendar_id', label: 'Calendar ID default', value: resolved.booking?.default_calendar_id ?? '—' },
-      ],
-    },
-  ];
-}
-
-function SectionCard({ section, lockedKeys }: { section: Section; lockedKeys: string[] }) {
-  const hasLocked = section.fields.some((f) => lockedKeys.includes(f.key));
+function SectionCard({
+  section,
+  form,
+  overridesFlat,
+  resolvedFlat,
+  lockedSet,
+  dirty,
+  onChange,
+  onReset,
+}: {
+  section: SectionDef;
+  form: FormState;
+  overridesFlat: FormState;
+  resolvedFlat: FormState;
+  lockedSet: Set<string>;
+  dirty: Set<string>;
+  onChange: (key: string, value: unknown) => void;
+  onReset: (key: string) => void;
+}) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {section.title}
-          {hasLocked ? <LockedBadge /> : null}
-        </CardTitle>
+        <CardTitle>{section.title}</CardTitle>
         <p className="text-sm text-muted-foreground">{section.description}</p>
       </CardHeader>
-      <CardContent>
-        <dl className="space-y-2 text-sm">
-          {section.fields.map((f) => {
-            const locked = lockedKeys.includes(f.key);
-            return (
-              <div key={f.key} className="flex items-center justify-between gap-4">
-                <dt className="text-muted-foreground">
-                  {f.label}
-                  {locked ? <span className="ml-2 text-xs font-normal">🔒</span> : null}
-                </dt>
-                <dd className="font-mono text-xs">{formatValue(f.value)}</dd>
-              </div>
-            );
-          })}
-        </dl>
+      <CardContent className="space-y-4">
+        {section.fields.map((f) => {
+          const locked = lockedSet.has(f.key);
+          const hasOverride = Object.prototype.hasOwnProperty.call(overridesFlat, f.key);
+          const isDirty = dirty.has(f.key);
+          const badge = locked
+            ? ('locked' as const)
+            : hasOverride || isDirty
+              ? ('customized' as const)
+              : ('inherited' as const);
+          return (
+            <FieldRow
+              key={f.key}
+              field={f}
+              value={form[f.key]}
+              inheritedValue={resolvedFlat[f.key]}
+              badge={badge}
+              locked={locked}
+              isDirty={isDirty}
+              onChange={(v) => onChange(f.key, v)}
+              onReset={() => onReset(f.key)}
+            />
+          );
+        })}
       </CardContent>
     </Card>
   );
 }
 
-function LockedBadge() {
+function FieldRow({
+  field,
+  value,
+  inheritedValue,
+  badge,
+  locked,
+  isDirty,
+  onChange,
+  onReset,
+}: {
+  field: FieldDef;
+  value: unknown;
+  inheritedValue: unknown;
+  badge: 'inherited' | 'customized' | 'locked';
+  locked: boolean;
+  isDirty: boolean;
+  onChange: (v: unknown) => void;
+  onReset: () => void;
+}) {
   return (
-    <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 ring-1 ring-inset ring-amber-200">
-      Contiene chiavi bloccate
+    <div className="grid items-center gap-2 md:grid-cols-[1fr_auto] md:gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor={field.key} className="text-sm font-medium">
+          {field.label}
+        </label>
+        <Badge kind={badge} />
+        {isDirty ? (
+          <button
+            type="button"
+            className="text-xs text-muted-foreground hover:text-foreground"
+            onClick={onReset}
+          >
+            Reset
+          </button>
+        ) : null}
+      </div>
+      <FieldInput
+        field={field}
+        value={value}
+        disabled={locked}
+        onChange={onChange}
+        placeholder={
+          field.kind === 'text' && inheritedValue !== null && inheritedValue !== undefined
+            ? String(inheritedValue)
+            : undefined
+        }
+      />
+    </div>
+  );
+}
+
+function FieldInput({
+  field,
+  value,
+  disabled,
+  onChange,
+  placeholder,
+}: {
+  field: FieldDef;
+  value: unknown;
+  disabled: boolean;
+  onChange: (v: unknown) => void;
+  placeholder?: string;
+}) {
+  if (field.kind === 'bool') {
+    return (
+      <input
+        id={field.key}
+        type="checkbox"
+        disabled={disabled}
+        checked={!!value}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4"
+      />
+    );
+  }
+  if (field.kind === 'int' || field.kind === 'float') {
+    return (
+      <input
+        id={field.key}
+        type="number"
+        disabled={disabled}
+        min={field.min}
+        max={field.max}
+        step={field.step ?? (field.kind === 'int' ? 1 : 0.01)}
+        value={value === null || value === undefined ? '' : String(value)}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === '') {
+            onChange(null);
+            return;
+          }
+          const n = field.kind === 'int' ? parseInt(raw, 10) : parseFloat(raw);
+          onChange(Number.isNaN(n) ? null : n);
+        }}
+        className="h-9 w-32 rounded-md border border-input bg-background px-3 text-sm"
+      />
+    );
+  }
+  return (
+    <input
+      id={field.key}
+      type="text"
+      disabled={disabled}
+      value={value === null || value === undefined ? '' : String(value)}
+      onChange={(e) => onChange(e.target.value || null)}
+      placeholder={placeholder}
+      className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
+    />
+  );
+}
+
+function Badge({ kind }: { kind: 'inherited' | 'customized' | 'locked' }) {
+  if (kind === 'locked') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 ring-1 ring-inset ring-amber-200">
+        🔒 Locked
+      </span>
+    );
+  }
+  if (kind === 'customized') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-900 ring-1 ring-inset ring-blue-200">
+        Customized
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
+      Inherited
     </span>
   );
 }
 
-function formatValue(v: unknown): string {
-  if (v === null || v === undefined) return '—';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+// ---- helpers --------------------------------------------------------------
+
+function flatten(
+  obj: Record<string, unknown>,
+  prefix = '',
+  out: FormState = {},
+): FormState {
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      flatten(value as Record<string, unknown>, path, out);
+    } else {
+      out[path] = value;
+    }
+  }
+  return out;
+}
+
+function inflate(flat: FormState): OverrideBag {
+  const out: OverrideBag = {};
+  for (const [path, value] of Object.entries(flat)) {
+    if (value === null || value === undefined) continue;
+    const parts = path.split('.');
+    if (parts.length === 0) continue;
+    const leaf = parts[parts.length - 1] as string;
+    let node: Record<string, unknown> = out as unknown as Record<string, unknown>;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i] as string;
+      if (!Object.prototype.hasOwnProperty.call(node, seg) || typeof node[seg] !== 'object') {
+        node[seg] = {};
+      }
+      node = node[seg] as Record<string, unknown>;
+    }
+    node[leaf] = value;
+  }
+  return out;
 }

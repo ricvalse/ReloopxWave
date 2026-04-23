@@ -46,19 +46,17 @@ def init_sentry(settings: Settings, *, component: str) -> bool:
 def init_posthog(settings: Settings) -> object | None:
     """Initialise a PostHog client for server-side event emission.
 
-    Returns the client (callers store it on app/ctx) or None when disabled.
-    Callers should emit with `posthog.capture(distinct_id, event, properties)`;
-    never pass PII as the distinct_id.
+    Returns the client (callers store it on app/ctx) or None when the key is
+    absent. Emit with `posthog.capture(distinct_id, event, properties)`;
+    never pass PII as the distinct_id — prefer the Supabase user id.
     """
     if not settings.posthog_key:
         return None
-    try:
-        from posthog import Posthog  # type: ignore[import-not-found]
-    except ImportError:
-        return None
+    from posthog import Posthog
+
     client: object = Posthog(
         project_api_key=settings.posthog_key,
-        host="https://eu.posthog.com",
+        host=settings.posthog_host,
         # Flush quickly so short-lived request handlers don't drop events.
         flush_at=10,
         flush_interval=2.0,

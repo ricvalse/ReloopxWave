@@ -1,14 +1,16 @@
 """Tenant CRUD endpoints.
 
-V1 scope notes:
-- Tenant *creation* (POST /tenants/) is deliberately out of scope here: new
-  tenants are provisioned out-of-band (migration seed or Supabase SQL) and the
-  first login is bootstrapped by attaching the caller to the seeded tenant via
-  `users.tenant_id` + the Supabase Auth JWT hook. A dedicated bootstrap route
-  tracked in Phase 1.2 of the implementation plan.
-- Under RLS the `tenants` table only exposes the caller's own row, so
-  "list" returns a single-element list. The endpoint remains plural for API
-  uniformity and future super-admin use.
+Access split:
+
+- Read/patch: `agency_admin` / `agency_user` see and edit their own tenant
+  (RLS handles the filtering — migration 0004 wraps the JWT claim in an
+  init-plan so these queries stay fast).
+- `POST /` + cross-tenant patch: `super_admin` only. The super_admin policy
+  added in migration 0005 is what lets the INSERT WITH CHECK pass; regular
+  callers trip the tenant_isolation policy and fail.
+
+Super_admin bootstrap (the chicken/egg of creating the first super_admin)
+is handled by `scripts/bootstrap_super_admin.py` — not by this router.
 """
 
 from __future__ import annotations
@@ -18,13 +20,23 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from db import TenantRepository
-from shared import DomainError, NotFoundError, PermissionDeniedError
+from shared import (
+    SUPER_ADMIN_ROLE,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    get_logger,
+)
 
-router = APIRouter(dependencies=[Depends(require_role("agency_admin", "agency_user"))])
+router = APIRouter(
+    dependencies=[Depends(require_role("super_admin", "agency_admin", "agency_user"))]
+)
+logger = get_logger(__name__)
 
 
 class TenantOut(BaseModel):
@@ -33,6 +45,12 @@ class TenantOut(BaseModel):
     name: str
     status: str
     settings: dict[str, Any]
+
+
+class TenantCreate(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    name: str = Field(min_length=1, max_length=200)
+    settings: dict[str, Any] | None = None
 
 
 class TenantUpdate(BaseModel):
@@ -54,10 +72,47 @@ async def get_my_tenant(ctx: CurrentContext, session: DBSession) -> TenantOut:
     return _to_out(tenant)
 
 
+@router.post(
+    "/",
+    response_model=TenantOut,
+    status_code=201,
+    dependencies=[Depends(require_role("super_admin"))],
+)
+async def create_tenant(
+    payload: TenantCreate, ctx: CurrentContext, session: DBSession
+) -> TenantOut:
+    repo = TenantRepository(session)
+    existing = await repo.get_by_slug(payload.slug)
+    if existing is not None:
+        raise ConflictError(
+            f"Tenant slug '{payload.slug}' already exists",
+            error_code="tenant_slug_exists",
+        )
+    try:
+        tenant = await repo.create(
+            slug=payload.slug,
+            name=payload.name,
+            settings=payload.settings or {},
+        )
+    except IntegrityError as e:
+        raise ConflictError(
+            f"Tenant slug '{payload.slug}' already exists",
+            error_code="tenant_slug_exists",
+        ) from e
+
+    logger.info(
+        "tenants.created",
+        actor_id=str(ctx.actor_id),
+        tenant_id=str(tenant.id),
+        slug=tenant.slug,
+    )
+    return _to_out(tenant)
+
+
 @router.patch(
     "/{tenant_id}",
     response_model=TenantOut,
-    dependencies=[Depends(require_role("agency_admin"))],
+    dependencies=[Depends(require_role("super_admin", "agency_admin"))],
 )
 async def update_tenant(
     tenant_id: UUID,
@@ -65,7 +120,7 @@ async def update_tenant(
     ctx: CurrentContext,
     session: DBSession,
 ) -> TenantOut:
-    if tenant_id != ctx.tenant_id:
+    if ctx.role != SUPER_ADMIN_ROLE and tenant_id != ctx.tenant_id:
         raise PermissionDeniedError(
             "Cannot update another tenant",
             error_code="cross_tenant_update",
@@ -78,16 +133,13 @@ async def update_tenant(
     )
     if updated is None:
         raise NotFoundError("Tenant not found", tenant_id=str(tenant_id))
-    return _to_out(updated)
-
-
-@router.post("/", dependencies=[Depends(require_role("agency_admin"))])
-async def create_tenant() -> dict[str, Any]:
-    raise _NotImplementedError(
-        "Tenant creation via API is disabled in V1 — provision tenants via "
-        "SQL seed or Supabase admin. Tracked as the bootstrap route in Phase 1.2.",
-        error_code="tenant_creation_disabled",
+    logger.info(
+        "tenants.updated",
+        actor_id=str(ctx.actor_id),
+        tenant_id=str(tenant_id),
+        super_admin=ctx.role == SUPER_ADMIN_ROLE,
     )
+    return _to_out(updated)
 
 
 def _to_out(t: Any) -> TenantOut:
@@ -98,10 +150,3 @@ def _to_out(t: Any) -> TenantOut:
         status=t.status,
         settings=t.settings or {},
     )
-
-
-class _NotImplementedError(DomainError):
-    """501 so callers can distinguish 'not allowed' from 'not built yet'."""
-
-    status_code = 501
-    error_code = "not_implemented"
