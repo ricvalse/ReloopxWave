@@ -8,8 +8,8 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from db.models import Base  # noqa: F401
-from db import models as _models  # noqa: F401  (register all model modules)
+from db import models as _models
+from db.models import Base
 from shared import get_settings
 
 config = context.config

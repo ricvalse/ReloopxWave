@@ -66,7 +66,7 @@ def upgrade() -> None:
             '{{"is_platform": true}}'::jsonb
         )
         ON CONFLICT (id) DO NOTHING
-        """  # noqa: S608
+        """
     )
 
     for table in RLS_TABLES:
@@ -83,4 +83,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table in RLS_TABLES:
         op.execute(f"DROP POLICY IF EXISTS super_admin_bypass_{table} ON {table}")
-    op.execute(f"DELETE FROM tenants WHERE id = '{PLATFORM_TENANT_ID}'")  # noqa: S608
+    op.execute(f"DELETE FROM tenants WHERE id = '{PLATFORM_TENANT_ID}'")

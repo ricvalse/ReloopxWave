@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Integer, and_, cast, func, or_, select, text, update
+from sqlalchemy import Integer, cast, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, Merchant
@@ -67,7 +66,7 @@ class ConversationRepository:
         return conv
 
     async def touch_last_message(self, conversation_id: UUID) -> None:
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         await self._session.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)
@@ -83,7 +82,7 @@ class ConversationRepository:
         conversation on every tick. The per-merchant reminder threshold is
         applied later, after the config cascade is resolved.
         """
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         idle_cutoff = now - timedelta(minutes=min_idle_minutes)
 
         reminders_sent_expr = cast(

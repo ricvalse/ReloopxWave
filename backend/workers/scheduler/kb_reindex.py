@@ -27,9 +27,9 @@ async def reindex_doc(ctx: dict, *, doc_id: str) -> dict:
         raise DomainError("no openai key configured — indexing unavailable", error_code="no_embedder")
 
     # First resolve tenant/merchant for the doc (admin session — we don't know the scope yet).
-    from db.models import KnowledgeBaseDoc, Merchant
-
     from sqlalchemy import select
+
+    from db.models import KnowledgeBaseDoc, Merchant
 
     async with session_scope() as session:
         stmt = (
@@ -45,7 +45,6 @@ async def reindex_doc(ctx: dict, *, doc_id: str) -> dict:
         doc_merchant_id = doc.merchant_id
         source = doc.source
         storage_path = doc.storage_path
-        url = doc.url
 
     # Fetch bytes from Supabase Storage if needed.
     raw_bytes: bytes | None = None

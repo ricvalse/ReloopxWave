@@ -45,7 +45,7 @@ logger = get_logger(__name__)
 # ---- Action dispatcher ----------------------------------------------------
 
 class ActionHandler(Protocol):
-    async def __call__(self, action: OrchestratorAction, ctx: "TurnContext") -> None: ...
+    async def __call__(self, action: OrchestratorAction, ctx: TurnContext) -> None: ...
 
 
 class ActionDispatcher:
@@ -55,7 +55,7 @@ class ActionDispatcher:
     def register(self, kind: str, handler: ActionHandler) -> None:
         self._handlers[kind] = handler
 
-    async def dispatch(self, actions: list[OrchestratorAction], ctx: "TurnContext") -> None:
+    async def dispatch(self, actions: list[OrchestratorAction], ctx: TurnContext) -> None:
         for action in actions:
             handler = self._handlers.get(action.kind)
             if handler is None:
@@ -80,12 +80,21 @@ class TurnContext:
     lead_phone: str
     whatsapp_access_token: str
     phone_number_id: str
+    whatsapp_provider: str = "meta"  # "meta" or "d360"
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
 
 class ReplySender(Protocol):
-    async def send(self, *, access_token: str, phone_number_id: str, to_phone: str, text: str) -> str: ...
+    async def send(
+        self,
+        *,
+        access_token: str,
+        phone_number_id: str,
+        to_phone: str,
+        text: str,
+        provider: str = "meta",
+    ) -> str: ...
 
 
 # ---- The entry point workers call ----------------------------------------
@@ -268,6 +277,7 @@ class ConversationService:
             lead_phone=from_phone,
             whatsapp_access_token=resolved.access_token,
             phone_number_id=phone_number_id,
+            whatsapp_provider=resolved.provider,
         )
 
         await self._sender.send(
@@ -275,6 +285,7 @@ class ConversationService:
             phone_number_id=phone_number_id,
             to_phone=from_phone,
             text=response.reply_text,
+            provider=resolved.provider,
         )
 
         # Action handlers run after the turn is durable and the reply is out.
@@ -300,8 +311,80 @@ class ConversationService:
             return await repo.resolve_whatsapp(phone_number_id)
 
     async def _resolve_system_prompt(self, *, session: Any, merchant_id: UUID) -> str:
-        # Placeholder for UC-09 — real prompt template lookup goes here.
-        return DEFAULT_SYSTEM_PROMPT
+        """Build the per-merchant system prompt from the config cascade.
+
+        Falls back to `DEFAULT_SYSTEM_PROMPT` when nothing is configured — so
+        a brand-new merchant still gets a working bot, it just sounds generic.
+        """
+        resolver = ConfigResolver(session)
+
+        async def _str(key: ConfigKey) -> str | None:
+            try:
+                value = await resolver.resolve(key, merchant_id=merchant_id)
+            except Exception:
+                return None
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            return None
+
+        business_name = await _str(ConfigKey.BUSINESS_NAME)
+        industry = await _str(ConfigKey.BUSINESS_INDUSTRY)
+        description = await _str(ConfigKey.BUSINESS_DESCRIPTION)
+        offer = await _str(ConfigKey.BUSINESS_OFFER)
+        hours = await _str(ConfigKey.BUSINESS_HOURS)
+        location = await _str(ConfigKey.BUSINESS_LOCATION)
+        pricing_notes = await _str(ConfigKey.BUSINESS_PRICING_NOTES)
+        website = await _str(ConfigKey.BUSINESS_WEBSITE)
+        tone = await _str(ConfigKey.BOT_TONE) or "professionale-amichevole"
+        language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
+        extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
+
+        has_profile = any(
+            [business_name, industry, description, offer, hours, location, pricing_notes, website, extras]
+        )
+        if not has_profile:
+            return DEFAULT_SYSTEM_PROMPT
+
+        lines: list[str] = []
+        if business_name and industry:
+            lines.append(
+                f"Sei un assistente conversazionale che rappresenta {business_name}, "
+                f"un'attività del settore {industry}."
+            )
+        elif business_name:
+            lines.append(f"Sei un assistente conversazionale che rappresenta {business_name}.")
+        elif industry:
+            lines.append(
+                f"Sei un assistente conversazionale per un'attività del settore {industry}."
+            )
+        else:
+            lines.append("Sei un assistente conversazionale per l'azienda.")
+
+        if description:
+            lines.append(f"L'attività si descrive così: {description}")
+        if offer:
+            lines.append(f"Offerta principale: {offer}")
+        if pricing_notes:
+            lines.append(f"Note sui prezzi: {pricing_notes}")
+        if hours:
+            lines.append(f"Orari: {hours}")
+        if location:
+            lines.append(f"Sede / area di copertura: {location}")
+        if website:
+            lines.append(f"Sito web: {website}")
+
+        lines.append(
+            f"Rispondi sempre in lingua {language} e mantieni un tono {tone}. Sii breve, "
+            "cortese e concreto. Se mancano informazioni critiche (nome, email, esigenza), "
+            "chiedile una alla volta. Non inventare fatti sull'attività: se non sai "
+            "qualcosa, dillo e offri di far contattare una persona."
+        )
+
+        if extras:
+            lines.append("Istruzioni aggiuntive dal merchant:")
+            lines.append(extras)
+
+        return "\n\n".join(lines)
 
     async def _resolve_int(
         self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: int

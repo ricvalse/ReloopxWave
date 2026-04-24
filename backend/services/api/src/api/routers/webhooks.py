@@ -76,6 +76,62 @@ async def whatsapp_inbound(
     return {"accepted": len(events), "enqueued": enqueued}
 
 
+@router.post("/whatsapp-d360/{phone_number_id}")
+async def whatsapp_d360_inbound(
+    phone_number_id: str,
+    request: Request,
+    x_hub_signature_256: str = Header(default=""),
+) -> dict[str, Any]:
+    """360dialog inbound webhook.
+
+    360dialog forwards the Meta WABA payload unchanged, so the parser and the
+    downstream ARQ job are identical. Signature verification uses the secret
+    configured in the 360dialog portal (same HMAC-SHA256 scheme as Meta).
+    If no secret is configured, the endpoint trusts the path — acceptable for
+    a sandbox but NOT for production.
+    """
+    settings = get_settings()
+    body = await request.body()
+
+    if settings.whatsapp_d360_webhook_secret:
+        if not verify_whatsapp_signature(
+            app_secret=settings.whatsapp_d360_webhook_secret,
+            payload=body,
+            signature_header=x_hub_signature_256,
+        ):
+            raise HTTPException(status_code=401, detail="invalid signature")
+    else:
+        logger.warning(
+            "webhook.d360.unsigned_accepted",
+            phone_number_id=phone_number_id,
+            bytes=len(body),
+        )
+
+    payload = await request.json()
+    events = parse_inbound_payload(payload)
+    logger.info(
+        "webhook.d360.inbound",
+        phone_number_id=phone_number_id,
+        events=len(events),
+    )
+
+    arq = request.app.state.arq
+    enqueued = 0
+    for ev in events:
+        if ev.text is None:
+            continue
+        await arq.enqueue_job(
+            "handle_inbound_message",
+            phone_number_id,
+            ev.from_phone,
+            ev.text,
+            ev.message_id,
+            _job_id=f"wa:msg:{ev.message_id}",
+        )
+        enqueued += 1
+    return {"accepted": len(events), "enqueued": enqueued}
+
+
 @router.post("/ghl/{merchant_id}")
 async def ghl_inbound(
     merchant_id: UUID,

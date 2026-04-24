@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Annotated
 
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession

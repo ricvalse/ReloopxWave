@@ -1,8 +1,8 @@
 """UC-09 — A/B experiment CRUD + metrics."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -76,7 +76,7 @@ async def start_experiment(
     if exp is None or exp.merchant_id != ctx.merchant_id:
         raise NotFoundError("Experiment not found")
     await repo.set_status(
-        experiment_id, status="running", started_at=datetime.now(tz=timezone.utc)
+        experiment_id, status="running", started_at=datetime.now(tz=UTC)
     )
     exp = await repo.get(experiment_id)
     assert exp is not None

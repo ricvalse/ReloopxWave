@@ -4,7 +4,8 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base, TimestampMixin, uuid_pk
@@ -26,8 +27,8 @@ class Tenant(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    merchants: Mapped[list["Merchant"]] = relationship(back_populates="tenant")
-    templates: Mapped[list["BotTemplate"]] = relationship(back_populates="tenant")
+    merchants: Mapped[list[Merchant]] = relationship(back_populates="tenant")
+    templates: Mapped[list[BotTemplate]] = relationship(back_populates="tenant")
 
 
 class Merchant(Base, TimestampMixin):
@@ -49,10 +50,10 @@ class Merchant(Base, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Europe/Rome")
     locale: Mapped[str] = mapped_column(String(8), nullable=False, default="it")
 
-    tenant: Mapped["Tenant"] = relationship(back_populates="merchants")
-    bot_config: Mapped["BotConfig | None"] = relationship(back_populates="merchant", uselist=False)
-    conversations: Mapped[list["Conversation"]] = relationship(back_populates="merchant")
-    leads: Mapped[list["Lead"]] = relationship(back_populates="merchant")
+    tenant: Mapped[Tenant] = relationship(back_populates="merchants")
+    bot_config: Mapped[BotConfig | None] = relationship(back_populates="merchant", uselist=False)
+    conversations: Mapped[list[Conversation]] = relationship(back_populates="merchant")
+    leads: Mapped[list[Lead]] = relationship(back_populates="merchant")
 
 
 class User(Base, TimestampMixin):

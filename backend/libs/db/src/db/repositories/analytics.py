@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -68,7 +68,7 @@ class AnalyticsRepository:
         hot_threshold: int = 80,
         since_days: int = 30,
     ) -> MerchantKpis:
-        since = datetime.now(tz=timezone.utc) - timedelta(days=since_days)
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
 
         leads_row = (
             await self._session.execute(
@@ -129,7 +129,7 @@ class AnalyticsRepository:
     async def tenant_totals(
         self, *, tenant_id: UUID, since_days: int = 30
     ) -> dict[str, int]:
-        since = datetime.now(tz=timezone.utc) - timedelta(days=since_days)
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
         counts = dict(
             (
                 await self._session.execute(
@@ -172,7 +172,7 @@ class AnalyticsRepository:
     async def merchants_ranking(
         self, *, tenant_id: UUID, since_days: int = 30
     ) -> list[MerchantRanking]:
-        since = datetime.now(tz=timezone.utc) - timedelta(days=since_days)
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
 
         totals_stmt = (
             select(

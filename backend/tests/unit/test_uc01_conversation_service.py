@@ -22,7 +22,6 @@ from ai_core.conversation_service import (
 from ai_core.orchestrator import OrchestratorAction, OrchestratorResponse
 from db import ResolvedWhatsAppIntegration
 
-
 # ---- Fake collaborators ---------------------------------------------------
 
 @dataclass
@@ -47,7 +46,15 @@ class FakeSender(ReplySender):
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def send(self, *, access_token: str, phone_number_id: str, to_phone: str, text: str) -> str:
+    async def send(
+        self,
+        *,
+        access_token: str,
+        phone_number_id: str,
+        to_phone: str,
+        text: str,
+        provider: str = "meta",
+    ) -> str:
         self.calls.append(
             {"access_token": access_token, "phone_number_id": phone_number_id, "to": to_phone, "text": text}
         )
@@ -63,6 +70,7 @@ def resolved_integration() -> ResolvedWhatsAppIntegration:
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
         access_token="fake-meta-token",
+        provider="meta",
         meta={"phone_number_id": "PNID-1"},
     )
 
@@ -169,7 +177,7 @@ def service(
 async def test_handle_inbound_sends_reply_and_returns_conversation(
     service,
 ) -> None:
-    svc, sender, dispatcher, conv, lead = service
+    svc, sender, _dispatcher, conv, _lead = service
 
     result = await svc.handle_inbound(
         phone_number_id="PNID-1",
@@ -217,7 +225,7 @@ async def test_handle_inbound_skips_when_integration_missing(
 async def test_action_dispatcher_calls_registered_handler(
     service,
 ) -> None:
-    svc, sender, dispatcher, conv, lead = service
+    svc, _sender, dispatcher, _conv, _lead = service
     seen: list[OrchestratorAction] = []
 
     async def handler(action: OrchestratorAction, ctx):

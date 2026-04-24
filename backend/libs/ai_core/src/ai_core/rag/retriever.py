@@ -26,7 +26,7 @@ class RAGEngine:
     def __init__(
         self,
         session: AsyncSession,
-        embedder: "Embedder",
+        embedder: Embedder,
     ) -> None:
         self._session = session
         self._embedder = embedder

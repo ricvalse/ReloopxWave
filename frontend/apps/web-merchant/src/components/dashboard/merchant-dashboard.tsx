@@ -6,6 +6,7 @@ import { KPICard, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { useMerchantId } from '@/hooks/use-merchant-id';
+import { SetupChecklist } from '@/components/dashboard/setup-checklist';
 
 type Kpis = {
   leads_total: number;
@@ -64,6 +65,7 @@ export function MerchantDashboard() {
 
   return (
     <div className="space-y-4 p-6">
+      <SetupChecklist />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <KPICard label="Lead totali" value={k ? k.leads_total : '—'} />
         <KPICard label="Lead hot" value={k ? k.leads_hot : '—'} />

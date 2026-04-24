@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = ""
     whatsapp_graph_base_url: str = "https://graph.facebook.com/v21.0"
 
+    # 360dialog BSP alternative to Meta Cloud API. Optional. The secret is the
+    # HMAC signing key configured in the 360dialog portal; when empty, the
+    # webhook endpoint trusts the path-level phone_number_id (dev only).
+    whatsapp_d360_webhook_secret: str = ""
+
     public_api_base_url: str = ""
     public_web_admin_url: str = ""
     public_web_merchant_url: str = ""

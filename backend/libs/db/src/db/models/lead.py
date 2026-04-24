@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base, TimestampMixin, uuid_pk
@@ -35,7 +36,7 @@ class Lead(Base, TimestampMixin):
     pipeline_stage_id: Mapped[str | None] = mapped_column(String(120))
     meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    merchant: Mapped["Merchant"] = relationship(back_populates="leads")  # type: ignore[name-defined]  # noqa: F821
+    merchant: Mapped[Merchant] = relationship(back_populates="leads")  # type: ignore[name-defined]  # noqa: F821
 
 
 class Objection(Base, TimestampMixin):

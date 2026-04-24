@@ -67,7 +67,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "N802"]
-"**/migrations/**" = ["E", "F", "N"]
+# Alembic migrations build DDL with f-strings (S608) by design — the table
+# names are hardcoded constants in the migration file, not user input.
+"**/migrations/**" = ["E", "F", "N", "S608"]
 
 [tool.mypy]
 python_version = "3.12"

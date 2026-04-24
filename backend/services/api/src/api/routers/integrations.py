@@ -57,8 +57,16 @@ class OAuthStartResponse(BaseModel):
 
 class WhatsAppVerifyIn(BaseModel):
     phone_number_id: str = Field(min_length=1, max_length=64)
-    access_token: str = Field(min_length=10)
+    access_token: str = Field(
+        min_length=10,
+        description="Meta permanent access token OR 360dialog D360-API-KEY depending on provider.",
+    )
     display_phone: str | None = Field(default=None, max_length=32)
+    provider: str = Field(
+        default="meta",
+        pattern="^(meta|d360)$",
+        description="WhatsApp provider: 'meta' (Cloud API direct) or 'd360' (360dialog BSP).",
+    )
 
 
 class ConnectionOut(BaseModel):
@@ -153,24 +161,43 @@ async def whatsapp_verify(
 ) -> ConnectionOut:
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
+    provider = payload.provider.lower()
 
-    # Ping Meta /me to prove the token + phone_number_id pair is real before
-    # we persist anything. Any 4xx here means the pair is invalid — drop it.
+    display_phone = payload.display_phone
+    meta_out: dict[str, Any] = {}
+
     async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.get(
-            f"{settings.whatsapp_graph_base_url}/{payload.phone_number_id}",
-            headers={"Authorization": f"Bearer {payload.access_token}"},
-            params={"fields": "display_phone_number,verified_name"},
-        )
-    if resp.status_code >= 400:
-        raise IntegrationError(
-            "WhatsApp rejected credentials",
-            error_code="whatsapp_verify_failed",
-            status_code=resp.status_code,
-            body=resp.text[:300],
-        )
-    meta = resp.json()
-    display_phone = payload.display_phone or meta.get("display_phone_number") or None
+        if provider == "d360":
+            # 360dialog scopes the API key to a channel. Ping their /channels
+            # endpoint; if the key is valid it returns the channel metadata.
+            resp = await http.get(
+                "https://waba-v2.360dialog.io/v1/configs/webhook",
+                headers={"D360-API-KEY": payload.access_token},
+            )
+            if resp.status_code >= 400:
+                raise IntegrationError(
+                    "360dialog rejected API key",
+                    error_code="d360_verify_failed",
+                    status_code=resp.status_code,
+                    body=resp.text[:300],
+                )
+        else:
+            # Ping Meta Graph /{phone_number_id} to prove the token + id pair
+            # is real before we persist anything.
+            resp = await http.get(
+                f"{settings.whatsapp_graph_base_url}/{payload.phone_number_id}",
+                headers={"Authorization": f"Bearer {payload.access_token}"},
+                params={"fields": "display_phone_number,verified_name"},
+            )
+            if resp.status_code >= 400:
+                raise IntegrationError(
+                    "WhatsApp rejected credentials",
+                    error_code="whatsapp_verify_failed",
+                    status_code=resp.status_code,
+                    body=resp.text[:300],
+                )
+            body = resp.json()
+            display_phone = display_phone or body.get("display_phone_number") or None
 
     repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
     await repo.upsert_whatsapp(
@@ -178,6 +205,7 @@ async def whatsapp_verify(
         phone_number_id=payload.phone_number_id,
         access_token=payload.access_token,
         display_phone=display_phone,
+        provider=provider,
     )
 
     logger.info(
@@ -185,14 +213,18 @@ async def whatsapp_verify(
         actor_id=str(ctx.actor_id),
         merchant_id=str(merchant_id),
         phone_number_id=payload.phone_number_id,
+        provider=provider,
     )
+    if display_phone:
+        meta_out["display_phone"] = display_phone
+    meta_out["provider"] = provider
     return ConnectionOut(
         provider="whatsapp",
         connected=True,
         status="active",
         external_account_id=payload.phone_number_id,
         expires_at=None,
-        meta={"display_phone": display_phone} if display_phone else {},
+        meta=meta_out,
     )
 
 

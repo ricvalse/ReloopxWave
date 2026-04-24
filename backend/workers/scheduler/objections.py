@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
+
 from ai_core import ChatMessage, ObjectionClassifierInput, classify_objections
 from ai_core.llm import OpenAIClient
 from db import (
@@ -17,9 +19,6 @@ from db import (
     tenant_session,
 )
 from db.models import Conversation, Merchant
-
-from sqlalchemy import select
-
 from shared import DomainError, get_logger
 
 logger = get_logger(__name__)

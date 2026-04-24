@@ -24,7 +24,8 @@ class ResolvedWhatsAppIntegration:
     merchant_id: UUID
     tenant_id: UUID
     phone_number_id: str
-    access_token: str  # decrypted
+    access_token: str  # decrypted — Meta bearer OR 360dialog D360-API-KEY
+    provider: str  # "meta" or "d360"
     meta: dict[str, Any]
 
 
@@ -66,12 +67,16 @@ class IntegrationRepository:
         if row is None:
             return None
         integration, tenant_id = row
+        meta = dict(integration.meta or {})
+        provider_value = meta.get("provider")
+        provider = str(provider_value).lower() if isinstance(provider_value, str) else "meta"
         return ResolvedWhatsAppIntegration(
             merchant_id=integration.merchant_id,
             tenant_id=tenant_id,
             phone_number_id=phone_number_id,
             access_token=self._decrypt(integration),
-            meta=dict(integration.meta or {}),
+            provider=provider if provider in ("meta", "d360") else "meta",
+            meta=meta,
         )
 
     async def resolve_ghl(self, merchant_id: UUID) -> ResolvedGHLIntegration | None:
@@ -175,14 +180,19 @@ class IntegrationRepository:
         phone_number_id: str,
         access_token: str,
         display_phone: str | None = None,
+        provider: str = "meta",
     ) -> Integration:
         aad = f"wa:{merchant_id}".encode()
         secret = encrypt_secret(access_token, kek_base64=self._kek, aad=aad)
 
         integration = await self._get("whatsapp", merchant_id)
+        resolved_provider = provider.lower() if provider else "meta"
+        if resolved_provider not in ("meta", "d360"):
+            resolved_provider = "meta"
         meta: dict[str, Any] = {
             **(integration.meta if integration else {}),
             "phone_number_id": phone_number_id,
+            "provider": resolved_provider,
         }
         if display_phone:
             meta["display_phone"] = display_phone

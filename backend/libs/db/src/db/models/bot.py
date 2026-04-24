@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base, TimestampMixin, uuid_pk
@@ -28,7 +29,7 @@ class BotTemplate(Base, TimestampMixin):
     locked_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    tenant: Mapped["Tenant"] = relationship(back_populates="templates")  # type: ignore[name-defined]  # noqa: F821
+    tenant: Mapped[Tenant] = relationship(back_populates="templates")  # type: ignore[name-defined]  # noqa: F821
 
 
 class BotConfig(Base, TimestampMixin):
@@ -51,7 +52,7 @@ class BotConfig(Base, TimestampMixin):
     )
     overrides: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    merchant: Mapped["Merchant"] = relationship(back_populates="bot_config")  # type: ignore[name-defined]  # noqa: F821
+    merchant: Mapped[Merchant] = relationship(back_populates="bot_config")  # type: ignore[name-defined]  # noqa: F821
 
 
 class PromptTemplate(Base, TimestampMixin):

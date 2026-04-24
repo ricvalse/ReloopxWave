@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from arq.connections import RedisSettings
+from arq.cron import cron
 
 from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
@@ -66,5 +67,24 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
-    # Cron jobs configured via Railway Cron, not in-process, so this stays empty.
-    cron_jobs: ClassVar[list[Any]] = []
+
+    # In-process ARQ schedules. Times are UTC — Europe/Rome is UTC+1 / UTC+2 (DST),
+    # so 09:00 UTC roughly maps to 10:00 CET / 11:00 CEST local.
+    cron_jobs: ClassVar[list[Any]] = [
+        # UC-03: sweep idle conversations every 15 minutes. Per-merchant thresholds
+        # still gate whether a reminder is due, so the tick rate can stay tight.
+        cron(followup_no_answer, minute={0, 15, 30, 45}, timeout=300, max_tries=1),
+        # UC-06: daily sweep for dormant leads. Send during local business hours.
+        cron(reactivate_dormant_leads, hour=9, minute=0, timeout=600, max_tries=1),
+        # Daily KPI rollup for yesterday — runs just after UTC midnight.
+        cron(daily_kpi_rollup, hour=0, minute=15, timeout=600, max_tries=1),
+        # Integration liveness probe every 4 hours — surfaces expired tokens before
+        # a real conversation hits them.
+        cron(
+            integration_health_check,
+            hour={0, 4, 8, 12, 16, 20},
+            minute=5,
+            timeout=300,
+            max_tries=1,
+        ),
+    ]

@@ -15,7 +15,7 @@ import httpx
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_core.rag.chunker import Chunk, chunk_text
+from ai_core.rag.chunker import chunk_text
 from ai_core.rag.retriever import Embedder
 from db.models import KBChunk, KnowledgeBaseDoc
 from shared import DomainError, get_logger

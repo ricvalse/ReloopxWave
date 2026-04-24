@@ -13,7 +13,7 @@ type OverridesOut = components['schemas']['OverridesOut'];
 type OverrideBag = Record<string, Record<string, unknown>>;
 type FormState = Record<string, unknown>; // flat, dotted keys
 
-type FieldKind = 'int' | 'float' | 'text' | 'bool';
+type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea';
 
 type FieldDef = {
   key: string; // dotted path, e.g. "no_answer.first_reminder_min"
@@ -22,6 +22,9 @@ type FieldDef = {
   min?: number;
   max?: number;
   step?: number;
+  placeholder?: string;
+  help?: string;
+  rows?: number;
 };
 
 type SectionDef = {
@@ -32,6 +35,40 @@ type SectionDef = {
 };
 
 const SECTIONS: SectionDef[] = [
+  {
+    section: 'business',
+    title: 'Profilo attività',
+    description:
+      'Il bot risponde a nome dell’attività. Più sono completi questi campi, più pertinenti saranno le risposte.',
+    fields: [
+      { key: 'business.name', label: 'Nome attività', kind: 'text', placeholder: 'es. Studio Dentistico Rossi' },
+      { key: 'business.industry', label: 'Settore', kind: 'text', placeholder: 'es. dentistico, consulenza, e-commerce' },
+      {
+        key: 'business.description',
+        label: 'Descrizione breve',
+        kind: 'textarea',
+        rows: 3,
+        placeholder: 'Chi siete, cosa offrite, cosa vi distingue.',
+      },
+      {
+        key: 'business.offer',
+        label: 'Offerta principale',
+        kind: 'textarea',
+        rows: 3,
+        placeholder: 'Prodotti / servizi principali che il bot deve proporre.',
+      },
+      { key: 'business.hours', label: 'Orari', kind: 'text', placeholder: 'Lun-Ven 9:00-19:00' },
+      { key: 'business.location', label: 'Sede / copertura', kind: 'text', placeholder: 'es. Milano, online in tutta Italia' },
+      {
+        key: 'business.pricing_notes',
+        label: 'Note sui prezzi',
+        kind: 'textarea',
+        rows: 2,
+        placeholder: 'Come parlare di prezzi; es. “a partire da 50€, preventivo su misura”.',
+      },
+      { key: 'business.website', label: 'Sito web', kind: 'text', placeholder: 'https://…' },
+    ],
+  },
   {
     section: 'no_answer',
     title: 'No answer (UC-03)',
@@ -102,10 +139,25 @@ const SECTIONS: SectionDef[] = [
   {
     section: 'bot',
     title: 'Bot',
-    description: 'Lingua e tono del bot.',
+    description: 'Voce, tono e istruzioni extra per il prompt di sistema.',
     fields: [
-      { key: 'bot.language', label: 'Lingua', kind: 'text' },
-      { key: 'bot.tone', label: 'Tono', kind: 'text' },
+      { key: 'bot.language', label: 'Lingua', kind: 'text', placeholder: 'it' },
+      { key: 'bot.tone', label: 'Tono', kind: 'text', placeholder: 'professionale-amichevole' },
+      {
+        key: 'bot.system_prompt_additions',
+        label: 'Istruzioni aggiuntive',
+        kind: 'textarea',
+        rows: 4,
+        placeholder:
+          'Regole aggiuntive che vuoi dare al bot (stile, argomenti da evitare, script particolari).',
+      },
+      {
+        key: 'bot.first_message',
+        label: 'Messaggio di benvenuto',
+        kind: 'textarea',
+        rows: 2,
+        placeholder: 'Primo messaggio quando scriviamo a un nuovo lead.',
+      },
     ],
   },
   {
@@ -460,6 +512,19 @@ function FieldInput({
       />
     );
   }
+  if (field.kind === 'textarea') {
+    return (
+      <textarea
+        id={field.key}
+        disabled={disabled}
+        value={value === null || value === undefined ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value || null)}
+        placeholder={placeholder ?? field.placeholder}
+        rows={field.rows ?? 3}
+        className="w-full min-w-[18rem] max-w-xl rounded-md border border-input bg-background px-3 py-2 text-sm md:w-[32rem]"
+      />
+    );
+  }
   return (
     <input
       id={field.key}
@@ -467,7 +532,7 @@ function FieldInput({
       disabled={disabled}
       value={value === null || value === undefined ? '' : String(value)}
       onChange={(e) => onChange(e.target.value || null)}
-      placeholder={placeholder}
+      placeholder={placeholder ?? field.placeholder}
       className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
     />
   );

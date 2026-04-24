@@ -13,7 +13,7 @@ the same reminder twice even if the job overlaps with itself.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 
@@ -27,7 +27,7 @@ from db import (
     session_scope,
     tenant_session,
 )
-from integrations.whatsapp.client import WhatsAppClient
+from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -66,7 +66,7 @@ async def _scan_candidates(*, max_followups: int) -> list[ReminderCandidate]:
 async def _maybe_send_reminder(
     cand: ReminderCandidate, *, redis: Redis, kek: str
 ) -> bool:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     tenant_ctx = TenantContext(
         tenant_id=cand.tenant_id,
         merchant_id=cand.merchant_id,
@@ -112,9 +112,14 @@ async def _maybe_send_reminder(
 
         text = REMINDER_TEXTS.get(next_attempt, REMINDER_TEXTS[max(REMINDER_TEXTS)])
 
-        # Send first, then persist — if Meta fails, we'd rather retry than have a
-        # ghost "reminder sent" row. Dedup key prevents duplicate sends within TTL.
-        client = WhatsAppClient(access_token=wa.access_token, phone_number_id=wa.phone_number_id)
+        # Send first, then persist — if the provider fails, we'd rather retry
+        # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
+        # sends within TTL.
+        client = build_whatsapp_sender(
+            provider=wa.provider,
+            access_token=wa.access_token,
+            phone_number_id=wa.phone_number_id,
+        )
         try:
             await client.send_text(to_phone=cand.wa_contact_phone, text=text)
         finally:

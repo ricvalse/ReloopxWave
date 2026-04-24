@@ -9,7 +9,7 @@ Idempotency: Redis dedup per (lead, attempt) just like UC-03.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 
@@ -23,7 +23,7 @@ from db import (
     session_scope,
     tenant_session,
 )
-from integrations.whatsapp.client import WhatsAppClient
+from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -41,7 +41,7 @@ async def reactivate_dormant_leads(ctx: dict) -> dict:
     settings = ctx["settings"]
     redis: Redis = ctx.get("redis") or Redis.from_url(settings.redis_url)
 
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     # Use conservative floors (min dormant, min interval) so the scan returns only
     # leads that *could* be due. Per-merchant thresholds are enforced in the loop.
     min_dormant_cutoff = now - timedelta(days=30)
@@ -131,7 +131,11 @@ async def _maybe_send(
 
         text = REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
 
-        client = WhatsAppClient(access_token=wa.access_token, phone_number_id=wa.phone_number_id)
+        client = build_whatsapp_sender(
+            provider=wa.provider,
+            access_token=wa.access_token,
+            phone_number_id=wa.phone_number_id,
+        )
         try:
             await client.send_text(to_phone=cand.phone, text=text)
         finally:

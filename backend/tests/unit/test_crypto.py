@@ -17,16 +17,20 @@ def test_round_trip_unicode() -> None:
 
 
 def test_aad_mismatch_fails() -> None:
+    from cryptography.exceptions import InvalidTag
+
     kek = generate_kek_base64()
     blob = encrypt_secret("x", kek_base64=kek, aad=b"tenant-A")
     mutated = type(blob)(ciphertext=blob.ciphertext, nonce=blob.nonce, aad=b"tenant-B")
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         decrypt_secret(mutated, kek_base64=kek)
 
 
 def test_wrong_kek_fails() -> None:
+    from cryptography.exceptions import InvalidTag
+
     blob = encrypt_secret("x", kek_base64=generate_kek_base64())
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         decrypt_secret(blob, kek_base64=generate_kek_base64())
 
 

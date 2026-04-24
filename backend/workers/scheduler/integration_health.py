@@ -68,6 +68,13 @@ async def _check_one(
     A deeper GHL liveness lands when the provider/client refactor comes.
     """
     if integration.provider == "whatsapp":
+        meta_bag = integration.meta or {}
+        provider = str(meta_bag.get("provider") or "meta").lower()
+        if provider == "d360":
+            # 360dialog scopes the API key to a channel and doesn't expose an
+            # unauthenticated probe endpoint. Without the decrypted key here,
+            # treat the row as healthy unless it's already marked error.
+            return integration.status != "error"
         phone = str(integration.external_account_id or "")
         if not phone:
             return False

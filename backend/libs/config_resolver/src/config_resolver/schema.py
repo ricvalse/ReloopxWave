@@ -59,6 +59,23 @@ class ConfigKey(StrEnum):
     BOOKING_DEFAULT_DURATION_MIN = "booking.default_duration_min"
     BOOKING_LOOKAHEAD_DAYS = "booking.lookahead_days"
 
+    # Business profile — fed into the system prompt so the bot knows who it
+    # represents. Leaving any field empty is fine; the prompt builder simply
+    # omits it.
+    BUSINESS_NAME = "business.name"
+    BUSINESS_INDUSTRY = "business.industry"
+    BUSINESS_DESCRIPTION = "business.description"
+    BUSINESS_OFFER = "business.offer"
+    BUSINESS_HOURS = "business.hours"
+    BUSINESS_LOCATION = "business.location"
+    BUSINESS_PRICING_NOTES = "business.pricing_notes"
+    BUSINESS_WEBSITE = "business.website"
+
+    # Bot voice — prompt additions + first outbound message shown when the
+    # merchant reaches out to a new lead.
+    BOT_SYSTEM_PROMPT_ADDITIONS = "bot.system_prompt_additions"
+    BOT_FIRST_MESSAGE = "bot.first_message"
+
 
 SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
@@ -85,23 +102,34 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
     ConfigKey.BOOKING_LOOKAHEAD_DAYS: 14,
+    ConfigKey.BUSINESS_NAME: None,
+    ConfigKey.BUSINESS_INDUSTRY: None,
+    ConfigKey.BUSINESS_DESCRIPTION: None,
+    ConfigKey.BUSINESS_OFFER: None,
+    ConfigKey.BUSINESS_HOURS: None,
+    ConfigKey.BUSINESS_LOCATION: None,
+    ConfigKey.BUSINESS_PRICING_NOTES: None,
+    ConfigKey.BUSINESS_WEBSITE: None,
+    ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS: None,
+    ConfigKey.BOT_FIRST_MESSAGE: None,
 }
 
 
 class BotConfigSchema(BaseModel):
     """Typed view over the JSONB override bag — validated at write time."""
 
-    no_answer: "NoAnswerConfig" = Field(default_factory=lambda: NoAnswerConfig())
-    reactivation: "ReactivationConfig" = Field(default_factory=lambda: ReactivationConfig())
-    pipeline: "PipelineConfig" = Field(default_factory=lambda: PipelineConfig())
-    scoring: "ScoringConfig" = Field(default_factory=lambda: ScoringConfig())
-    ab_test: "ABTestConfig" = Field(default_factory=lambda: ABTestConfig())
-    schedule: "ScheduleConfig" = Field(default_factory=lambda: ScheduleConfig())
-    rag: "RagConfig" = Field(default_factory=lambda: RagConfig())
-    bot: "BotSurfaceConfig" = Field(default_factory=lambda: BotSurfaceConfig())
-    escalation: "EscalationConfig" = Field(default_factory=lambda: EscalationConfig())
-    privacy: "PrivacyConfig" = Field(default_factory=lambda: PrivacyConfig())
-    booking: "BookingConfig" = Field(default_factory=lambda: BookingConfig())
+    no_answer: NoAnswerConfig = Field(default_factory=lambda: NoAnswerConfig())
+    reactivation: ReactivationConfig = Field(default_factory=lambda: ReactivationConfig())
+    pipeline: PipelineConfig = Field(default_factory=lambda: PipelineConfig())
+    scoring: ScoringConfig = Field(default_factory=lambda: ScoringConfig())
+    ab_test: ABTestConfig = Field(default_factory=lambda: ABTestConfig())
+    schedule: ScheduleConfig = Field(default_factory=lambda: ScheduleConfig())
+    rag: RagConfig = Field(default_factory=lambda: RagConfig())
+    bot: BotSurfaceConfig = Field(default_factory=lambda: BotSurfaceConfig())
+    escalation: EscalationConfig = Field(default_factory=lambda: EscalationConfig())
+    privacy: PrivacyConfig = Field(default_factory=lambda: PrivacyConfig())
+    booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
+    business: BusinessConfig = Field(default_factory=lambda: BusinessConfig())
 
 
 class NoAnswerConfig(BaseModel):
@@ -145,6 +173,23 @@ class RagConfig(BaseModel):
 class BotSurfaceConfig(BaseModel):
     language: str = "it"
     tone: str = "professionale-amichevole"
+    system_prompt_additions: str | None = Field(default=None, max_length=4000)
+    first_message: str | None = Field(default=None, max_length=1000)
+
+
+class BusinessConfig(BaseModel):
+    """Merchant-facing profile — names, offer, hours. All optional. Fed into
+    the orchestrator's system prompt so the bot speaks for this merchant.
+    """
+
+    name: str | None = Field(default=None, max_length=120)
+    industry: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=1500)
+    offer: str | None = Field(default=None, max_length=1500)
+    hours: str | None = Field(default=None, max_length=500)
+    location: str | None = Field(default=None, max_length=500)
+    pricing_notes: str | None = Field(default=None, max_length=1500)
+    website: str | None = Field(default=None, max_length=300)
 
 
 class EscalationConfig(BaseModel):

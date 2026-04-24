@@ -1,6 +1,6 @@
-from db.models.base import Base, TimestampMixin
 from db.models.ab import ABAssignment, ABExperiment
 from db.models.analytics import AnalyticsEvent
+from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
 from db.models.conversation import Conversation, Message
 from db.models.ft import FTModel

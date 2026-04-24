@@ -26,7 +26,7 @@ from shared import IntegrationError
 class FakeSender:
     calls: list[dict] = field(default_factory=list)
 
-    async def send(self, *, access_token, phone_number_id, to_phone, text):
+    async def send(self, *, access_token, phone_number_id, to_phone, text, provider="meta"):
         self.calls.append({"to": to_phone, "text": text})
         return "wamid.confirm"
 

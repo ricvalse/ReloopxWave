@@ -133,7 +133,7 @@ class ABRepository:
 
 def _hash_pick(*, experiment_id: UUID, lead_id: UUID, variants: list[dict[str, Any]]) -> str:
     """Cumulative-weight bucketing of a hash in [0, 100) across variant weights."""
-    h = hashlib.sha256(f"{experiment_id}:{lead_id}".encode("utf-8")).digest()
+    h = hashlib.sha256(f"{experiment_id}:{lead_id}".encode()).digest()
     bucket = int.from_bytes(h[:4], "big") % 100  # [0, 99]
 
     total = sum(int(v.get("weight", 0)) for v in variants)

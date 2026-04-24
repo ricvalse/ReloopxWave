@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -61,7 +61,7 @@ class ObjectionRepository:
     async def category_histogram(
         self, *, merchant_id: UUID, since_days: int = 30
     ) -> list[CategoryCount]:
-        since = datetime.now(tz=timezone.utc) - timedelta(days=since_days)
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
         rows = await self._session.execute(
             select(Objection.category, func.count(Objection.id))
             .where(

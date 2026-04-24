@@ -16,28 +16,40 @@ from ai_core import (
 )
 from ai_core.actions import BookSlotHandler, MovePipelineHandler, UpdateScoreHandler
 from ai_core.rag import Embedder
-from integrations import WhatsAppClient
+from integrations import build_whatsapp_sender
 from shared import Settings, get_logger
 
 logger = get_logger(__name__)
 
 
 class WhatsAppReplySender:
-    """Bridges WhatsAppClient to the ReplySender protocol used by ConversationService.
+    """Bridges the Meta / 360dialog WhatsApp clients to the ReplySender
+    protocol used by ConversationService.
 
-    Constructs a fresh WhatsAppClient per call because access tokens are
-    per-merchant (and therefore per-message).
+    Constructs a fresh client per call because access tokens are per-merchant
+    (and therefore per-message), and the provider can differ across merchants
+    within the same tenant.
     """
 
-    async def send(self, *, access_token: str, phone_number_id: str, to_phone: str, text: str) -> str:
-        client = WhatsAppClient(access_token=access_token, phone_number_id=phone_number_id)
+    async def send(
+        self,
+        *,
+        access_token: str,
+        phone_number_id: str,
+        to_phone: str,
+        text: str,
+        provider: str = "meta",
+    ) -> str:
+        sender = build_whatsapp_sender(
+            provider=provider, access_token=access_token, phone_number_id=phone_number_id
+        )
         try:
-            resp = await client.send_text(to_phone=to_phone, text=text)
+            resp = await sender.send_text(to_phone=to_phone, text=text)
             return str(
                 (resp.get("messages") or [{}])[0].get("id", "")
             )
         finally:
-            await client.close()
+            await sender.close()
 
 
 @dataclass(slots=True)

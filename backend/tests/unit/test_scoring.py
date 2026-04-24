@@ -6,11 +6,7 @@ def test_empty_signals_zero_score() -> None:
 
 
 def test_positive_signals_sum_clamped_at_100() -> None:
-    signals = {k: True for k in [
-        "has_name", "has_email", "has_budget", "has_timeline",
-        "positive_sentiment", "engaged_multiple_turns", "responded_within_10min",
-        "asked_for_booking",
-    ]}
+    signals = dict.fromkeys(["has_name", "has_email", "has_budget", "has_timeline", "positive_sentiment", "engaged_multiple_turns", "responded_within_10min", "asked_for_booking"], True)
     assert score_lead(signals).score == 100
 
 

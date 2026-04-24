@@ -11,6 +11,11 @@ from integrations.ghl.signatures import verify_ghl_signature
 from integrations.supabase_admin import InvitedUser, SupabaseAdminClient
 from integrations.supabase_storage import SupabaseStorage
 from integrations.whatsapp.client import WhatsAppClient
+from integrations.whatsapp.d360_client import D360WhatsAppClient
+from integrations.whatsapp.factory import (
+    WhatsAppSender,
+    build_whatsapp_sender,
+)
 from integrations.whatsapp.webhook import (
     WhatsAppInboundEvent,
     parse_inbound_payload,
@@ -18,6 +23,7 @@ from integrations.whatsapp.webhook import (
 )
 
 __all__ = [
+    "D360WhatsAppClient",
     "ExchangedTokens",
     "GHLClient",
     "GHLTokenBundle",
@@ -27,7 +33,9 @@ __all__ = [
     "VerifiedState",
     "WhatsAppClient",
     "WhatsAppInboundEvent",
+    "WhatsAppSender",
     "build_authorize_url",
+    "build_whatsapp_sender",
     "exchange_authorization_code",
     "parse_inbound_payload",
     "sign_oauth_state",

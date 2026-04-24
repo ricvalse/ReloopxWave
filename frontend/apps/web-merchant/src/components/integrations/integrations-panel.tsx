@@ -44,7 +44,11 @@ export function IntegrationsPanel() {
   });
 
   const verifyWA = useMutation({
-    mutationFn: async (input: { phone_number_id: string; access_token: string }) => {
+    mutationFn: async (input: {
+      phone_number_id: string;
+      access_token: string;
+      provider: 'meta' | 'd360';
+    }) => {
       const api = getApiClient();
       const { data, error } = await api.POST('/integrations/whatsapp/verify' as never, {
         body: input,
@@ -156,25 +160,32 @@ function WhatsAppCard({
   error,
 }: {
   connection: Connection | undefined;
-  onSubmit: (input: { phone_number_id: string; access_token: string }) => void;
+  onSubmit: (input: {
+    phone_number_id: string;
+    access_token: string;
+    provider: 'meta' | 'd360';
+  }) => void;
   pending: boolean;
   error: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [token, setToken] = useState('');
+  const [provider, setProvider] = useState<'meta' | 'd360'>('meta');
   const connected = connection?.connected ?? false;
   const displayPhone =
     (typeof connection?.meta?.display_phone === 'string' && connection.meta.display_phone) ||
     null;
+  const connectedProvider =
+    typeof connection?.meta?.provider === 'string' ? connection.meta.provider : 'meta';
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>WhatsApp Cloud</CardTitle>
+          <CardTitle>WhatsApp</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            Numero verificato via Meta. Incolla phone-number-id + system-user token.
+            Connetti tramite Meta Cloud API diretto oppure tramite 360dialog (BSP).
           </p>
         </div>
         <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
@@ -184,6 +195,9 @@ function WhatsAppCard({
           <div className="text-sm text-muted-foreground">
             {connected ? (
               <>
+                <span className="mr-1 rounded bg-muted px-1.5 py-0.5 text-xs uppercase">
+                  {connectedProvider}
+                </span>
                 Phone:{' '}
                 <span className="font-mono text-xs">
                   {connection?.external_account_id ?? '—'}
@@ -207,9 +221,37 @@ function WhatsAppCard({
             className="space-y-3 border-t pt-4"
             onSubmit={(e) => {
               e.preventDefault();
-              onSubmit({ phone_number_id: phoneNumberId, access_token: token });
+              onSubmit({ phone_number_id: phoneNumberId, access_token: token, provider });
             }}
           >
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Provider</label>
+              <div className="flex gap-2">
+                <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                  <input
+                    type="radio"
+                    name="wa-provider"
+                    checked={provider === 'meta'}
+                    onChange={() => setProvider('meta')}
+                  />
+                  Meta Cloud API
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm">
+                  <input
+                    type="radio"
+                    name="wa-provider"
+                    checked={provider === 'd360'}
+                    onChange={() => setProvider('d360')}
+                  />
+                  360dialog (BSP)
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {provider === 'meta'
+                  ? 'Richiede un WhatsApp Business Account approvato + permanent access token.'
+                  : 'Richiede un account 360dialog attivo — onboarding più rapido di Meta diretto.'}
+              </p>
+            </div>
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="phone-number-id">
                 Phone Number ID
@@ -224,7 +266,7 @@ function WhatsAppCard({
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="wa-token">
-                System user access token
+                {provider === 'd360' ? 'D360 API Key' : 'System user access token'}
               </label>
               <input
                 id="wa-token"

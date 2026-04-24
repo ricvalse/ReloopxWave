@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base, TimestampMixin, uuid_pk
@@ -37,8 +38,8 @@ class Conversation(Base, TimestampMixin):
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
-    merchant: Mapped["Merchant"] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821
-    messages: Mapped[list["Message"]] = relationship(back_populates="conversation")
+    merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821
+    messages: Mapped[list[Message]] = relationship(back_populates="conversation")
 
 
 class Message(Base):
@@ -70,4 +71,4 @@ class Message(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()"), index=True
     )
 
-    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")

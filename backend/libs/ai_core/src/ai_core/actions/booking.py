@@ -15,7 +15,7 @@ text from the orchestrator. Booking confirmation is a separate WhatsApp message.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ai_core.orchestrator import OrchestratorAction
@@ -210,6 +210,7 @@ class BookSlotHandler:
             phone_number_id=turn_ctx.phone_number_id,
             to_phone=turn_ctx.lead_phone,
             text=text,
+            provider=getattr(turn_ctx, "whatsapp_provider", "meta"),
         )
 
 
@@ -223,13 +224,13 @@ def _parse_iso(s: str | None) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
 def _next_business_hour() -> datetime:
     """Fallback: same-day next full hour during business hours, or 9:00 tomorrow."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     candidate = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     if candidate.hour < 9:
         candidate = candidate.replace(hour=9)
