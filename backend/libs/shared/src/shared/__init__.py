@@ -1,4 +1,4 @@
-from shared.constants import KNOWN_ROLES, PLATFORM_TENANT_ID, SUPER_ADMIN_ROLE
+from shared.constants import KNOWN_ROLES
 from shared.crypto import EncryptedSecret, decrypt_secret, encrypt_secret
 from shared.errors import (
     ConflictError,
@@ -13,8 +13,6 @@ from shared.settings import Settings, get_settings
 
 __all__ = [
     "KNOWN_ROLES",
-    "PLATFORM_TENANT_ID",
-    "SUPER_ADMIN_ROLE",
     "ConflictError",
     "DomainError",
     "EncryptedSecret",

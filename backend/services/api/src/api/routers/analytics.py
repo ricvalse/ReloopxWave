@@ -68,7 +68,7 @@ async def merchant_kpis(
 @router.get(
     "/agency/kpis",
     response_model=AgencyKpisOut,
-    dependencies=[Depends(require_role("agency_admin", "agency_user"))],
+    dependencies=[Depends(require_role("agency_admin"))],
 )
 async def agency_kpis(
     ctx: CurrentContext,

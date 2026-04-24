@@ -30,7 +30,7 @@ from shared import (
 router = APIRouter()
 logger = get_logger(__name__)
 
-Role = Literal["agency_admin", "agency_user", "merchant_admin", "merchant_user"]
+Role = Literal["agency_admin", "merchant_user"]
 
 _MERCHANT_FILTER: Any = Query(default=None, description="Filter users by merchant_id")
 
@@ -72,7 +72,7 @@ async def list_users(
     "/invite",
     response_model=UserOut,
     status_code=201,
-    dependencies=[Depends(require_role("agency_admin", "agency_user", "merchant_admin"))],
+    dependencies=[Depends(require_role("agency_admin"))],
 )
 async def invite_user(
     payload: InviteIn,
@@ -152,29 +152,19 @@ def _resolve_list_scope(ctx: CurrentContext, merchant_filter: UUID | None) -> UU
 
 
 def _assert_can_invite(ctx: CurrentContext, payload: InviteIn) -> None:
-    if payload.role in ("agency_admin", "agency_user"):
-        if ctx.role != "agency_admin":
-            raise PermissionDeniedError(
-                "Only agency_admin can invite agency users",
-                error_code="invite_role_not_allowed",
-                attempted_role=payload.role,
-            )
+    if payload.role == "agency_admin":
         if payload.merchant_id is not None:
             raise PermissionDeniedError(
-                "Agency users must not be scoped to a merchant",
+                "Agency admins must not be scoped to a merchant",
                 error_code="invite_agency_with_merchant",
             )
         return
 
+    # merchant_user — must target an existing merchant.
     if payload.merchant_id is None:
         raise PermissionDeniedError(
             "Merchant-role invites require merchant_id",
             error_code="invite_missing_merchant",
-        )
-    if ctx.role == "merchant_admin" and payload.merchant_id != ctx.merchant_id:
-        raise PermissionDeniedError(
-            "Merchant admin cannot invite users to another merchant",
-            error_code="invite_cross_merchant",
         )
 
 

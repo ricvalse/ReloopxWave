@@ -44,7 +44,7 @@ class TemplateOut(BaseModel):
 @router.get(
     "/templates",
     response_model=list[TemplateOut],
-    dependencies=[Depends(require_role("agency_admin", "agency_user"))],
+    dependencies=[Depends(require_role("agency_admin"))],
 )
 async def list_templates(ctx: CurrentContext, session: DBSession) -> list[TemplateOut]:
     repo = BotTemplateRepository(session)

@@ -3,8 +3,8 @@ UC-12 (agency dashboard list).
 
 Every read/write is scoped to the caller's tenant twice:
 
-1. `require_role("agency_admin" | "agency_user")` on writes — merchant users
-   cannot create or mutate their own record.
+1. `require_role("agency_admin")` on writes — merchant users cannot create
+   or mutate their own record.
 2. Postgres RLS on `merchants` filters silently via the EXISTS join on
    `merchants.tenant_id = request.jwt.claims.tenant_id` (see 0001_initial).
    A cross-tenant lookup therefore returns no rows, which we surface as 404.
@@ -60,7 +60,7 @@ async def list_merchants(ctx: CurrentContext, session: DBSession) -> list[Mercha
     "/",
     response_model=MerchantOut,
     status_code=201,
-    dependencies=[Depends(require_role("agency_admin", "agency_user"))],
+    dependencies=[Depends(require_role("agency_admin"))],
 )
 async def create_merchant(
     payload: MerchantIn, ctx: CurrentContext, session: DBSession
@@ -94,7 +94,7 @@ async def get_merchant(merchant_id: UUID, ctx: CurrentContext, session: DBSessio
 @router.patch(
     "/{merchant_id}",
     response_model=MerchantOut,
-    dependencies=[Depends(require_role("agency_admin", "agency_user"))],
+    dependencies=[Depends(require_role("agency_admin"))],
 )
 async def update_merchant(
     merchant_id: UUID,

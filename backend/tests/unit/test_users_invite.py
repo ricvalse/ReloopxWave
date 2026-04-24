@@ -54,7 +54,7 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
         email="Alice@Example.com",
         tenant_id=tenant_id,
         merchant_id=merchant_id,
-        role="merchant_admin",
+        role="merchant_user",
         redirect_to="https://example.com/welcome",
     )
 
@@ -76,7 +76,7 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
         "data": {
             "tenant_id": str(tenant_id),
             "merchant_id": str(merchant_id),
-            "role": "merchant_admin",
+            "role": "merchant_user",
         },
         "redirect_to": "https://example.com/welcome",
     }
@@ -88,7 +88,7 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
         "app_metadata": {
             "tenant_id": str(tenant_id),
             "merchant_id": str(merchant_id),
-            "role": "merchant_admin",
+            "role": "merchant_user",
         }
     }
 
@@ -115,7 +115,7 @@ async def test_invite_accepts_nested_user_shape() -> None:
         email="bob@example.com",
         tenant_id=uuid.uuid4(),
         merchant_id=None,
-        role="agency_user",
+        role="agency_admin",
     )
     assert str(invited.id) == user_id
 

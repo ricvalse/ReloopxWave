@@ -163,7 +163,8 @@ class SupabaseAdminClient:
         password: str | None = None,
     ) -> InvitedUser:
         """Create a user directly (no invite email). Useful for bootstrapping
-        a super_admin via CLI script where there's no inbox to receive a link.
+        an agency_admin whose auth.users row was created outside the normal
+        invite flow (e.g. the initial web-admin signup that seeds Wave).
         """
         url = f"{self._base}/auth/v1/admin/users"
         payload: dict[str, Any] = {
