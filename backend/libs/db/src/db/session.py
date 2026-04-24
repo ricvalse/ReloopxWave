@@ -86,8 +86,13 @@ async def tenant_session(ctx: TenantContext) -> AsyncIterator[AsyncSession]:
             "role": ctx.role,
             "sub": str(ctx.actor_id),
         }
+        # Postgres does not accept bind parameters on the `SET LOCAL ...`
+        # command — the value has to be a literal. `set_config()` is the
+        # function equivalent and does take parameters, so we use that to
+        # avoid string-interpolating JSON into SQL. `is_local=true` scopes
+        # the setting to this transaction, same as SET LOCAL would.
         await session.execute(
-            text('SET LOCAL "request.jwt.claims" = :claims'),
+            text("SELECT set_config('request.jwt.claims', :claims, true)"),
             {"claims": _json_dump(claims)},
         )
         try:

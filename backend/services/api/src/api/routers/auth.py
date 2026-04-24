@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from api.dependencies.auth import verify_supabase_jwt
 from api.dependencies.session import CurrentContext
@@ -132,25 +133,34 @@ async def bootstrap(
         actor_id=user_id,
     )
 
-    async with tenant_session(forged_ctx) as session:
-        tenant = Tenant(
-            id=new_tenant_id,
-            slug=WAVE_TENANT_SLUG,
-            name=WAVE_TENANT_NAME,
-            status="active",
-            settings={},
-        )
-        session.add(tenant)
-        user_row = User(
-            id=user_id,
-            email=email,
-            tenant_id=new_tenant_id,
-            merchant_id=None,
-            role=AGENCY_ADMIN_ROLE,
-            full_name=None,
-        )
-        session.add(user_row)
-        await session.flush()
+    try:
+        async with tenant_session(forged_ctx) as session:
+            tenant = Tenant(
+                id=new_tenant_id,
+                slug=WAVE_TENANT_SLUG,
+                name=WAVE_TENANT_NAME,
+                status="active",
+                settings={},
+            )
+            session.add(tenant)
+            user_row = User(
+                id=user_id,
+                email=email,
+                tenant_id=new_tenant_id,
+                merchant_id=None,
+                role=AGENCY_ADMIN_ROLE,
+                full_name=None,
+            )
+            session.add(user_row)
+            await session.flush()
+    except IntegrityError as e:
+        # Another request bootstrapped concurrently — the slug unique index
+        # or the users PK wins. Surface as "already_bootstrapped" so the
+        # frontend can retry once the transaction is committed.
+        raise ConflictError(
+            "Deployment already bootstrapped — ask the admin for an invite",
+            error_code="already_bootstrapped",
+        ) from e
 
     # Promote the Supabase auth user so the JWT hook mints the claims on the
     # next token refresh. Without this step the caller's JWT stays claimless.
