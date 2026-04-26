@@ -1,12 +1,16 @@
 import Link from 'next/link';
-import { Users, LayoutDashboard, FileCode, Settings } from 'lucide-react';
+import type { Route } from 'next';
+import { Users, LayoutDashboard, FileCode, Settings, Inbox } from 'lucide-react';
 
-const nav = [
+type NavItem = { href: Route; label: string; icon: typeof LayoutDashboard };
+
+const nav: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/inbox', label: 'Inbox', icon: Inbox },
   { href: '/merchants', label: 'Merchant', icon: Users },
   { href: '/templates', label: 'Template bot', icon: FileCode },
   { href: '/settings', label: 'Impostazioni', icon: Settings },
-] as const;
+];
 
 export function Sidebar() {
   return (
