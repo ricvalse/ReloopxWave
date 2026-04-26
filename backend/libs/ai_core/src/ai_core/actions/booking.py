@@ -206,11 +206,9 @@ class BookSlotHandler:
                 "Ti ricontatteremo a brevissimo."
             )
         await self._reply_sender.send(
-            access_token=turn_ctx.whatsapp_access_token,
             phone_number_id=turn_ctx.phone_number_id,
             to_phone=turn_ctx.lead_phone,
             text=text,
-            provider=getattr(turn_ctx, "whatsapp_provider", "meta"),
         )
 
 

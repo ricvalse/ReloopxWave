@@ -115,11 +115,7 @@ async def _maybe_send_reminder(
         # Send first, then persist — if the provider fails, we'd rather retry
         # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
         # sends within TTL.
-        client = build_whatsapp_sender(
-            provider=wa.provider,
-            access_token=wa.access_token,
-            phone_number_id=wa.phone_number_id,
-        )
+        client = build_whatsapp_sender(phone_number_id=wa.phone_number_id)
         try:
             await client.send_text(to_phone=cand.wa_contact_phone, text=text)
         finally:

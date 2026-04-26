@@ -37,8 +37,6 @@ def integration() -> ResolvedWhatsAppIntegration:
         merchant_id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
-        access_token="tok",
-        provider="meta",
         meta={},
     )
 
@@ -113,8 +111,8 @@ def _patch_session(
 
         async def close(self): ...
 
-    def fake_factory(*, provider, access_token, phone_number_id):
-        return FakeWAClient(access_token=access_token, phone_number_id=phone_number_id)
+    def fake_factory(*, phone_number_id, api_key=None):
+        return FakeWAClient(access_token=api_key or "fake", phone_number_id=phone_number_id)
 
     monkeypatch.setattr(no_answer, "tenant_session", fake_tenant_session)
     monkeypatch.setattr(no_answer, "session_scope", fake_session_scope)

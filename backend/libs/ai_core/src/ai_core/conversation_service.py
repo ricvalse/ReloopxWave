@@ -78,9 +78,7 @@ class TurnContext:
     lead_id: UUID
     conversation_id: UUID
     lead_phone: str
-    whatsapp_access_token: str
     phone_number_id: str
-    whatsapp_provider: str = "meta"  # "meta" or "d360"
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
@@ -89,11 +87,9 @@ class ReplySender(Protocol):
     async def send(
         self,
         *,
-        access_token: str,
         phone_number_id: str,
         to_phone: str,
         text: str,
-        provider: str = "meta",
     ) -> str: ...
 
 
@@ -275,17 +271,13 @@ class ConversationService:
             lead_id=lead.id,
             conversation_id=conv.id,
             lead_phone=from_phone,
-            whatsapp_access_token=resolved.access_token,
             phone_number_id=phone_number_id,
-            whatsapp_provider=resolved.provider,
         )
 
         await self._sender.send(
-            access_token=resolved.access_token,
             phone_number_id=phone_number_id,
             to_phone=from_phone,
             text=response.reply_text,
-            provider=resolved.provider,
         )
 
         # Action handlers run after the turn is durable and the reply is out.

@@ -1,8 +1,11 @@
 """Public webhooks — no JWT dependency. Signature validation happens per-route.
 
-The contract from section 7.3:
-- respond 200 synchronously (Meta/GHL have short timeouts)
-- enqueue the event on the right ARQ queue and return immediately
+WhatsApp comes in via 360dialog only — Wave Marketing operates as a single
+360dialog Partner; every merchant's number is a channel under that partner.
+360dialog forwards Meta's WABA payload shape unchanged, so the parser is the
+same one Meta would have used. The signing secret lives in
+`WHATSAPP_D360_WEBHOOK_SECRET`; if it's empty the endpoint trusts the
+path-level phone_number_id (sandbox only).
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.signatures import verify_ghl_signature
 from integrations.whatsapp.webhook import parse_inbound_payload, verify_whatsapp_signature
@@ -20,76 +23,12 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-@router.get("/whatsapp/{phone_number_id}")
-async def whatsapp_verify(
-    phone_number_id: str,
-    hub_mode: str = "",
-    hub_challenge: str = "",
-    hub_verify_token: str = "",
-) -> Response:
-    """Meta verification challenge — echo hub.challenge iff verify_token matches."""
-    settings = get_settings()
-    if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token:
-        return Response(content=hub_challenge, media_type="text/plain")
-    raise HTTPException(status_code=403, detail="verify token mismatch")
-
-
 @router.post("/whatsapp/{phone_number_id}")
 async def whatsapp_inbound(
     phone_number_id: str,
     request: Request,
     x_hub_signature_256: str = Header(default=""),
 ) -> dict[str, Any]:
-    settings = get_settings()
-    body = await request.body()
-    if not verify_whatsapp_signature(
-        app_secret=settings.whatsapp_app_secret,
-        payload=body,
-        signature_header=x_hub_signature_256,
-    ):
-        raise HTTPException(status_code=401, detail="invalid signature")
-
-    payload = await request.json()
-    events = parse_inbound_payload(payload)
-    logger.info(
-        "webhook.whatsapp.inbound",
-        phone_number_id=phone_number_id,
-        events=len(events),
-    )
-
-    arq = request.app.state.arq
-    enqueued = 0
-    for ev in events:
-        # Only text-bearing turns are handed off to the orchestrator for now. Status
-        # callbacks and media-only messages are ignored here — UC-07 will extend this.
-        if ev.text is None:
-            continue
-        await arq.enqueue_job(
-            "handle_inbound_message",
-            phone_number_id,
-            ev.from_phone,
-            ev.text,
-            ev.message_id,
-            _job_id=f"wa:msg:{ev.message_id}",  # dedup if Meta retries
-        )
-        enqueued += 1
-    return {"accepted": len(events), "enqueued": enqueued}
-
-
-@router.post("/whatsapp-d360/{phone_number_id}")
-async def whatsapp_d360_inbound(
-    phone_number_id: str,
-    request: Request,
-    x_hub_signature_256: str = Header(default=""),
-) -> dict[str, Any]:
-    """360dialog inbound webhook.
-
-    360dialog forwards the Meta WABA payload unchanged, so the parser and the
-    downstream ARQ job are identical. Signature verification uses the secret
-    configured in the 360dialog portal (same HMAC-SHA256 scheme as Meta).
-    If no secret is configured, the endpoint trusts the path — acceptable for
-    a sandbox but NOT for production.
-    """
     settings = get_settings()
     body = await request.body()
 
@@ -118,6 +57,8 @@ async def whatsapp_d360_inbound(
     arq = request.app.state.arq
     enqueued = 0
     for ev in events:
+        # Only text-bearing turns are handed off to the orchestrator for now.
+        # Status callbacks and media-only messages are ignored here.
         if ev.text is None:
             continue
         await arq.enqueue_job(
@@ -126,7 +67,7 @@ async def whatsapp_d360_inbound(
             ev.from_phone,
             ev.text,
             ev.message_id,
-            _job_id=f"wa:msg:{ev.message_id}",
+            _job_id=f"wa:msg:{ev.message_id}",  # dedup if 360dialog retries
         )
         enqueued += 1
     return {"accepted": len(events), "enqueued": enqueued}

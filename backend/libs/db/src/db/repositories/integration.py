@@ -21,11 +21,17 @@ from shared import EncryptedSecret, decrypt_secret, encrypt_secret
 
 @dataclass(slots=True, frozen=True)
 class ResolvedWhatsAppIntegration:
+    """Per-merchant WhatsApp routing record.
+
+    Wave Marketing runs a single 360dialog Partner channel — the API key
+    lives in env, not in this row. All we keep here is the phone_number_id
+    (a.k.a. 360dialog channel id) so inbound webhooks can resolve which
+    merchant a message belongs to.
+    """
+
     merchant_id: UUID
     tenant_id: UUID
     phone_number_id: str
-    access_token: str  # decrypted — Meta bearer OR 360dialog D360-API-KEY
-    provider: str  # "meta" or "d360"
     meta: dict[str, Any]
 
 
@@ -67,16 +73,11 @@ class IntegrationRepository:
         if row is None:
             return None
         integration, tenant_id = row
-        meta = dict(integration.meta or {})
-        provider_value = meta.get("provider")
-        provider = str(provider_value).lower() if isinstance(provider_value, str) else "meta"
         return ResolvedWhatsAppIntegration(
             merchant_id=integration.merchant_id,
             tenant_id=tenant_id,
             phone_number_id=phone_number_id,
-            access_token=self._decrypt(integration),
-            provider=provider if provider in ("meta", "d360") else "meta",
-            meta=meta,
+            meta=dict(integration.meta or {}),
         )
 
     async def resolve_ghl(self, merchant_id: UUID) -> ResolvedGHLIntegration | None:
@@ -178,21 +179,20 @@ class IntegrationRepository:
         *,
         merchant_id: UUID,
         phone_number_id: str,
-        access_token: str,
         display_phone: str | None = None,
-        provider: str = "meta",
     ) -> Integration:
+        # The Partner API key is platform-level (env), not per-merchant — but
+        # the schema still enforces NOT NULL on the encrypted-secret columns.
+        # Stash a fixed placeholder so the row stays valid without leaking
+        # anything sensitive into the DB.
         aad = f"wa:{merchant_id}".encode()
-        secret = encrypt_secret(access_token, kek_base64=self._kek, aad=aad)
+        secret = encrypt_secret("d360-shared-channel", kek_base64=self._kek, aad=aad)
 
         integration = await self._get("whatsapp", merchant_id)
-        resolved_provider = provider.lower() if provider else "meta"
-        if resolved_provider not in ("meta", "d360"):
-            resolved_provider = "meta"
         meta: dict[str, Any] = {
             **(integration.meta if integration else {}),
             "phone_number_id": phone_number_id,
-            "provider": resolved_provider,
+            "provider": "d360",
         }
         if display_phone:
             meta["display_phone"] = display_phone

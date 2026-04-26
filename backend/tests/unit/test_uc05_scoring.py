@@ -24,7 +24,6 @@ def turn_ctx() -> TurnContext:
         lead_id=uuid.uuid4(),
         conversation_id=uuid.uuid4(),
         lead_phone="39333000000",
-        whatsapp_access_token="tok",
         phone_number_id="PNID-1",
     )
 

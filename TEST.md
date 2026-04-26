@@ -42,35 +42,31 @@ INTEGRATIONS_KEK_BASE64   # generate once; losing it breaks every stored secret
 PUBLIC_API_BASE_URL, PUBLIC_WEB_MERCHANT_URL, PUBLIC_WEB_ADMIN_URL
 CORS_ALLOWED_ORIGINS
 
-# WhatsApp (Meta Cloud API directly)
-WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN
-
-# WhatsApp (360dialog — optional, only if using D360 as BSP)
-WHATSAPP_D360_WEBHOOK_SECRET   # HMAC secret configured in the 360dialog portal
+# WhatsApp (360dialog — single Partner channel for the whole platform)
+WHATSAPP_D360_API_KEY            # Partner API key from 360dialog hub
+WHATSAPP_D360_WEBHOOK_SECRET     # HMAC secret configured in the 360dialog portal
 
 # GHL
 GHL_CLIENT_ID, GHL_CLIENT_SECRET, GHL_WEBHOOK_SECRET
 GHL_REDIRECT_URI=https://<api-domain>/integrations/ghl/oauth/callback
 ```
 
-### 0.3 Choose a WhatsApp provider
+### 0.3 Configure the 360dialog Partner
 
-You can run either — the merchant picks at connect-time in `/integrations`.
+Wave Marketing operates a single 360dialog Partner account; every merchant's
+WhatsApp number is a *channel* under that one partnership. There's no
+per-merchant API key — the `WHATSAPP_D360_API_KEY` env var is shared across
+the whole deployment.
 
-**Option A — Meta Cloud API directly** (what the architecture doc specifies):
-- Requires a WhatsApp Business Account. Meta offers a test phone number you can use immediately without WABA approval; real numbers take 2–6 weeks to verify.
-- Register the webhook at Meta → App Dashboard → WhatsApp → Configuration:
-  - Callback URL: `https://<api-domain>/webhooks/whatsapp/<phone_number_id>`
-  - Verify token: matches `WHATSAPP_VERIFY_TOKEN`
-  - Subscribe to `messages` field.
-- The merchant portal's "Collega numero" form collects phone_number_id + permanent access token.
-
-**Option B — 360dialog (BSP)**:
-- Onboarding via 360dialog is days, not weeks. Good when the client needs a demo before Meta approves their WABA.
-- Register the webhook in the 360dialog portal:
-  - URL: `https://<api-domain>/webhooks/whatsapp-d360/<phone_number_id>`
-  - Optional: set an HMAC signing secret and mirror the same value to `WHATSAPP_D360_WEBHOOK_SECRET` on Railway — the route rejects unsigned posts when the env var is set.
-- The merchant portal's "Collega numero" form collects phone_number_id + D360 API key (use the `360dialog (BSP)` provider radio).
+- [ ] Create / log in to your 360dialog Partner Hub. Note the Partner API key.
+- [ ] Onboard each merchant's number as a channel under your Partner account.
+      Each channel exposes a `phone_number_id` (same identifier Meta uses).
+- [ ] Set the webhook URL on the Partner Hub:
+      `https://<api-domain>/webhooks/whatsapp/<phone_number_id>`
+- [ ] (Recommended) Set an HMAC signing secret in the 360dialog portal and
+      mirror the same value into `WHATSAPP_D360_WEBHOOK_SECRET` on Railway —
+      the route rejects unsigned posts when the env var is set.
+- [ ] Set `WHATSAPP_D360_API_KEY` on Railway and redeploy.
 
 ### 0.4 Walk through the first merchant
 
@@ -81,7 +77,7 @@ On a fresh Supabase, there is nothing in `tenants`, `merchants`, `users`, `bot_c
 - [ ] Admin creates a merchant under the tenant from `/merchants/new`.
 - [ ] Admin invites a merchant-user at `/users/invite`; user accepts and signs in at `$WEB_MERCHANT/login`.
 - [ ] Merchant dashboard shows the "Pronto per partire" checklist. Walk it top-to-bottom:
-  - [ ] Collega WhatsApp (Meta or 360dialog per §0.3)
+  - [ ] Collega WhatsApp — paste the channel's `phone_number_id` (no API key — that's platform-wide)
   - [ ] Collega GoHighLevel (OAuth)
   - [ ] Compila il profilo attività (`/bot/config` → "Profilo attività")
   - [ ] Imposta `booking.default_calendar_id` (from GHL) — until this is set, `book_slot` silently fails

@@ -54,13 +54,11 @@ class Settings(BaseSettings):
     ghl_webhook_secret: str = ""
     ghl_oauth_state_secret: str = ""
     ghl_redirect_uri: str = ""
-    whatsapp_app_secret: str = ""
-    whatsapp_verify_token: str = ""
-    whatsapp_graph_base_url: str = "https://graph.facebook.com/v21.0"
-
-    # 360dialog BSP alternative to Meta Cloud API. Optional. The secret is the
-    # HMAC signing key configured in the 360dialog portal; when empty, the
-    # webhook endpoint trusts the path-level phone_number_id (dev only).
+    # 360dialog is the only WhatsApp provider. All merchants share a single
+    # Partner channel — one API key in env, no per-merchant secrets stored.
+    # The HMAC signing secret is configured in the 360dialog portal; when
+    # left empty the webhook trusts the path-level phone_number_id (dev only).
+    whatsapp_d360_api_key: str = ""
     whatsapp_d360_webhook_secret: str = ""
 
     public_api_base_url: str = ""

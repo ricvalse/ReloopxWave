@@ -68,28 +68,10 @@ async def _check_one(
     A deeper GHL liveness lands when the provider/client refactor comes.
     """
     if integration.provider == "whatsapp":
-        meta_bag = integration.meta or {}
-        provider = str(meta_bag.get("provider") or "meta").lower()
-        if provider == "d360":
-            # 360dialog scopes the API key to a channel and doesn't expose an
-            # unauthenticated probe endpoint. Without the decrypted key here,
-            # treat the row as healthy unless it's already marked error.
-            return integration.status != "error"
-        phone = str(integration.external_account_id or "")
-        if not phone:
-            return False
-        try:
-            resp = await http.get(
-                f"{settings.whatsapp_graph_base_url}/{phone}",
-                # We don't have the plaintext token here — we only care that
-                # the phone_number_id resolves. An unauthenticated Graph call
-                # still returns 200 for a valid id (just with limited fields).
-                params={"fields": "id"},
-                timeout=10.0,
-            )
-        except httpx.HTTPError:
-            return False
-        return resp.status_code < 500
+        # All WhatsApp traffic goes through 360dialog with a platform-level
+        # API key. There's nothing per-merchant to probe — if the row is
+        # already marked error something else handled it; otherwise green.
+        return integration.status != "error"
 
     if integration.provider == "ghl":
         if integration.expires_at is None:

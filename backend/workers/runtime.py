@@ -23,26 +23,21 @@ logger = get_logger(__name__)
 
 
 class WhatsAppReplySender:
-    """Bridges the Meta / 360dialog WhatsApp clients to the ReplySender
-    protocol used by ConversationService.
+    """Bridges the 360dialog WhatsApp client to the ReplySender protocol
+    used by ConversationService.
 
-    Constructs a fresh client per call because access tokens are per-merchant
-    (and therefore per-message), and the provider can differ across merchants
-    within the same tenant.
+    The shared Partner API key is read from settings; per-call we just
+    bind to the right channel (`phone_number_id`).
     """
 
     async def send(
         self,
         *,
-        access_token: str,
         phone_number_id: str,
         to_phone: str,
         text: str,
-        provider: str = "meta",
     ) -> str:
-        sender = build_whatsapp_sender(
-            provider=provider, access_token=access_token, phone_number_id=phone_number_id
-        )
+        sender = build_whatsapp_sender(phone_number_id=phone_number_id)
         try:
             resp = await sender.send_text(to_phone=to_phone, text=text)
             return str(

@@ -49,14 +49,12 @@ class FakeSender(ReplySender):
     async def send(
         self,
         *,
-        access_token: str,
         phone_number_id: str,
         to_phone: str,
         text: str,
-        provider: str = "meta",
     ) -> str:
         self.calls.append(
-            {"access_token": access_token, "phone_number_id": phone_number_id, "to": to_phone, "text": text}
+            {"phone_number_id": phone_number_id, "to": to_phone, "text": text}
         )
         return "wamid.fake"
 
@@ -69,8 +67,6 @@ def resolved_integration() -> ResolvedWhatsAppIntegration:
         merchant_id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
-        access_token="fake-meta-token",
-        provider="meta",
         meta={"phone_number_id": "PNID-1"},
     )
 

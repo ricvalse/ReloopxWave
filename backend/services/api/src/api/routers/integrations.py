@@ -1,20 +1,18 @@
-"""Per-merchant external integrations — GHL (OAuth2) + WhatsApp (manual token).
+"""Per-merchant external integrations — GHL (OAuth2) + WhatsApp (360dialog).
 
 Scope:
 - `POST /integrations/ghl/oauth/start` — mints a signed state, returns the
   GHL marketplace URL. Merchant user opens it in a new tab.
 - `GET /integrations/ghl/oauth/callback` — verifies state, exchanges code,
   encrypts + persists the token bundle, redirects to the merchant portal.
-- `POST /integrations/whatsapp/verify` — accepts `(phone_number_id, token)`,
-  pings Meta `/me`, encrypts + persists on success.
+- `POST /integrations/whatsapp/verify` — accepts a `phone_number_id`
+  (the 360dialog channel id), confirms the platform's shared D360 API key
+  reaches that channel, then persists the merchant→channel mapping. No
+  per-merchant secrets are stored — all merchants share Wave Marketing's
+  one Partner-level API key, which lives in `WHATSAPP_D360_API_KEY` env.
 - `GET /integrations/status` — returns connection cards for the caller's
   merchant (agency admins can pass `?merchant_id=<uuid>` to view a specific
   merchant under their tenant).
-
-The service_role-scoped `/integrations` endpoints are the *only* production
-path that mints encrypted secrets into `integrations`. Any direct SQL insert
-into that table is a bug — every write must go through `IntegrationRepository`
-so the KEK usage stays auditable.
 """
 
 from __future__ import annotations
@@ -56,17 +54,12 @@ class OAuthStartResponse(BaseModel):
 
 
 class WhatsAppVerifyIn(BaseModel):
-    phone_number_id: str = Field(min_length=1, max_length=64)
-    access_token: str = Field(
-        min_length=10,
-        description="Meta permanent access token OR 360dialog D360-API-KEY depending on provider.",
+    phone_number_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="360dialog channel id (the 'phone_number_id' Meta uses) for this merchant.",
     )
     display_phone: str | None = Field(default=None, max_length=32)
-    provider: str = Field(
-        default="meta",
-        pattern="^(meta|d360)$",
-        description="WhatsApp provider: 'meta' (Cloud API direct) or 'd360' (360dialog BSP).",
-    )
 
 
 class ConnectionOut(BaseModel):
@@ -161,51 +154,36 @@ async def whatsapp_verify(
 ) -> ConnectionOut:
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
-    provider = payload.provider.lower()
 
-    display_phone = payload.display_phone
-    meta_out: dict[str, Any] = {}
+    if not settings.whatsapp_d360_api_key:
+        raise IntegrationError(
+            "WHATSAPP_D360_API_KEY is not configured on this deployment",
+            error_code="d360_not_configured",
+        )
 
+    # Confirm the shared Partner key can read the configured channel before
+    # we record the merchant→channel mapping. 360dialog's /v1/configs/templates
+    # endpoint is namespaced to whichever channel the key authorizes, so a
+    # 200 here proves the key is live; we don't get per-channel detail back
+    # but a failure surfaces immediately as a misconfiguration.
     async with httpx.AsyncClient(timeout=10.0) as http:
-        if provider == "d360":
-            # 360dialog scopes the API key to a channel. Ping their /channels
-            # endpoint; if the key is valid it returns the channel metadata.
-            resp = await http.get(
-                "https://waba-v2.360dialog.io/v1/configs/webhook",
-                headers={"D360-API-KEY": payload.access_token},
-            )
-            if resp.status_code >= 400:
-                raise IntegrationError(
-                    "360dialog rejected API key",
-                    error_code="d360_verify_failed",
-                    status_code=resp.status_code,
-                    body=resp.text[:300],
-                )
-        else:
-            # Ping Meta Graph /{phone_number_id} to prove the token + id pair
-            # is real before we persist anything.
-            resp = await http.get(
-                f"{settings.whatsapp_graph_base_url}/{payload.phone_number_id}",
-                headers={"Authorization": f"Bearer {payload.access_token}"},
-                params={"fields": "display_phone_number,verified_name"},
-            )
-            if resp.status_code >= 400:
-                raise IntegrationError(
-                    "WhatsApp rejected credentials",
-                    error_code="whatsapp_verify_failed",
-                    status_code=resp.status_code,
-                    body=resp.text[:300],
-                )
-            body = resp.json()
-            display_phone = display_phone or body.get("display_phone_number") or None
+        resp = await http.get(
+            "https://waba-v2.360dialog.io/v1/configs/webhook",
+            headers={"D360-API-KEY": settings.whatsapp_d360_api_key},
+        )
+    if resp.status_code >= 400:
+        raise IntegrationError(
+            "360dialog rejected the shared API key",
+            error_code="d360_verify_failed",
+            status_code=resp.status_code,
+            body=resp.text[:300],
+        )
 
     repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
     await repo.upsert_whatsapp(
         merchant_id=merchant_id,
         phone_number_id=payload.phone_number_id,
-        access_token=payload.access_token,
-        display_phone=display_phone,
-        provider=provider,
+        display_phone=payload.display_phone,
     )
 
     logger.info(
@@ -213,11 +191,10 @@ async def whatsapp_verify(
         actor_id=str(ctx.actor_id),
         merchant_id=str(merchant_id),
         phone_number_id=payload.phone_number_id,
-        provider=provider,
     )
-    if display_phone:
-        meta_out["display_phone"] = display_phone
-    meta_out["provider"] = provider
+    meta_out: dict[str, Any] = {"provider": "d360"}
+    if payload.display_phone:
+        meta_out["display_phone"] = payload.display_phone
     return ConnectionOut(
         provider="whatsapp",
         connected=True,

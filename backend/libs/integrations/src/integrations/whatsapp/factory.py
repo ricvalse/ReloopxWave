@@ -1,19 +1,21 @@
-"""Provider-agnostic WhatsApp sender.
+"""WhatsApp sender factory.
 
-Callers (conversation service, follow-up scheduler, booking confirmation) want
-one interface: "send a text to this phone". The concrete client depends on
-whether the merchant integrated via Meta Cloud API directly or via 360dialog.
-`build_whatsapp_sender` reads the provider off the resolved integration and
-returns the right client, wrapped behind the `WhatsAppSender` protocol.
+Wave Marketing operates a single 360dialog Partner account; every merchant's
+phone number is a channel under that one partnership. The API key lives in
+the platform-level env var `WHATSAPP_D360_API_KEY` and is the same for all
+merchants — the per-merchant `phone_number_id` is just the channel id we
+attach to outgoing messages and route inbound webhooks by.
 
-Unknown providers fall back to Meta to preserve pre-d360 behaviour.
+`build_whatsapp_sender(phone_number_id=...)` returns a ready-to-use D360
+client. The api_key argument is optional and falls back to settings; pass
+it explicitly only in tests that want to inject a fake.
 """
 from __future__ import annotations
 
 from typing import Any, Protocol
 
-from integrations.whatsapp.client import WhatsAppClient
 from integrations.whatsapp.d360_client import D360WhatsAppClient
+from shared import get_settings
 
 
 class WhatsAppSender(Protocol):
@@ -23,15 +25,12 @@ class WhatsAppSender(Protocol):
 
 
 def build_whatsapp_sender(
-    *, provider: str | None, access_token: str, phone_number_id: str
+    *, phone_number_id: str, api_key: str | None = None
 ) -> WhatsAppSender:
-    """Return a sender for the given provider.
-
-    Accepted values: "meta" (default), "d360".
-    `access_token` is the Meta bearer for "meta" and the D360 API key for
-    "d360" — both are stored in the same encrypted column on the integration
-    row, the meta JSONB's `provider` decides how to use it.
-    """
-    if (provider or "meta").lower() == "d360":
-        return D360WhatsAppClient(api_key=access_token, phone_number_id=phone_number_id)
-    return WhatsAppClient(access_token=access_token, phone_number_id=phone_number_id)
+    """Return a 360dialog sender bound to the platform's shared Partner key."""
+    key = api_key if api_key is not None else get_settings().whatsapp_d360_api_key
+    if not key:
+        raise RuntimeError(
+            "WHATSAPP_D360_API_KEY is not configured — outbound WhatsApp is disabled."
+        )
+    return D360WhatsAppClient(api_key=key, phone_number_id=phone_number_id)

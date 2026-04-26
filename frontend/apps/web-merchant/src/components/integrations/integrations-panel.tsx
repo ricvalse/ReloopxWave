@@ -44,11 +44,7 @@ export function IntegrationsPanel() {
   });
 
   const verifyWA = useMutation({
-    mutationFn: async (input: {
-      phone_number_id: string;
-      access_token: string;
-      provider: 'meta' | 'd360';
-    }) => {
+    mutationFn: async (input: { phone_number_id: string }) => {
       const api = getApiClient();
       const { data, error } = await api.POST('/integrations/whatsapp/verify' as never, {
         body: input,
@@ -160,32 +156,26 @@ function WhatsAppCard({
   error,
 }: {
   connection: Connection | undefined;
-  onSubmit: (input: {
-    phone_number_id: string;
-    access_token: string;
-    provider: 'meta' | 'd360';
-  }) => void;
+  onSubmit: (input: { phone_number_id: string }) => void;
   pending: boolean;
   error: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [phoneNumberId, setPhoneNumberId] = useState('');
-  const [token, setToken] = useState('');
-  const [provider, setProvider] = useState<'meta' | 'd360'>('meta');
   const connected = connection?.connected ?? false;
   const displayPhone =
     (typeof connection?.meta?.display_phone === 'string' && connection.meta.display_phone) ||
     null;
-  const connectedProvider =
-    typeof connection?.meta?.provider === 'string' ? connection.meta.provider : 'meta';
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>WhatsApp</CardTitle>
+          <CardTitle>WhatsApp (360dialog)</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            Connetti tramite Meta Cloud API diretto oppure tramite 360dialog (BSP).
+            Wave Marketing gestisce un unico Partner 360dialog: incolla il
+            Phone Number ID del tuo canale e ti colleghi sotto la stessa
+            console — l&apos;API key è già configurata a livello di piattaforma.
           </p>
         </div>
         <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
@@ -195,9 +185,6 @@ function WhatsAppCard({
           <div className="text-sm text-muted-foreground">
             {connected ? (
               <>
-                <span className="mr-1 rounded bg-muted px-1.5 py-0.5 text-xs uppercase">
-                  {connectedProvider}
-                </span>
                 Phone:{' '}
                 <span className="font-mono text-xs">
                   {connection?.external_account_id ?? '—'}
@@ -213,7 +200,7 @@ function WhatsAppCard({
             onClick={() => setOpen((v) => !v)}
             disabled={pending}
           >
-            {open ? 'Annulla' : connected ? 'Aggiorna credenziali' : 'Collega numero'}
+            {open ? 'Annulla' : connected ? 'Aggiorna' : 'Collega numero'}
           </Button>
         </div>
         {open ? (
@@ -221,37 +208,9 @@ function WhatsAppCard({
             className="space-y-3 border-t pt-4"
             onSubmit={(e) => {
               e.preventDefault();
-              onSubmit({ phone_number_id: phoneNumberId, access_token: token, provider });
+              onSubmit({ phone_number_id: phoneNumberId });
             }}
           >
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Provider</label>
-              <div className="flex gap-2">
-                <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm">
-                  <input
-                    type="radio"
-                    name="wa-provider"
-                    checked={provider === 'meta'}
-                    onChange={() => setProvider('meta')}
-                  />
-                  Meta Cloud API
-                </label>
-                <label className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm">
-                  <input
-                    type="radio"
-                    name="wa-provider"
-                    checked={provider === 'd360'}
-                    onChange={() => setProvider('d360')}
-                  />
-                  360dialog (BSP)
-                </label>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {provider === 'meta'
-                  ? 'Richiede un WhatsApp Business Account approvato + permanent access token.'
-                  : 'Richiede un account 360dialog attivo — onboarding più rapido di Meta diretto.'}
-              </p>
-            </div>
             <div className="space-y-1">
               <label className="text-sm font-medium" htmlFor="phone-number-id">
                 Phone Number ID
@@ -263,23 +222,15 @@ function WhatsAppCard({
                 onChange={(e) => setPhoneNumberId(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium" htmlFor="wa-token">
-                {provider === 'd360' ? 'D360 API Key' : 'System user access token'}
-              </label>
-              <input
-                id="wa-token"
-                required
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
+              <p className="text-xs text-muted-foreground">
+                Lo trovi nel Partner Hub di 360dialog — è l&apos;identificativo
+                del canale del numero, lo stesso che Meta chiama
+                phone_number_id.
+              </p>
             </div>
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <div className="flex justify-end gap-2">
-              <Button type="submit" disabled={pending || !phoneNumberId || !token}>
+              <Button type="submit" disabled={pending || !phoneNumberId}>
                 {pending ? 'Verifica…' : 'Verifica e salva'}
               </Button>
             </div>
