@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
+import { InviteUserCard } from './invite-user-card';
 import { StatusBadge } from './status-badge';
 
 type Merchant = components['schemas']['MerchantOut'];
@@ -186,6 +187,8 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
           ) : null}
         </CardContent>
       </Card>
+
+      <InviteUserCard merchantId={merchantId} />
     </div>
   );
 }

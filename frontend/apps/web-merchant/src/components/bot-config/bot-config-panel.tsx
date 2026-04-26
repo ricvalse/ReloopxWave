@@ -110,9 +110,12 @@ const SECTIONS: SectionDef[] = [
   {
     section: 'pipeline',
     title: 'Pipeline (UC-04)',
-    description: 'Quando il bot promuove un lead.',
+    description:
+      'Quando il bot promuove un lead. Il pipeline + new stage servono al booking per creare l’opportunità in GHL; il qualified stage è dove il bot la sposta quando il lead si qualifica.',
     fields: [
       { key: 'pipeline.advance_threshold', label: 'Soglia avanzamento', kind: 'int', min: 0, max: 100 },
+      { key: 'pipeline.default_pipeline_id', label: 'GHL pipeline ID (default)', kind: 'text' },
+      { key: 'pipeline.new_stage_id', label: 'GHL new-lead stage ID', kind: 'text' },
       { key: 'pipeline.qualified_stage_id', label: 'GHL qualified stage ID', kind: 'text' },
     ],
   },

@@ -67,6 +67,43 @@ class GHLClient:
             json={"pipelineId": pipeline_id, "pipelineStageId": stage_id},
         )
 
+    async def search_opportunities_by_contact(
+        self, contact_id: str, *, location_id: str
+    ) -> list[dict[str, Any]]:
+        """Return opportunities owned by a contact under the given location.
+
+        UC-02 uses this to avoid duplicating opportunities when the bot books
+        a follow-up for a lead it has already created an opportunity for.
+        """
+        resp = await self._request(
+            "GET",
+            f"/opportunities/search?contact_id={contact_id}&location_id={location_id}",
+        )
+        return resp.get("opportunities", [])
+
+    async def create_opportunity(
+        self,
+        *,
+        pipeline_id: str,
+        stage_id: str,
+        contact_id: str,
+        location_id: str,
+        name: str,
+        status: str = "open",
+        monetary_value: float | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "pipelineId": pipeline_id,
+            "pipelineStageId": stage_id,
+            "contactId": contact_id,
+            "locationId": location_id,
+            "name": name,
+            "status": status,
+        }
+        if monetary_value is not None:
+            body["monetaryValue"] = monetary_value
+        return await self._request("POST", "/opportunities/", json=body)
+
     # ---- Calendar (UC-02) ----
 
     async def get_free_slots(

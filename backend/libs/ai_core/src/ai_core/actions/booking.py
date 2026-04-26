@@ -40,6 +40,12 @@ class BookingOutcome:
     slot_start_iso: str | None
     suggested: list[str]  # ISO starts for 3 alternatives if booking failed
     reason: str | None
+    # GHL opportunity stamped by the booking handler — propagated up so the
+    # outer `__call__` can persist it on `leads.meta`. UC-04 (move_pipeline)
+    # reads it back from there when the orchestrator emits the action without
+    # a payload.
+    opportunity_id: str | None = None
+    pipeline_id: str | None = None
 
 
 class BookSlotHandler:
@@ -97,6 +103,14 @@ class BookSlotHandler:
                         )
                         or 30
                     )
+                    pipeline_id = await config.resolve(
+                        ConfigKey.PIPELINE_DEFAULT_PIPELINE_ID,
+                        merchant_id=turn_ctx.merchant_id,
+                    )
+                    new_stage_id = await config.resolve(
+                        ConfigKey.PIPELINE_NEW_STAGE_ID,
+                        merchant_id=turn_ctx.merchant_id,
+                    )
                     outcome = await self._try_book(
                         ghl=ghl,
                         calendar_id=calendar_id,
@@ -104,10 +118,25 @@ class BookSlotHandler:
                         contact_phone=turn_ctx.lead_phone,
                         contact_fields=action.payload.get("contact_fields", {}),
                         preferred_start_iso=action.payload.get("preferred_start_iso"),
+                        pipeline_id=str(pipeline_id) if pipeline_id else None,
+                        new_stage_id=str(new_stage_id) if new_stage_id else None,
                     )
 
             if outcome and outcome.booked and outcome.booking_id:
                 await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
+
+            if outcome and outcome.opportunity_id:
+                # Stash on lead.meta so MovePipelineHandler can find the
+                # opportunity later without having to call GHL again.
+                lead_row = await leads.get_by_phone(
+                    merchant_id=turn_ctx.merchant_id, phone=turn_ctx.lead_phone
+                )
+                if lead_row is not None:
+                    meta = dict(lead_row.meta or {})
+                    meta["ghl_opportunity_id"] = outcome.opportunity_id
+                    if outcome.pipeline_id:
+                        meta["ghl_pipeline_id"] = outcome.pipeline_id
+                    lead_row.meta = meta
 
             await analytics.emit(
                 tenant_id=turn_ctx.tenant_id,
@@ -135,6 +164,8 @@ class BookSlotHandler:
         contact_phone: str,
         contact_fields: dict[str, Any],
         preferred_start_iso: str | None,
+        pipeline_id: str | None,
+        new_stage_id: str | None,
     ) -> BookingOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(
@@ -159,6 +190,15 @@ class BookSlotHandler:
             if not contact_id:
                 return BookingOutcome(False, None, None, [], "contact_upsert_failed")
 
+            opportunity_id = await self._ensure_opportunity(
+                client=client,
+                ghl_location_id=ghl.location_id,
+                contact_id=contact_id,
+                contact_fields=contact_fields,
+                pipeline_id=pipeline_id,
+                new_stage_id=new_stage_id,
+            )
+
             slot_start = _parse_iso(preferred_start_iso) or _next_business_hour()
             slot_end = slot_start + timedelta(minutes=duration_min)
 
@@ -170,7 +210,15 @@ class BookSlotHandler:
                     slot_end_iso=slot_end.isoformat(),
                 )
                 booking_id = booking.get("id") or booking.get("event", {}).get("id")
-                return BookingOutcome(True, booking_id, slot_start.isoformat(), [], "booked")
+                return BookingOutcome(
+                    True,
+                    booking_id,
+                    slot_start.isoformat(),
+                    [],
+                    "booked",
+                    opportunity_id=opportunity_id,
+                    pipeline_id=pipeline_id if opportunity_id else None,
+                )
             except IntegrationError:
                 # Propose alternatives
                 window_start = slot_start - timedelta(hours=2)
@@ -182,9 +230,64 @@ class BookSlotHandler:
                 )
                 suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
                 suggestions = [s for s in suggestions if s]
-                return BookingOutcome(False, None, None, suggestions, "slot_taken")
+                return BookingOutcome(
+                    False,
+                    None,
+                    None,
+                    suggestions,
+                    "slot_taken",
+                    opportunity_id=opportunity_id,
+                    pipeline_id=pipeline_id if opportunity_id else None,
+                )
         finally:
             await client.close()
+
+    async def _ensure_opportunity(
+        self,
+        *,
+        client: GHLClient,
+        ghl_location_id: str | None,
+        contact_id: str,
+        contact_fields: dict[str, Any],
+        pipeline_id: str | None,
+        new_stage_id: str | None,
+    ) -> str | None:
+        """Find or create a GHL opportunity for this contact.
+
+        Returns the opportunity id when one is in scope, None when the merchant
+        hasn't configured a default pipeline/stage yet (we don't want to silently
+        guess which pipeline a stray opportunity should land in). The booking
+        itself doesn't depend on this call — the calendar slot is created either
+        way; this only enables UC-04 to move the pipeline later.
+        """
+        if not ghl_location_id or not pipeline_id or not new_stage_id:
+            return None
+        try:
+            existing = await client.search_opportunities_by_contact(
+                contact_id, location_id=ghl_location_id
+            )
+            for opp in existing:
+                if opp.get("pipelineId") == pipeline_id:
+                    opp_id = opp.get("id")
+                    if isinstance(opp_id, str):
+                        return opp_id
+            name = (
+                contact_fields.get("name")
+                or contact_fields.get("first_name")
+                or "Lead WhatsApp"
+            )
+            created = await client.create_opportunity(
+                pipeline_id=pipeline_id,
+                stage_id=new_stage_id,
+                contact_id=contact_id,
+                location_id=ghl_location_id,
+                name=str(name),
+            )
+            opp_id = created.get("id") or created.get("opportunity", {}).get("id")
+            return opp_id if isinstance(opp_id, str) else None
+        except IntegrationError as e:
+            logger.warning("book_slot.opportunity_failed", error=str(e))
+            return None
 
     async def _send_confirmation(self, turn_ctx, outcome: BookingOutcome | None) -> None:
         if outcome is None:

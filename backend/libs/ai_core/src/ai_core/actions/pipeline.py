@@ -83,11 +83,32 @@ class MovePipelineHandler:
                 if not stage_id:
                     outcome = MoveOutcome(False, None, None, "no_stage_configured")
                 else:
+                    # Opportunity + pipeline ids: prefer the action payload,
+                    # fall back to whatever the booking handler stamped on
+                    # `lead.meta`, and finally to the merchant's configured
+                    # default pipeline. This is what unblocks UC-04 — the
+                    # orchestrator never knows the GHL ids; the booking
+                    # handler does.
+                    payload_opp = action.payload.get("opportunity_id")
+                    payload_pipe = action.payload.get("pipeline_id")
+                    lead_row = await leads.get_by_phone(
+                        merchant_id=turn_ctx.merchant_id, phone=turn_ctx.lead_phone
+                    )
+                    lead_meta = dict(lead_row.meta or {}) if lead_row else {}
+                    opportunity_id = payload_opp or lead_meta.get("ghl_opportunity_id")
+                    pipeline_id = (
+                        payload_pipe
+                        or lead_meta.get("ghl_pipeline_id")
+                        or await config.resolve(
+                            ConfigKey.PIPELINE_DEFAULT_PIPELINE_ID,
+                            merchant_id=turn_ctx.merchant_id,
+                        )
+                    )
                     outcome = await self._execute(
                         ghl=ghl,
                         stage_id=str(stage_id),
-                        pipeline_id=action.payload.get("pipeline_id"),
-                        opportunity_id=action.payload.get("opportunity_id"),
+                        pipeline_id=str(pipeline_id) if pipeline_id else None,
+                        opportunity_id=str(opportunity_id) if opportunity_id else None,
                         contact_phone=turn_ctx.lead_phone,
                         contact_fields=action.payload.get("contact_fields", {}),
                         value=action.payload.get("value"),

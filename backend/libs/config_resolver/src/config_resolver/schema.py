@@ -25,6 +25,8 @@ class ConfigKey(StrEnum):
 
     # UC-04 Pipeline
     PIPELINE_ADVANCE_THRESHOLD = "pipeline.advance_threshold"
+    PIPELINE_DEFAULT_PIPELINE_ID = "pipeline.default_pipeline_id"
+    PIPELINE_NEW_STAGE_ID = "pipeline.new_stage_id"
     PIPELINE_QUALIFIED_STAGE_ID = "pipeline.qualified_stage_id"
 
     # UC-05 Scoring
@@ -85,6 +87,8 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.REACTIVATION_INTERVAL_DAYS: 7,
     ConfigKey.REACTIVATION_MAX_ATTEMPTS: 3,
     ConfigKey.PIPELINE_ADVANCE_THRESHOLD: 60,
+    ConfigKey.PIPELINE_DEFAULT_PIPELINE_ID: None,
+    ConfigKey.PIPELINE_NEW_STAGE_ID: None,
     ConfigKey.PIPELINE_QUALIFIED_STAGE_ID: None,
     ConfigKey.SCORING_HOT_THRESHOLD: 80,
     ConfigKey.SCORING_COLD_THRESHOLD: 30,
@@ -146,6 +150,8 @@ class ReactivationConfig(BaseModel):
 
 class PipelineConfig(BaseModel):
     advance_threshold: int = Field(60, ge=0, le=100)
+    default_pipeline_id: str | None = None
+    new_stage_id: str | None = None
     qualified_stage_id: str | None = None
 
 
