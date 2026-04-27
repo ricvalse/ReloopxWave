@@ -1,8 +1,6 @@
-"""WhatsApp webhook signature verification + payload parsing."""
+"""WhatsApp webhook payload parsing."""
 from __future__ import annotations
 
-import hashlib
-import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,15 +13,6 @@ class WhatsAppInboundEvent:
     kind: str  # text | interactive | image | audio | location | ...
     text: str | None
     raw: dict[str, Any]
-
-
-def verify_whatsapp_signature(*, app_secret: str, payload: bytes, signature_header: str) -> bool:
-    """Meta sends `X-Hub-Signature-256: sha256=<hex>` computed with HMAC-SHA256."""
-    if not signature_header.startswith("sha256="):
-        return False
-    provided = signature_header.removeprefix("sha256=")
-    expected = hmac.new(app_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(provided, expected)
 
 
 def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]:

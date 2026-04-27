@@ -25,6 +25,7 @@ def turn_ctx() -> TurnContext:
         conversation_id=uuid.uuid4(),
         lead_phone="39333000000",
         phone_number_id="PNID-1",
+        api_key="test-channel-key",
     )
 
 

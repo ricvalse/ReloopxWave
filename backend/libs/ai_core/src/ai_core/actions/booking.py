@@ -310,6 +310,7 @@ class BookSlotHandler:
             )
         await self._reply_sender.send(
             phone_number_id=turn_ctx.phone_number_id,
+            api_key=turn_ctx.api_key,
             to_phone=turn_ctx.lead_phone,
             text=text,
         )

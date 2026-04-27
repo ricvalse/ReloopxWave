@@ -1,20 +1,4 @@
-import hashlib
-import hmac
-
-from integrations.whatsapp.webhook import parse_inbound_payload, verify_whatsapp_signature
-
-
-def test_verify_valid_signature() -> None:
-    secret = "my-app-secret"
-    body = b'{"entry":[]}'
-    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    assert verify_whatsapp_signature(app_secret=secret, payload=body, signature_header=sig)
-
-
-def test_verify_bad_signature() -> None:
-    assert not verify_whatsapp_signature(
-        app_secret="secret", payload=b"{}", signature_header="sha256=deadbeef"
-    )
+from integrations.whatsapp.webhook import parse_inbound_payload
 
 
 def test_parse_text_message() -> None:

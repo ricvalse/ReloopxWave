@@ -33,17 +33,27 @@ the conversation use cases (UC-01..06, 13) can be tested.
 
 ### 1.2 360dialog (single Partner — shared across all merchants)
 
-Wave Marketing operates as **one** 360dialog Partner; every merchant's WhatsApp
-number is a channel under that one partnership.
+Wave Marketing operates as **one** 360dialog Partner. Each merchant gets
+their own channel underneath, provisioned **autonomously** via the
+Embedded Signup flow — no manual onboarding by Wave Marketing per merchant.
+
+One-time platform setup (this section):
 
 - Create / log in to your 360dialog Partner Hub.
-- Generate a **Partner API key**.
-- Onboard at least one WhatsApp channel. Each channel exposes a
-  `phone_number_id` (the same identifier Meta uses).
-- In the channel's webhook config, set:
-  - **URL**: `https://api-production-6ac7.up.railway.app/webhooks/whatsapp/<phone_number_id>`
-  - **HMAC signing secret** — pick any strong random string and write it down.
-  - Subscribe to `messages` events.
+- Note your **Partner ID** (account page / Partner Hub header). Goes
+  into env as `WHATSAPP_PARTNER_ID`.
+- Generate a **Partner API key** with channel-management scope. Goes into
+  env as `WHATSAPP_PARTNER_API_KEY`. The platform uses it to mint a
+  per-channel key for each merchant on demand.
+- In the Partner Hub admin panel, set the **redirect URL** to
+  `https://web-merchant-production.up.railway.app/integrations` (or the
+  equivalent for your environment). 360dialog uses this URL globally for
+  every merchant's Embedded Signup completion — there is no per-merchant
+  callback URL.
+
+Per-merchant channel onboarding happens at §5.3 — you do not configure
+channels or webhooks here. The platform's `POST /integrations/whatsapp/channels`
+route registers the inbound webhook URL for each new channel automatically.
 
 ### 1.3 GoHighLevel (per merchant install)
 
@@ -63,9 +73,11 @@ auto-redeploys.
 # AI
 OPENAI_API_KEY=sk-...
 
-# WhatsApp (360dialog — single Partner channel for the whole platform)
-WHATSAPP_D360_API_KEY=<Partner API key from 1.2>
-WHATSAPP_D360_WEBHOOK_SECRET=<HMAC secret from 1.2>
+# WhatsApp (360dialog — single Partner for the whole platform)
+# API key: outbound sends today, autonomous channel creation tomorrow.
+WHATSAPP_PARTNER_API_KEY=<Partner API key from 1.2>
+# Partner ID: keys the upcoming autonomous channel-creation flow.
+WHATSAPP_PARTNER_ID=<Partner ID from 1.2>
 
 # GHL
 GHL_CLIENT_ID=<from 1.3>
@@ -157,13 +169,33 @@ The merchant_user has RLS scoped to this merchant only.
 
 ### 5.3 Connect WhatsApp (per merchant)
 
-On the merchant portal (signed in as the invited user):
+Self-serve via 360dialog's hosted Embedded Signup. On the merchant portal
+(signed in as the invited user):
 
-- **Integrazioni → Collega WhatsApp**.
-- Paste the channel's `phone_number_id` from your 360dialog Partner Hub.
-- No API key field — that's platform-wide.
-- **Verifica e salva** → the API pings 360dialog with the platform key, persists
-  the merchant ↔ channel mapping.
+- **Integrazioni → Collega WhatsApp** → opens 360dialog's signup popup
+  (600×900, centered).
+- Inside the popup the merchant signs into Facebook, picks the WhatsApp
+  Business account + phone number, verifies via SMS/voice OTP. This is
+  Meta's standard Embedded Signup, hosted by 360dialog. We are not in
+  this flow — we trust whatever 360dialog returns.
+- 360dialog redirects the parent window back to `/integrations?client=...&channels=[...]`.
+  A `useEffect` reads those params and POSTs them to
+  `POST /integrations/whatsapp/channels`, which:
+    1. Mints a per-channel `D360-API-Key` via Partner Hub.
+    2. Resolves Meta's `phone_number_id` for the channel.
+    3. Registers the inbound webhook URL.
+    4. Persists the encrypted per-channel key on the merchant.
+- The status pill on the WhatsApp card flips to **Connesso** within a few
+  seconds. Reload to confirm.
+
+If the popup is blocked the page falls back to a full-page redirect; the
+merchant returns to the same URL after completion.
+
+**Manual fallback (ops only)**: there is an "Inserisci manualmente"
+expander on the same card that exposes the legacy paste flow
+(`POST /integrations/whatsapp/verify`) for channels that were
+pre-provisioned in the Partner Hub by hand. Most merchants should never
+need this.
 
 ### 5.4 Connect GHL (per merchant)
 
@@ -416,19 +448,22 @@ select ciphertext from integrations limit 1;
 
 ## 8. Webhook signature checks
 
-WhatsApp inbound:
+WhatsApp inbound: no HMAC check by design (matches the other Reloop platform).
+The route accepts and parses all payloads; the worker scopes each event to a
+merchant by looking up `phone_number_id` in the `integrations` table — events
+for unknown channels are dropped there.
+
+GHL inbound is signed:
 
 ```bash
 # Wrong signature → 401, no DB writes
 curl -i -X POST \
-  -H "X-Hub-Signature-256: sha256=deadbeef" \
+  -H "X-GoHighLevel-Signature: deadbeef" \
   -H "Content-Type: application/json" \
   -d '{"foo":"bar"}' \
-  https://api-production-6ac7.up.railway.app/webhooks/whatsapp/<phone_number_id>
+  https://api-production-6ac7.up.railway.app/webhooks/ghl/<merchant_id>
 # → HTTP/2 401
 ```
-
-GHL inbound: same shape with `X-GoHighLevel-Signature`.
 
 ---
 
@@ -437,7 +472,7 @@ GHL inbound: same shape with `X-GoHighLevel-Signature`.
 Run before treating a deploy as shippable.
 
 - [ ] `cd backend && uv run ruff check .` — clean.
-- [ ] `cd backend && uv run pytest` — 66/66 unit tests pass.
+- [ ] `cd backend && uv run pytest` — 64/64 unit tests pass.
 - [ ] `cd frontend && pnpm lint && pnpm typecheck` — both green.
 - [ ] Railway: API + worker + web-admin + web-merchant + Redis all show
       latest deploy as **SUCCESS**.

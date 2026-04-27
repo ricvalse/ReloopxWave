@@ -38,18 +38,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/tenants/": {
+    "/auth/bootstrap/status": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Tenants */
-        get: operations["list_tenants_tenants__get"];
+        /**
+         * Bootstrap Status
+         * @description Tell the frontend whether the deployment still needs a first-admin.
+         *
+         *     Runs unauthenticated. We use a raw SQL probe that sidesteps RLS via the
+         *     `postgres` connection role. If the Wave tenant row is present, bootstrap
+         *     is closed; otherwise the login page can offer the "create first admin"
+         *     action to the very next person who signs up.
+         */
+        get: operations["bootstrap_status_auth_bootstrap_status_get"];
         put?: never;
-        /** Create Tenant */
-        post: operations["create_tenant_tenants__post"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bootstrap */
+        post: operations["bootstrap_auth_bootstrap_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -570,6 +594,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/whatsapp/partner-id": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whatsapp Partner Id
+         * @description Public — the merchant portal needs the Partner ID to build the URL
+         *     `https://hub.360dialog.com/dashboard/app/{partner_id}/permissions?...`
+         *     that opens the Embedded Signup popup. Treating Partner ID as public is
+         *     the same posture amalia-ai takes; the secret is the Partner API key,
+         *     not the ID.
+         */
+        get: operations["whatsapp_partner_id_integrations_whatsapp_partner_id_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/whatsapp/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Whatsapp Provision Channel
+         * @description Complete the autonomous flow after 360dialog Embedded Signup.
+         *
+         *     Inputs come from the popup redirect: a `channel_id` 360dialog created
+         *     for the merchant, plus the phone_number they chose. We:
+         *       1. Mint a per-channel D360 API key via Partner Hub.
+         *       2. Fetch Meta's phone_number_id for that channel.
+         *       3. Register the inbound webhook URL.
+         *       4. Persist (merchant, channel) with the encrypted key.
+         *
+         *     Any 4xx from 360dialog surfaces verbatim — the merchant sees what the
+         *     BSP rejected and can retry. We do not write a partial integrations row
+         *     on failure: the merchant restarts from the popup.
+         */
+        post: operations["whatsapp_provision_channel_integrations_whatsapp_channels_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/whatsapp/verify": {
         parameters: {
             query?: never;
@@ -611,11 +690,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Whatsapp Verify
-         * @description Meta verification challenge — echo hub.challenge iff verify_token matches.
-         */
-        get: operations["whatsapp_verify_webhooks_whatsapp__phone_number_id__get"];
+        get?: never;
         put?: never;
         /** Whatsapp Inbound */
         post: operations["whatsapp_inbound_webhooks_whatsapp__phone_number_id__post"];
@@ -688,6 +763,29 @@ export interface components {
              */
             lookahead_days: number;
         };
+        /** BootstrapOut */
+        BootstrapOut: {
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Tenant Slug */
+            tenant_slug: string;
+            /** Role */
+            role: string;
+            /** Created */
+            created: boolean;
+            /** Requires Reauth */
+            requires_reauth: boolean;
+        };
+        /** BootstrapStatusOut */
+        BootstrapStatusOut: {
+            /** Available */
+            available: boolean;
+            /** Tenant Id */
+            tenant_id: string | null;
+        };
         /**
          * BotConfigSchema
          * @description Typed view over the JSONB override bag — validated at write time.
@@ -704,6 +802,7 @@ export interface components {
             escalation?: components["schemas"]["EscalationConfig"];
             privacy?: components["schemas"]["PrivacyConfig"];
             booking?: components["schemas"]["BookingConfig"];
+            business?: components["schemas"]["BusinessConfig"];
         };
         /** BotSurfaceConfig */
         BotSurfaceConfig: {
@@ -717,6 +816,33 @@ export interface components {
              * @default professionale-amichevole
              */
             tone: string;
+            /** System Prompt Additions */
+            system_prompt_additions?: string | null;
+            /** First Message */
+            first_message?: string | null;
+        };
+        /**
+         * BusinessConfig
+         * @description Merchant-facing profile — names, offer, hours. All optional. Fed into
+         *     the orchestrator's system prompt so the bot speaks for this merchant.
+         */
+        BusinessConfig: {
+            /** Name */
+            name?: string | null;
+            /** Industry */
+            industry?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Offer */
+            offer?: string | null;
+            /** Hours */
+            hours?: string | null;
+            /** Location */
+            location?: string | null;
+            /** Pricing Notes */
+            pricing_notes?: string | null;
+            /** Website */
+            website?: string | null;
         };
         /** ConnectionOut */
         ConnectionOut: {
@@ -824,7 +950,7 @@ export interface components {
              * Role
              * @enum {string}
              */
-            role: "agency_admin" | "agency_user" | "merchant_admin" | "merchant_user";
+            role: "agency_admin" | "merchant_user";
             /** Merchant Id */
             merchant_id?: string | null;
             /** Full Name */
@@ -978,6 +1104,11 @@ export interface components {
             /** Locked Keys */
             locked_keys: string[];
         };
+        /** PartnerIdOut */
+        PartnerIdOut: {
+            /** Partner Id */
+            partner_id: string;
+        };
         /** PipelineConfig */
         PipelineConfig: {
             /**
@@ -985,6 +1116,10 @@ export interface components {
              * @default 60
              */
             advance_threshold: number;
+            /** Default Pipeline Id */
+            default_pipeline_id?: string | null;
+            /** New Stage Id */
+            new_stage_id?: string | null;
             /** Qualified Stage Id */
             qualified_stage_id?: string | null;
         };
@@ -1156,17 +1291,6 @@ export interface components {
             /** Is Default */
             is_default: boolean;
         };
-        /** TenantCreate */
-        TenantCreate: {
-            /** Slug */
-            slug: string;
-            /** Name */
-            name: string;
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            } | null;
-        };
         /** TenantOut */
         TenantOut: {
             /**
@@ -1237,12 +1361,27 @@ export interface components {
             /** Prompt Template Id */
             prompt_template_id?: string | null;
         };
+        /**
+         * WhatsAppChannelProvisionIn
+         * @description Input for `POST /integrations/whatsapp/channels`.
+         *
+         *     `channel_id` arrives from 360dialog's Embedded Signup popup redirect
+         *     (the `channels=[...]` query param). `phone_number` is the E.164 number
+         *     the merchant chose during signup, used as a display string only.
+         */
+        WhatsAppChannelProvisionIn: {
+            /** Channel Id */
+            channel_id: string;
+            /** Phone Number */
+            phone_number?: string | null;
+        };
         /** WhatsAppVerifyIn */
         WhatsAppVerifyIn: {
-            /** Phone Number Id */
+            /**
+             * Phone Number Id
+             * @description 360dialog channel id (the 'phone_number_id' Meta uses) for this merchant.
+             */
             phone_number_id: string;
-            /** Access Token */
-            access_token: string;
             /** Display Phone */
             display_phone?: string | null;
         };
@@ -1310,7 +1449,27 @@ export interface operations {
             };
         };
     };
-    list_tenants_tenants__get: {
+    bootstrap_status_auth_bootstrap_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootstrapStatusOut"];
+                };
+            };
+        };
+    };
+    bootstrap_auth_bootstrap_post: {
         parameters: {
             query?: never;
             header?: {
@@ -1327,42 +1486,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TenantOut"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_tenant_tenants__post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TenantCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TenantOut"];
+                    "application/json": components["schemas"]["BootstrapOut"];
                 };
             };
             /** @description Validation Error */
@@ -2536,6 +2660,61 @@ export interface operations {
             };
         };
     };
+    whatsapp_partner_id_integrations_whatsapp_partner_id_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PartnerIdOut"];
+                };
+            };
+        };
+    };
+    whatsapp_provision_channel_integrations_whatsapp_channels_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WhatsAppChannelProvisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     whatsapp_verify_integrations_whatsapp_verify_post: {
         parameters: {
             query?: never;
@@ -2605,47 +2784,10 @@ export interface operations {
             };
         };
     };
-    whatsapp_verify_webhooks_whatsapp__phone_number_id__get: {
-        parameters: {
-            query?: {
-                hub_mode?: string;
-                hub_challenge?: string;
-                hub_verify_token?: string;
-            };
-            header?: never;
-            path: {
-                phone_number_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     whatsapp_inbound_webhooks_whatsapp__phone_number_id__post: {
         parameters: {
             query?: never;
-            header?: {
-                "x-hub-signature-256"?: string;
-            };
+            header?: never;
             path: {
                 phone_number_id: string;
             };
@@ -2714,8 +2856,8 @@ export interface operations {
 export enum ApiPaths {
     health_health_get = "/health",
     whoami_auth_whoami_get = "/auth/whoami",
-    list_tenants_tenants__get = "/tenants/",
-    create_tenant_tenants__post = "/tenants/",
+    bootstrap_status_auth_bootstrap_status_get = "/auth/bootstrap/status",
+    bootstrap_auth_bootstrap_post = "/auth/bootstrap",
     get_my_tenant_tenants_me_get = "/tenants/me",
     update_tenant_tenants__tenant_id__patch = "/tenants/{tenant_id}",
     list_merchants_merchants__get = "/merchants/",
@@ -2750,9 +2892,10 @@ export enum ApiPaths {
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",
     ghl_oauth_start_integrations_ghl_oauth_start_post = "/integrations/ghl/oauth/start",
     ghl_oauth_callback_integrations_ghl_oauth_callback_get = "/integrations/ghl/oauth/callback",
+    whatsapp_partner_id_integrations_whatsapp_partner_id_get = "/integrations/whatsapp/partner-id",
+    whatsapp_provision_channel_integrations_whatsapp_channels_post = "/integrations/whatsapp/channels",
     whatsapp_verify_integrations_whatsapp_verify_post = "/integrations/whatsapp/verify",
     integration_status_integrations_status_get = "/integrations/status",
-    whatsapp_verify_webhooks_whatsapp__phone_number_id__get = "/webhooks/whatsapp/{phone_number_id}",
     whatsapp_inbound_webhooks_whatsapp__phone_number_id__post = "/webhooks/whatsapp/{phone_number_id}",
     ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}"
 }

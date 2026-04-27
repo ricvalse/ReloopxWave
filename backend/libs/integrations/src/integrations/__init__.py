@@ -15,18 +15,25 @@ from integrations.whatsapp.factory import (
     WhatsAppSender,
     build_whatsapp_sender,
 )
+from integrations.whatsapp.partner_client import (
+    ChannelCredentials,
+    D360PartnerClient,
+    PartnerChannel,
+)
 from integrations.whatsapp.webhook import (
     WhatsAppInboundEvent,
     parse_inbound_payload,
-    verify_whatsapp_signature,
 )
 
 __all__ = [
+    "ChannelCredentials",
+    "D360PartnerClient",
     "D360WhatsAppClient",
     "ExchangedTokens",
     "GHLClient",
     "GHLTokenBundle",
     "InvitedUser",
+    "PartnerChannel",
     "SupabaseAdminClient",
     "SupabaseStorage",
     "VerifiedState",
@@ -39,5 +46,4 @@ __all__ = [
     "sign_oauth_state",
     "verify_ghl_signature",
     "verify_oauth_state",
-    "verify_whatsapp_signature",
 ]

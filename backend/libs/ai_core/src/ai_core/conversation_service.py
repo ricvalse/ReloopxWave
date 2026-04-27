@@ -79,6 +79,9 @@ class TurnContext:
     conversation_id: UUID
     lead_phone: str
     phone_number_id: str
+    # Per-channel D360 key for outbound sends. Action handlers receive
+    # this so they don't need to re-resolve the integration row.
+    api_key: str = ""
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
@@ -88,6 +91,7 @@ class ReplySender(Protocol):
         self,
         *,
         phone_number_id: str,
+        api_key: str,
         to_phone: str,
         text: str,
     ) -> str: ...
@@ -272,10 +276,12 @@ class ConversationService:
             conversation_id=conv.id,
             lead_phone=from_phone,
             phone_number_id=phone_number_id,
+            api_key=resolved.api_key,
         )
 
         await self._sender.send(
             phone_number_id=phone_number_id,
+            api_key=resolved.api_key,
             to_phone=from_phone,
             text=response.reply_text,
         )

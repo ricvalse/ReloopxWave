@@ -23,15 +23,18 @@ from shared import EncryptedSecret, decrypt_secret, encrypt_secret
 class ResolvedWhatsAppIntegration:
     """Per-merchant WhatsApp routing record.
 
-    Wave Marketing runs a single 360dialog Partner channel — the API key
-    lives in env, not in this row. All we keep here is the phone_number_id
-    (a.k.a. 360dialog channel id) so inbound webhooks can resolve which
-    merchant a message belongs to.
+    Each merchant owns its own 360dialog channel under Wave Marketing's
+    Partner. `api_key` is the per-channel D360 key (used as `D360-API-Key`
+    header on outbound). For legacy rows written by the manual-paste flow
+    `api_key` is the placeholder `"d360-shared-channel"` — the sender
+    factory recognises that and substitutes the platform-level key
+    (`WHATSAPP_PARTNER_API_KEY`).
     """
 
     merchant_id: UUID
     tenant_id: UUID
     phone_number_id: str
+    api_key: str
     meta: dict[str, Any]
 
 
@@ -77,6 +80,7 @@ class IntegrationRepository:
             merchant_id=integration.merchant_id,
             tenant_id=tenant_id,
             phone_number_id=phone_number_id,
+            api_key=self._decrypt(integration),
             meta=dict(integration.meta or {}),
         )
 
@@ -179,21 +183,30 @@ class IntegrationRepository:
         *,
         merchant_id: UUID,
         phone_number_id: str,
+        api_key: str | None = None,
+        channel_id: str | None = None,
+        waba_id: str | None = None,
         display_phone: str | None = None,
     ) -> Integration:
-        # The Partner API key is platform-level (env), not per-merchant — but
-        # the schema still enforces NOT NULL on the encrypted-secret columns.
-        # Stash a fixed placeholder so the row stays valid without leaking
-        # anything sensitive into the DB.
+        # Autonomous flow passes the real per-channel D360 key in `api_key`.
+        # Legacy manual-paste flow leaves it None; we encrypt a placeholder
+        # to satisfy the NOT NULL constraint and the sender factory falls
+        # back to the platform-level key.
+        plaintext = api_key if api_key is not None else "d360-shared-channel"
         aad = f"wa:{merchant_id}".encode()
-        secret = encrypt_secret("d360-shared-channel", kek_base64=self._kek, aad=aad)
+        secret = encrypt_secret(plaintext, kek_base64=self._kek, aad=aad)
 
         integration = await self._get("whatsapp", merchant_id)
         meta: dict[str, Any] = {
             **(integration.meta if integration else {}),
             "phone_number_id": phone_number_id,
             "provider": "d360",
+            "created_via": "partner_hub" if api_key is not None else "manual",
         }
+        if channel_id:
+            meta["channel_id"] = channel_id
+        if waba_id:
+            meta["waba_id"] = waba_id
         if display_phone:
             meta["display_phone"] = display_phone
 

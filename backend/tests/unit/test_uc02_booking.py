@@ -26,7 +26,7 @@ from shared import IntegrationError
 class FakeSender:
     calls: list[dict] = field(default_factory=list)
 
-    async def send(self, *, phone_number_id, to_phone, text):
+    async def send(self, *, phone_number_id, api_key, to_phone, text):
         self.calls.append({"to": to_phone, "text": text})
         return "wamid.confirm"
 
@@ -40,6 +40,7 @@ def turn_ctx() -> TurnContext:
         conversation_id=uuid.uuid4(),
         lead_phone="39333000000",
         phone_number_id="PNID-1",
+        api_key="test-channel-key",
     )
 
 

@@ -26,18 +26,20 @@ class WhatsAppReplySender:
     """Bridges the 360dialog WhatsApp client to the ReplySender protocol
     used by ConversationService.
 
-    The shared Partner API key is read from settings; per-call we just
-    bind to the right channel (`phone_number_id`).
+    `api_key` is the per-channel D360 key the caller already resolved from
+    the integrations row. Legacy rows pass the placeholder; the factory
+    falls back to the platform Partner key for those.
     """
 
     async def send(
         self,
         *,
         phone_number_id: str,
+        api_key: str,
         to_phone: str,
         text: str,
     ) -> str:
-        sender = build_whatsapp_sender(phone_number_id=phone_number_id)
+        sender = build_whatsapp_sender(phone_number_id=phone_number_id, api_key=api_key)
         try:
             resp = await sender.send_text(to_phone=to_phone, text=text)
             return str(

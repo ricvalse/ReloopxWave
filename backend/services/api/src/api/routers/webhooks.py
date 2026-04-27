@@ -3,9 +3,11 @@
 WhatsApp comes in via 360dialog only — Wave Marketing operates as a single
 360dialog Partner; every merchant's number is a channel under that partner.
 360dialog forwards Meta's WABA payload shape unchanged, so the parser is the
-same one Meta would have used. The signing secret lives in
-`WHATSAPP_D360_WEBHOOK_SECRET`; if it's empty the endpoint trusts the
-path-level phone_number_id (sandbox only).
+same one Meta would have used. Inbound trust is path-only: the
+`phone_number_id` in the URL is resolved to a merchant by the worker via
+the `integrations` table; events for unknown channels are dropped there.
+HMAC signature verification is intentionally not enforced (matches the
+other Reloop platform).
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.signatures import verify_ghl_signature
-from integrations.whatsapp.webhook import parse_inbound_payload, verify_whatsapp_signature
+from integrations.whatsapp.webhook import parse_inbound_payload
 from shared import get_logger, get_settings
 
 router = APIRouter()
@@ -27,25 +29,7 @@ logger = get_logger(__name__)
 async def whatsapp_inbound(
     phone_number_id: str,
     request: Request,
-    x_hub_signature_256: str = Header(default=""),
 ) -> dict[str, Any]:
-    settings = get_settings()
-    body = await request.body()
-
-    if settings.whatsapp_d360_webhook_secret:
-        if not verify_whatsapp_signature(
-            app_secret=settings.whatsapp_d360_webhook_secret,
-            payload=body,
-            signature_header=x_hub_signature_256,
-        ):
-            raise HTTPException(status_code=401, detail="invalid signature")
-    else:
-        logger.warning(
-            "webhook.d360.unsigned_accepted",
-            phone_number_id=phone_number_id,
-            bytes=len(body),
-        )
-
     payload = await request.json()
     events = parse_inbound_payload(payload)
     logger.info(

@@ -131,7 +131,9 @@ async def _maybe_send(
 
         text = REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
 
-        client = build_whatsapp_sender(phone_number_id=wa.phone_number_id)
+        client = build_whatsapp_sender(
+            phone_number_id=wa.phone_number_id, api_key=wa.api_key
+        )
         try:
             await client.send_text(to_phone=cand.phone, text=text)
         finally:

@@ -127,8 +127,8 @@ ANTHROPIC_FALLBACK_ENABLED=false
 # --- Integrations (can be left blank initially; per-merchant overrides go via the admin UI) ---
 GHL_CLIENT_ID=
 GHL_CLIENT_SECRET=
-WHATSAPP_APP_SECRET=
-WHATSAPP_VERIFY_TOKEN=
+WHATSAPP_PARTNER_API_KEY=
+WHATSAPP_PARTNER_ID=
 
 # --- Crypto ---
 INTEGRATIONS_KEK_BASE64=<from step 1>
@@ -183,7 +183,7 @@ railway up --service api
 
 Once `api` is live, register these with the providers (per-merchant — typically via the in-app integrations flow rather than directly in Meta/GHL):
 
-- WhatsApp: `POST https://<api-domain>/webhooks/whatsapp/{phone_number_id}` (and the matching `GET` for Meta's verification challenge)
+- WhatsApp: `POST https://<api-domain>/webhooks/whatsapp/{phone_number_id}` (configured per-channel in the 360dialog Partner Hub; no signature secret to set)
 - GHL: `POST https://<api-domain>/webhooks/ghl/{merchant_id}`
 
 ## Rollbacks
@@ -197,7 +197,7 @@ Railway keeps every prior deploy. To roll back: open the api or worker service �
 | Build fails on `uv sync --frozen` | `backend/uv.lock` out of sync with `pyproject.toml` | Run `cd backend && uv lock` locally and commit. |
 | API returns 500, logs show `request.jwt.claims` errors | RLS policies couldn't read the claim — unusual; means the claim wasn't set | Verify the Supabase Auth hook injects `tenant_id`/`merchant_id`/`role` into JWTs. |
 | Worker stuck on `relation "..." does not exist` | API migration didn't run | `railway run --service api alembic upgrade head`, then restart worker. |
-| Webhook returns 401 | `WHATSAPP_APP_SECRET` mismatch | Re-paste from Meta App → Webhooks. |
+| GHL webhook returns 401 | `GHL_WEBHOOK_SECRET` mismatch | Re-paste from your GHL marketplace app settings. |
 | Healthcheck fails with timeout | App didn't bind to `$PORT` | Make sure the api service uses the Dockerfile, not a custom `startCommand` overriding the entrypoint. |
 | `Invalid base64` on boot | `INTEGRATIONS_KEK_BASE64` malformed | Regenerate; must decode to exactly 32 bytes. |
 | `OSError: [Errno 101] Network is unreachable` to Supabase | `SUPABASE_DB_URL` points at the direct (IPv6-only) endpoint | Switch to the Supavisor pooler URL (`postgres.<ref>@aws-0-<region>.pooler.supabase.com:5432`). |

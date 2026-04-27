@@ -37,6 +37,7 @@ def integration() -> ResolvedWhatsAppIntegration:
         merchant_id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
+        api_key="test-channel-key",
         meta={},
     )
 
