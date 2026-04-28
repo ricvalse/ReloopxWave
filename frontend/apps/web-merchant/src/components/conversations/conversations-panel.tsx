@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getBrowserSupabase } from '@/lib/supabase';
@@ -38,6 +38,10 @@ export function ConversationsPanel() {
       if (error) throw new Error(error.message);
       return (data ?? []) as Conversation[];
     },
+    // Polling fallback in case Realtime drops the connection or the
+    // publication isn't broadcasting. Cheap (single SELECT, RLS-scoped).
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
   });
 
   // Realtime — any message insert for this merchant bumps the list + open thread.
@@ -62,12 +66,12 @@ export function ConversationsPanel() {
   }, [queryClient]);
 
   return (
-    <div className="grid gap-4 p-6 md:grid-cols-[1fr_2fr]">
-      <Card className="min-h-[60vh]">
-        <CardHeader>
+    <div className="grid h-[calc(100vh-7rem)] gap-4 p-6 md:grid-cols-[1fr_2fr]">
+      <Card className="flex min-h-0 flex-col">
+        <CardHeader className="shrink-0">
           <CardTitle>Conversazioni ({conversations.data?.length ?? 0})</CardTitle>
         </CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="min-h-0 flex-1 overflow-y-auto p-0">
           {conversations.isLoading ? (
             <p className="px-6 py-4 text-sm text-muted-foreground">Caricamento…</p>
           ) : conversations.isError ? (
@@ -108,11 +112,11 @@ export function ConversationsPanel() {
         </CardContent>
       </Card>
 
-      <Card className="min-h-[60vh]">
-        <CardHeader>
+      <Card className="flex min-h-0 flex-col">
+        <CardHeader className="shrink-0">
           <CardTitle>Messaggi</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-h-0 flex-1 overflow-y-auto">
           {selectedId ? (
             <ThreadView conversationId={selectedId} />
           ) : (
@@ -140,9 +144,19 @@ function ThreadView({ conversationId }: { conversationId: string }) {
       if (error) throw new Error(error.message);
       return (data ?? []) as Message[];
     },
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
   });
 
   const items = useMemo(() => thread.data ?? [], [thread.data]);
+
+  // Auto-scroll the thread to the latest message whenever a new one
+  // appears. Anchored to the bottom sentinel so behaviour is identical
+  // for first render and live updates.
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: 'end' });
+  }, [items.length]);
 
   if (thread.isLoading) return <p className="text-sm text-muted-foreground">Caricamento…</p>;
   if (thread.isError) {
@@ -161,6 +175,7 @@ function ThreadView({ conversationId }: { conversationId: string }) {
       {items.map((m) => (
         <MessageBubble key={m.id} message={m} />
       ))}
+      <div ref={bottomRef} />
     </div>
   );
 }
