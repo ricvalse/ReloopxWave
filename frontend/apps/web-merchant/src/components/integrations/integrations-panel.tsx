@@ -157,6 +157,7 @@ export function IntegrationsPanel() {
         onManualSubmit={(input) => verifyWA.mutate(input)}
         manualPending={verifyWA.isPending}
         manualError={verifyWA.error instanceof Error ? verifyWA.error.message : null}
+        manualSuccess={verifyWA.isSuccess}
         provisionPending={provisionChannel.isPending}
       />
     </div>
@@ -220,6 +221,7 @@ function WhatsAppCard({
   onManualSubmit,
   manualPending,
   manualError,
+  manualSuccess,
   provisionPending,
 }: {
   connection: Connection | undefined;
@@ -227,10 +229,20 @@ function WhatsAppCard({
   onManualSubmit: (input: { phone_number_id: string }) => void;
   manualPending: boolean;
   manualError: string | null;
+  manualSuccess: boolean;
   provisionPending: boolean;
 }) {
   const [manualOpen, setManualOpen] = useState(false);
   const [phoneNumberId, setPhoneNumberId] = useState('');
+
+  // Auto-close the manual form once the verify call succeeds and reset
+  // the input so a follow-up "replace channel" doesn't show the prior id.
+  useEffect(() => {
+    if (manualSuccess) {
+      setManualOpen(false);
+      setPhoneNumberId('');
+    }
+  }, [manualSuccess]);
   const connected = connection?.connected ?? false;
   const displayPhone =
     (typeof connection?.meta?.display_phone === 'string' && connection.meta.display_phone) ||
@@ -252,6 +264,11 @@ function WhatsAppCard({
         <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
       </CardHeader>
       <CardContent className="space-y-4">
+        {manualSuccess ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+            Canale WhatsApp salvato correttamente.
+          </div>
+        ) : null}
         <div className="flex items-start justify-between gap-4">
           <div className="text-sm text-muted-foreground">
             {connected ? (
