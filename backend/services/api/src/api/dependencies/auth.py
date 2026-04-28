@@ -193,7 +193,10 @@ async def get_tenant_context(
     if tenant_id is None:
         raise PermissionDeniedError("Token missing tenant_id claim", error_code="missing_tenant_claim")
     merchant_id_raw = claims.get("merchant_id")
-    role = claims.get("role", "merchant_user")
+    # `user_role` is the app role written by the custom_access_token_hook
+    # (migration 0007). Fall back to legacy `role` for tokens issued before
+    # 0007 — those will phase out as users re-login.
+    role = claims.get("user_role") or claims.get("role") or "merchant_user"
     actor_id = claims.get("sub")
     if actor_id is None:
         raise PermissionDeniedError("Token missing sub claim", error_code="missing_sub_claim")

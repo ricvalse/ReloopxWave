@@ -85,7 +85,7 @@ async def bootstrap(
     email = str(claims.get("email") or "").lower()
 
     claim_tenant = claims.get("tenant_id")
-    claim_role = claims.get("role")
+    claim_role = claims.get("user_role") or claims.get("role")
 
     # Case 1 — caller already carries admin claims. Confirm the tenant row
     # exists (refresh race) and return idempotently.

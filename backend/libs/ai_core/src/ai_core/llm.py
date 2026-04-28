@@ -35,6 +35,12 @@ class LLMClient(Protocol):
     ) -> CompletionResult: ...
 
 
+def _model_locks_temperature(model: str) -> bool:
+    """OpenAI GPT-5 models only accept the default temperature (1)."""
+    bare = model[3:] if model.startswith("ft:") else model
+    return bare.startswith("gpt-5")
+
+
 class OpenAIClient:
     """Wraps `openai` SDK. Supports fine-tuned models by passing their id as `model`."""
 
@@ -66,8 +72,12 @@ class OpenAIClient:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
-            "temperature": temperature,
         }
+        # GPT-5 family rejects any non-default temperature with a 400. We
+        # also use the same family for fine-tunes (`ft:gpt-5-…`), so match
+        # the prefix permissively.
+        if not _model_locks_temperature(self.model):
+            payload["temperature"] = temperature
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if response_format is not None:

@@ -83,7 +83,7 @@ async def tenant_session(ctx: TenantContext) -> AsyncIterator[AsyncSession]:
         claims = {
             "tenant_id": str(ctx.tenant_id),
             "merchant_id": str(ctx.merchant_id) if ctx.merchant_id else None,
-            "role": ctx.role,
+            "user_role": ctx.role,
             "sub": str(ctx.actor_id),
         }
         # Postgres does not accept bind parameters on the `SET LOCAL ...`
