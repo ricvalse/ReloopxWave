@@ -68,7 +68,10 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
 
     invite = captured[0]
     assert invite["method"] == "POST"
-    assert invite["url"] == "https://proj.supabase.co/auth/v1/admin/invite"
+    assert invite["url"] == (
+        "https://proj.supabase.co/auth/v1/invite"
+        "?redirect_to=https%3A%2F%2Fexample.com%2Fwelcome"
+    )
     assert invite["headers"]["apikey"] == "sr-123"
     assert invite["headers"]["authorization"] == "Bearer sr-123"
     assert invite["body"] == {
@@ -78,7 +81,6 @@ async def test_invite_sends_correct_request_and_parses_user_id() -> None:
             "merchant_id": str(merchant_id),
             "role": "merchant_user",
         },
-        "redirect_to": "https://example.com/welcome",
     }
 
     app_meta = captured[1]
