@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -75,7 +76,7 @@ async def merchant_kpis(
         since_days=since_days,
     )
     dist = await repo.score_distribution(merchant_id=target)
-    return MerchantKpisOut(**k.__dict__, score_distribution=dist)
+    return MerchantKpisOut(**asdict(k), score_distribution=dist)
 
 
 def _resolve_kpi_merchant(ctx: CurrentContext, override: UUID | None) -> UUID:
