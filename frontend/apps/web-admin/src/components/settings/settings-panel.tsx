@@ -1,13 +1,19 @@
 'use client';
 
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
+import { getBrowserSupabase } from '@/lib/supabase';
 
 type Tenant = components['schemas']['TenantOut'];
 
 export function SettingsPanel() {
+  const router = useRouter();
+  const [signingOut, setSigningOut] = useState(false);
+
   const tenant = useQuery({
     queryKey: ['tenants', 'me'],
     queryFn: async (): Promise<Tenant> => {
@@ -17,6 +23,12 @@ export function SettingsPanel() {
       return data as Tenant;
     },
   });
+
+  const onSignOut = async () => {
+    setSigningOut(true);
+    await getBrowserSupabase().auth.signOut();
+    router.replace('/login');
+  };
 
   return (
     <div className="space-y-4 p-6">
@@ -51,6 +63,21 @@ export function SettingsPanel() {
               </div>
             </dl>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Sessione</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Esci da questo dispositivo. Dovrai inserire di nuovo email e password
+            per rientrare.
+          </p>
+          <Button variant="outline" onClick={onSignOut} disabled={signingOut}>
+            {signingOut ? 'Uscita…' : 'Esci'}
+          </Button>
         </CardContent>
       </Card>
 

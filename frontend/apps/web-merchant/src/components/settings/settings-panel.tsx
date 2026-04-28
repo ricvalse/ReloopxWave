@@ -1,10 +1,15 @@
 'use client';
 
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getBrowserSupabase } from '@/lib/supabase';
 
 export function SettingsPanel() {
+  const router = useRouter();
+  const [signingOut, setSigningOut] = useState(false);
+
   const session = useQuery({
     queryKey: ['auth', 'session'],
     queryFn: async () => {
@@ -16,6 +21,12 @@ export function SettingsPanel() {
 
   const user = session.data?.user;
   const claims = (user?.app_metadata as Record<string, unknown> | undefined) ?? {};
+
+  const onSignOut = async () => {
+    setSigningOut(true);
+    await getBrowserSupabase().auth.signOut();
+    router.replace('/login');
+  };
 
   return (
     <div className="space-y-4 p-6">
@@ -48,6 +59,21 @@ export function SettingsPanel() {
               </div>
             </dl>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Sessione</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Esci da questo dispositivo. Dovrai inserire di nuovo email e password
+            per rientrare.
+          </p>
+          <Button variant="outline" onClick={onSignOut} disabled={signingOut}>
+            {signingOut ? 'Uscita…' : 'Esci'}
+          </Button>
         </CardContent>
       </Card>
 
