@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, KPICard } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { InviteUserCard } from './invite-user-card';
 import { StatusBadge } from './status-badge';
 
 type Merchant = components['schemas']['MerchantOut'];
+type Kpis = components['schemas']['MerchantKpisOut'];
 
 export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const queryClient = useQueryClient();
@@ -188,7 +189,75 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
         </CardContent>
       </Card>
 
+      <MerchantKpiSection merchantId={merchantId} />
+
       <InviteUserCard merchantId={merchantId} />
+    </div>
+  );
+}
+
+function MerchantKpiSection({ merchantId }: { merchantId: string }) {
+  const query = useQuery({
+    queryKey: ['merchant-kpis', merchantId],
+    queryFn: async (): Promise<Kpis> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/analytics/merchant/kpis' as never, {
+        params: { query: { merchant_id: merchantId, since_days: 30 } },
+      } as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as Kpis;
+    },
+  });
+
+  const k = query.data;
+  const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <KPICard label="Lead totali" value={k ? k.leads_total : '—'} />
+        <KPICard label="Lead hot" value={k ? k.leads_hot : '—'} />
+        <KPICard label="Tasso risposta" value={k ? pct(k.response_rate) : '—'} />
+        <KPICard label="Booking rate" value={k ? pct(k.booking_rate) : '—'} />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Distribuzione score lead</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {query.isLoading ? (
+            <p className="text-sm text-muted-foreground">Caricamento KPI…</p>
+          ) : query.isError ? (
+            <p className="text-sm text-destructive">
+              Errore caricamento KPI:{' '}
+              {query.error instanceof Error ? query.error.message : 'sconosciuto'}
+            </p>
+          ) : !k || k.score_distribution.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nessun dato ancora.</p>
+          ) : (
+            <div className="flex h-40 items-end gap-2">
+              {k.score_distribution.map((b) => {
+                const bucket = b.bucket ?? 0;
+                const count = b.count ?? 0;
+                return (
+                  <div key={bucket} className="flex flex-1 flex-col items-center">
+                    <div
+                      className="w-full rounded-t bg-primary/70"
+                      style={{
+                        height: `${Math.min(100, count * 8)}%`,
+                        minHeight: 4,
+                      }}
+                      title={`${bucket}-${bucket + 9}: ${count}`}
+                    />
+                    <span className="mt-1 text-xs text-muted-foreground">{bucket}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

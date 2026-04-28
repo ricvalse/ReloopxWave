@@ -97,6 +97,21 @@ PUBLIC_API_BASE_URL, PUBLIC_WEB_ADMIN_URL, PUBLIC_WEB_MERCHANT_URL
 CORS_ALLOWED_ORIGINS
 ```
 
+> **`REDIS_URL` gotcha**: this MUST be the Railway template
+> `${{Redis.REDIS_URL}}` (referring to the linked Redis addon), not a
+> literal URL. If Railway shows it as `redis://localhost:6379/0` for
+> either API or worker, the worker will crash-loop on boot with
+> `ConnectionError ('::1', 6379)` and the API's `arq.enqueue_job` calls
+> will silently fail. Verify with `railway variables --service worker |
+> grep REDIS_URL` — the resolved value should start with the actual
+> Redis host (`redis.railway.internal` or similar), never `localhost`.
+
+> **`PUBLIC_API_BASE_URL` gotcha**: the autonomous WhatsApp channel
+> flow (§5.3) registers `${PUBLIC_API_BASE_URL}/webhooks/whatsapp/{phone_number_id}`
+> as the inbound URL on each new channel. If the env var is empty,
+> `POST /integrations/whatsapp/channels` rejects with
+> `d360_no_public_api_url` and onboarding stalls.
+
 Quick verification:
 
 ```bash
@@ -263,6 +278,11 @@ These work the moment OpenAI + the platform are up. Perfect for a smoke test.
 
 - web-merchant `/dashboard` and web-admin `/dashboard` render with KPIs at 0.
 - After UC-01 traffic, KPIs tick up live (Supabase Realtime subscription).
+- web-admin `/merchants/<id>` (merchant detail page) now shows the same
+  per-merchant KPI cards + score-distribution histogram as the merchant
+  portal — backed by `GET /analytics/merchant/kpis?merchant_id=<id>`.
+  Useful for agency admins inspecting one merchant without signing in
+  as that merchant.
 
 ### Group B — needs OpenAI only
 
@@ -436,12 +456,22 @@ All tables enforce RLS scoped on `tenant_id` / `merchant_id`. Quick checks:
   inbox is full.
 - API-level: as a merchant_user, `GET /merchants/<other-merchant-id>` returns
   **404** (not 403 — RLS hides the row, the handler surfaces it as not found).
+- Cross-merchant KPI access:
+  - As a merchant_user, `GET /analytics/merchant/kpis?merchant_id=<other>` →
+    **403 `cross_merchant_kpis`** (cannot inspect another merchant's KPIs).
+  - As an agency_admin, the same call against a merchant in **another tenant**
+    → **404 Merchant not found** (RLS-hidden lookup).
+  - As an agency_admin, against a merchant in their own tenant → **200**.
+  - As an agency_admin without `?merchant_id=` → **403 `missing_merchant_id`**.
 
 Encryption sanity:
 
 ```sql
-select ciphertext from integrations limit 1;
--- → bytea bytes, never plaintext. Plaintext = bug.
+select length(secret_ciphertext) from integrations
+ where merchant_id = '<id>' and provider = 'whatsapp';
+-- > 30 bytes if onboarded via §5.3 autonomous flow (real per-channel key).
+-- ~30 bytes (encrypted "d360-shared-channel" placeholder) if onboarded via
+-- the legacy manual-paste fallback. The secret column never holds plaintext.
 ```
 
 ---
@@ -472,13 +502,18 @@ curl -i -X POST \
 Run before treating a deploy as shippable.
 
 - [ ] `cd backend && uv run ruff check .` — clean.
-- [ ] `cd backend && uv run pytest` — 64/64 unit tests pass.
+- [ ] `cd backend && uv run pytest` — 76/76 unit tests pass.
 - [ ] `cd frontend && pnpm lint && pnpm typecheck` — both green.
+- [ ] `bash scripts/generate-api-types.sh` — `frontend/packages/api-client/src/generated.ts`
+      shows no diff (drift means the FastAPI signature changed and CI will fail).
 - [ ] Railway: API + worker + web-admin + web-merchant + Redis all show
       latest deploy as **SUCCESS**.
-- [ ] `railway logs --service worker | grep "Starting worker for"` lists 12
-      functions registered (8 scheduler + conversation + GHL event +
-      3 fine-tuning stubs).
+- [ ] `railway logs --service worker | grep "Starting worker for"` lists 16
+      functions registered (12 unique handlers — conversation + GHL +
+      8 scheduler/maintenance + 3 fine-tuning stubs — plus 4 cron entries).
+- [ ] `railway variables --service worker | grep REDIS_URL` resolves to a
+      `redis://...@redis.railway.internal:6379` URL (or similar) — never
+      `redis://localhost:6379/0`. Same for the API service.
 - [ ] Supabase dashboard → Database → Migrations → latest = `0006_drop_super_admin`.
 
 ---
@@ -507,6 +542,19 @@ Things that work but with caveats — flag them on demos so nobody is surprised.
 - **Email magic link redirect**: Supabase invite emails come from Supabase
   itself — make sure `Site URL` and `Redirect URLs` in Supabase Auth →
   Configuration include `web-merchant`'s URL.
+- **360dialog Embedded Signup is opaque**: the popup is hosted by
+  360dialog/Meta. If a merchant's signup fails, they land back on
+  `/integrations` with no `channels=` query param and we have no
+  visibility into why. Fallback path: the "Inserisci manualmente"
+  expander on the WhatsApp card lets ops complete the connection by
+  hand from a pre-provisioned channel — see ADR
+  `docs/decisions/0005-360dialog-autonomous-channel-creation.md` for the
+  rationale.
+- **Single Partner-Hub redirect URL**: 360dialog applies one redirect URL
+  globally per Partner. Staging and production cannot share a Partner
+  unless the redirect intermediates between them — for now the production
+  Partner Hub is wired to production web-merchant and staging would need
+  its own Partner.
 
 ---
 

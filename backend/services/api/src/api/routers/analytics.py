@@ -11,12 +11,20 @@ from pydantic import BaseModel, Field
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import ConfigKey, ConfigResolver
-from db import AnalyticsRepository
+from db import AnalyticsRepository, MerchantRepository
 from integrations import SupabaseStorage
-from shared import IntegrationError, PermissionDeniedError, get_logger, get_settings
+from shared import (
+    IntegrationError,
+    NotFoundError,
+    PermissionDeniedError,
+    get_logger,
+    get_settings,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_MERCHANT_FILTER: Any = Query(default=None, description="Admin-only: target merchant_id")
 
 
 class MerchantKpisOut(BaseModel):
@@ -45,24 +53,49 @@ async def merchant_kpis(
     ctx: CurrentContext,
     session: DBSession,
     since_days: int = Query(30, ge=1, le=365),
+    merchant_id: UUID | None = _MERCHANT_FILTER,
 ) -> MerchantKpisOut:
-    if ctx.merchant_id is None:
-        raise PermissionDeniedError(
-            "Merchant dashboard requires merchant context",
-            error_code="no_merchant_context",
-        )
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+
+    if ctx.role.startswith("agency"):
+        # RLS already restricts cross-tenant reads, but an explicit lookup
+        # gives a crisp 404 to the admin UI when the merchant_id is bogus.
+        merchant = await MerchantRepository(session).get(target)
+        if merchant is None or merchant.tenant_id != ctx.tenant_id:
+            raise NotFoundError("Merchant not found", merchant_id=str(target))
+
     repo = AnalyticsRepository(session)
     config = ConfigResolver(session)
-    hot = await config.resolve(ConfigKey.SCORING_HOT_THRESHOLD, merchant_id=ctx.merchant_id)
+    hot = await config.resolve(ConfigKey.SCORING_HOT_THRESHOLD, merchant_id=target)
     hot_threshold = int(hot) if isinstance(hot, int) else 80
 
     k = await repo.merchant_kpis(
-        merchant_id=ctx.merchant_id,
+        merchant_id=target,
         hot_threshold=hot_threshold,
         since_days=since_days,
     )
-    dist = await repo.score_distribution(merchant_id=ctx.merchant_id)
+    dist = await repo.score_distribution(merchant_id=target)
     return MerchantKpisOut(**k.__dict__, score_distribution=dist)
+
+
+def _resolve_kpi_merchant(ctx: CurrentContext, override: UUID | None) -> UUID:
+    """Same shape as `_resolve_status_merchant` in routers/integrations.py:
+    merchant users always see their own KPIs; agency callers must specify
+    `?merchant_id=<uuid>` so they can inspect any merchant in their tenant.
+    """
+    if ctx.merchant_id is not None:
+        if override is not None and override != ctx.merchant_id:
+            raise PermissionDeniedError(
+                "Cannot inspect another merchant's KPIs",
+                error_code="cross_merchant_kpis",
+            )
+        return ctx.merchant_id
+    if override is None:
+        raise PermissionDeniedError(
+            "Agency callers must specify merchant_id",
+            error_code="missing_merchant_id",
+        )
+    return override
 
 
 @router.get(

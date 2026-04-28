@@ -2225,6 +2225,8 @@ export interface operations {
         parameters: {
             query?: {
                 since_days?: number;
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
             };
             header?: {
                 authorization?: string | null;
