@@ -26,7 +26,6 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-import httpx
 from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
@@ -292,29 +291,31 @@ async def whatsapp_verify(
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
 
-    if not settings.whatsapp_partner_api_key:
+    if not settings.whatsapp_partner_api_key or not settings.whatsapp_partner_id:
         raise IntegrationError(
-            "WHATSAPP_PARTNER_API_KEY is not configured on this deployment",
+            "WHATSAPP_PARTNER_API_KEY / WHATSAPP_PARTNER_ID are not configured",
             error_code="d360_not_configured",
         )
 
-    # Confirm the shared Partner key can read the configured channel before
-    # we record the merchant→channel mapping. 360dialog's /v1/configs/templates
-    # endpoint is namespaced to whichever channel the key authorizes, so a
-    # 200 here proves the key is live; we don't get per-channel detail back
-    # but a failure surfaces immediately as a misconfiguration.
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.get(
-            "https://waba-v2.360dialog.io/v1/configs/webhook",
-            headers={"D360-API-KEY": settings.whatsapp_partner_api_key},
-        )
-    if resp.status_code >= 400:
+    # Confirm the Partner key + Partner ID work against the Partner Hub
+    # before we record the merchant→channel mapping. The Partner key is
+    # the platform-level `x-api-key` for `hub.360dialog.io`; calling the
+    # WABA per-channel endpoint with it always 401s, since that endpoint
+    # expects a per-channel `D360-API-Key`.
+    partner = D360PartnerClient(
+        partner_id=settings.whatsapp_partner_id,
+        partner_api_key=settings.whatsapp_partner_api_key,
+    )
+    try:
+        await partner.list_channels()
+    except IntegrationError as e:
         raise IntegrationError(
             "360dialog rejected the shared API key",
             error_code="d360_verify_failed",
-            status_code=resp.status_code,
-            body=resp.text[:300],
-        )
+            **{k: v for k, v in e.context.items() if k in {"status", "body"}},
+        ) from e
+    finally:
+        await partner.close()
 
     repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
     await repo.upsert_whatsapp(
