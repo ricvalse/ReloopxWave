@@ -957,6 +957,8 @@ export interface components {
             full_name?: string | null;
             /** Redirect To */
             redirect_to?: string | null;
+            /** Password */
+            password?: string | null;
         };
         /** KbDocIn */
         KbDocIn: {

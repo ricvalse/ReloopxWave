@@ -54,6 +54,11 @@ class InviteIn(BaseModel):
     merchant_id: UUID | None = None
     full_name: str | None = Field(default=None, max_length=200)
     redirect_to: str | None = None
+    # When set, the user is created directly with this password (no invite
+    # email). Required for merchant_user role so the agency admin can hand
+    # credentials to the merchant out-of-band; ignored for agency_admin
+    # invites which still go through the magic-link flow.
+    password: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 @router.get("/", response_model=list[UserOut])
@@ -103,13 +108,24 @@ async def invite_user(
         service_role_key=settings.supabase_service_role_key,
     )
     try:
-        invited = await client.invite_user_by_email(
-            email=payload.email,
-            tenant_id=ctx.tenant_id,
-            merchant_id=payload.merchant_id,
-            role=payload.role,
-            redirect_to=payload.redirect_to,
-        )
+        if payload.password is not None:
+            invited = await client.create_user(
+                email=payload.email,
+                tenant_id=ctx.tenant_id,
+                merchant_id=payload.merchant_id,
+                role=payload.role,
+                password=payload.password,
+            )
+            event = "users.create.password_set"
+        else:
+            invited = await client.invite_user_by_email(
+                email=payload.email,
+                tenant_id=ctx.tenant_id,
+                merchant_id=payload.merchant_id,
+                role=payload.role,
+                redirect_to=payload.redirect_to,
+            )
+            event = "users.invite.sent"
     except IntegrationError:
         raise
     finally:
@@ -125,7 +141,7 @@ async def invite_user(
     )
 
     logger.info(
-        "users.invite.sent",
+        event,
         actor_id=str(ctx.actor_id),
         tenant_id=str(ctx.tenant_id),
         invited_user_id=str(user.id),

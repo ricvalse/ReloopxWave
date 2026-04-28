@@ -13,6 +13,7 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
@@ -35,6 +36,7 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
         email,
         role: 'merchant_user',
         merchant_id: merchantId,
+        password,
       };
       if (fullName.trim()) body.full_name = fullName.trim();
       const { data, error: e } = await api.POST('/users/invite' as never, {
@@ -50,15 +52,16 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
       return data as UserOut;
     },
     onSuccess: (u) => {
-      setFlash(`Invito inviato a ${u.email}.`);
+      setFlash(`Utente creato: ${u.email}. Comunica la password fuori app.`);
       setEmail('');
       setFullName('');
+      setPassword('');
       setError(null);
       setOpen(false);
       void queryClient.invalidateQueries({ queryKey: ['users', 'list', merchantId] });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Errore invio invito');
+      setError(err instanceof Error ? err.message : 'Errore creazione utente');
       setFlash(null);
     },
   });
@@ -73,7 +76,7 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
           </p>
         </div>
         <Button size="sm" onClick={() => setOpen((v) => !v)} disabled={invite.isPending}>
-          {open ? 'Annulla' : '+ Invita utente'}
+          {open ? 'Annulla' : '+ Crea utente'}
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -111,16 +114,36 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
               </div>
+              <div className="space-y-1 md:col-span-2">
+                <label className="text-sm font-medium" htmlFor="invite-password">
+                  Password
+                </label>
+                <input
+                  id="invite-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  maxLength={128}
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              L&apos;utente riceve un magic link da Supabase: clicca, atterra
-              su web-merchant e accede a questo merchant come{' '}
-              <code className="rounded bg-muted px-1">merchant_user</code>.
+              L&apos;utente viene creato subito come{' '}
+              <code className="rounded bg-muted px-1">merchant_user</code>{' '}
+              con email + password: nessun&apos;email viene inviata. Comunica
+              le credenziali al merchant fuori app.
             </p>
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             <div className="flex justify-end">
-              <Button type="submit" disabled={invite.isPending || !email}>
-                {invite.isPending ? 'Invio…' : 'Invia invito'}
+              <Button
+                type="submit"
+                disabled={invite.isPending || !email || password.length < 8}
+              >
+                {invite.isPending ? 'Creazione…' : 'Crea utente'}
               </Button>
             </div>
           </form>
