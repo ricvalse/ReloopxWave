@@ -27,6 +27,7 @@ COPY frontend/apps/web-admin/package.json ./apps/web-admin/
 COPY frontend/apps/web-merchant/package.json ./apps/web-merchant/
 COPY frontend/packages/api-client/package.json ./packages/api-client/
 COPY frontend/packages/config/package.json ./packages/config/
+COPY frontend/packages/conversations/package.json ./packages/conversations/
 COPY frontend/packages/supabase-client/package.json ./packages/supabase-client/
 COPY frontend/packages/ui/package.json ./packages/ui/
 
