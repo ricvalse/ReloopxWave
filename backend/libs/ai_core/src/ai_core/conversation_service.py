@@ -197,6 +197,44 @@ class ConversationService:
                 variant_id=conv.variant_id,
             )
 
+            # Auto-reply gate: AND of merchant master + per-thread takeover.
+            # If either is off, persist the inbound + emit analytics + return.
+            # The merchant is expected to reply via the composer; the bot stays silent.
+            merchant_auto_reply = await self._resolve_bool(
+                session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=True
+            )
+            if not merchant_auto_reply or not conv.auto_reply:
+                await convs.touch_last_message(conv.id)
+                await analytics.emit(
+                    tenant_id=resolved.tenant_id,
+                    merchant_id=resolved.merchant_id,
+                    event_type="message.received",
+                    subject_type="conversation",
+                    subject_id=conv.id,
+                    variant_id=conv.variant_id,
+                    properties={
+                        "role": "user",
+                        "lead_id": str(lead.id),
+                        "auto_reply_skipped": True,
+                        "reason": (
+                            "merchant_off" if not merchant_auto_reply else "conversation_off"
+                        ),
+                    },
+                )
+                logger.info(
+                    "uc01.auto_reply_skipped",
+                    conversation_id=str(conv.id),
+                    merchant_id=str(resolved.merchant_id),
+                    merchant_auto_reply=merchant_auto_reply,
+                    conversation_auto_reply=conv.auto_reply,
+                )
+                return InboundResult(
+                    handled=True,
+                    conversation_id=conv.id,
+                    reply_text=None,
+                    reason="auto_reply_off",
+                )
+
             system_prompt = await self._resolve_system_prompt(
                 session=session, merchant_id=resolved.merchant_id
             )
@@ -393,6 +431,18 @@ class ConversationService:
         except Exception:
             return default
         if isinstance(value, int):
+            return value
+        return default
+
+    async def _resolve_bool(
+        self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: bool
+    ) -> bool:
+        try:
+            resolver = ConfigResolver(session)
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return default
+        if isinstance(value, bool):
             return value
         return default
 

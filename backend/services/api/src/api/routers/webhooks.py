@@ -18,7 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.signatures import verify_ghl_signature
-from integrations.whatsapp.webhook import parse_inbound_payload
+from integrations.whatsapp.webhook import parse_inbound_payload, parse_status_payload
 from shared import get_logger, get_settings
 
 router = APIRouter()
@@ -29,13 +29,12 @@ async def _handle_whatsapp_inbound(
     request: Request, *, phone_number_id_override: str | None
 ) -> dict[str, Any]:
     payload = await request.json()
-    events = parse_inbound_payload(payload)
-
     arq = request.app.state.arq
-    enqueued = 0
+
+    # Inbound messages — text-bearing turns go to the orchestrator.
+    events = parse_inbound_payload(payload)
+    enqueued_msgs = 0
     for ev in events:
-        # Only text-bearing turns are handed off to the orchestrator for now.
-        # Status callbacks and media-only messages are ignored here.
         if ev.text is None:
             continue
         # Prefer the URL path segment when present (autonomous-flow channels
@@ -52,14 +51,39 @@ async def _handle_whatsapp_inbound(
             ev.message_id,
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if 360dialog retries
         )
-        enqueued += 1
+        enqueued_msgs += 1
+
+    # Outbound status callbacks (delivered/read/failed/sent). Update the
+    # corresponding outbound row's tick state. We dedup on
+    # (wa_message_id, status) so retried webhooks are idempotent — Meta does
+    # NOT promise at-most-once.
+    statuses = parse_status_payload(payload)
+    enqueued_statuses = 0
+    for st in statuses:
+        if not st.wa_message_id or not st.status:
+            continue
+        await arq.enqueue_job(
+            "update_outbound_status",
+            st.wa_message_id,
+            st.status,
+            st.timestamp_unix,
+            st.raw,
+            _job_id=f"wa:status:{st.wa_message_id}:{st.status}",
+        )
+        enqueued_statuses += 1
+
     logger.info(
         "webhook.d360.inbound",
         phone_number_id=phone_number_id_override,
-        events=len(events),
-        enqueued=enqueued,
+        msg_events=len(events),
+        msg_enqueued=enqueued_msgs,
+        status_events=len(statuses),
+        status_enqueued=enqueued_statuses,
     )
-    return {"accepted": len(events), "enqueued": enqueued}
+    return {
+        "accepted": len(events) + len(statuses),
+        "enqueued": enqueued_msgs + enqueued_statuses,
+    }
 
 
 @router.post("/whatsapp")

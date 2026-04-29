@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Switch } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 
@@ -144,6 +144,13 @@ const SECTIONS: SectionDef[] = [
     title: 'Bot',
     description: 'Voce, tono e istruzioni extra per il prompt di sistema.',
     fields: [
+      {
+        key: 'bot.auto_reply_enabled',
+        label: 'Risposta automatica',
+        kind: 'bool',
+        help:
+          'Quando attivo, il bot risponde automaticamente ai messaggi in arrivo. Disattivandolo metti in pausa il bot per tutti i contatti — i messaggi resteranno in attesa di una tua risposta dal pannello Conversazioni.',
+      },
       { key: 'bot.language', label: 'Lingua', kind: 'text', placeholder: 'it' },
       { key: 'bot.tone', label: 'Tono', kind: 'text', placeholder: 'professionale-amichevole' },
       {
@@ -436,20 +443,25 @@ function FieldRow({
   onReset: () => void;
 }) {
   return (
-    <div className="grid items-center gap-2 md:grid-cols-[1fr_auto] md:gap-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={field.key} className="text-sm font-medium">
-          {field.label}
-        </label>
-        <Badge kind={badge} />
-        {isDirty ? (
-          <button
-            type="button"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={onReset}
-          >
-            Reset
-          </button>
+    <div className="grid items-start gap-2 md:grid-cols-[1fr_auto] md:gap-4">
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor={field.key} className="text-sm font-medium">
+            {field.label}
+          </label>
+          <Badge kind={badge} />
+          {isDirty ? (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-foreground"
+              onClick={onReset}
+            >
+              Reset
+            </button>
+          ) : null}
+        </div>
+        {field.help ? (
+          <p className="text-xs text-muted-foreground">{field.help}</p>
         ) : null}
       </div>
       <FieldInput
@@ -482,13 +494,11 @@ function FieldInput({
 }) {
   if (field.kind === 'bool') {
     return (
-      <input
+      <Switch
         id={field.key}
-        type="checkbox"
         disabled={disabled}
         checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4"
+        onCheckedChange={(v) => onChange(v)}
       />
     );
   }

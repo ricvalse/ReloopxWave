@@ -9,6 +9,7 @@ dependencies = [
     "alembic>=1.14.0",
     "pgvector>=0.3.6",
     "shared",
+    "greenlet>=3.4.0",
 ]
 
 [build-system]

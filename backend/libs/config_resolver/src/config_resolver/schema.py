@@ -78,6 +78,12 @@ class ConfigKey(StrEnum):
     BOT_SYSTEM_PROMPT_ADDITIONS = "bot.system_prompt_additions"
     BOT_FIRST_MESSAGE = "bot.first_message"
 
+    # Master kill switch for the bot. When false, the worker still persists
+    # the inbound message and emits analytics, but skips the LLM turn entirely
+    # — the merchant is expected to reply via the composer. Pairs with the
+    # per-thread `conversations.auto_reply` flag (AND).
+    BOT_AUTO_REPLY_ENABLED = "bot.auto_reply_enabled"
+
 
 SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
@@ -116,6 +122,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BUSINESS_WEBSITE: None,
     ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS: None,
     ConfigKey.BOT_FIRST_MESSAGE: None,
+    ConfigKey.BOT_AUTO_REPLY_ENABLED: True,
 }
 
 
@@ -181,6 +188,9 @@ class BotSurfaceConfig(BaseModel):
     tone: str = "professionale-amichevole"
     system_prompt_additions: str | None = Field(default=None, max_length=4000)
     first_message: str | None = Field(default=None, max_length=1000)
+    # Master kill switch for auto-reply. AND-ed with `conversations.auto_reply`
+    # at the worker. False = bot stays silent, agent must reply via composer.
+    auto_reply_enabled: bool = True
 
 
 class BusinessConfig(BaseModel):

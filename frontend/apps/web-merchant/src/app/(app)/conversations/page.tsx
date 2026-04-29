@@ -1,14 +1,5 @@
-import { PageHeader } from '@reloop/ui';
-import { ConversationsPanel } from '@/components/conversations/conversations-panel';
+import { ConversationsRoute } from '@/components/conversations/conversations-route';
 
 export default function ConversationsPage() {
-  return (
-    <>
-      <PageHeader
-        title="Conversazioni"
-        description="Storico thread WhatsApp. Letture dirette via Supabase con RLS + Realtime."
-      />
-      <ConversationsPanel />
-    </>
-  );
+  return <ConversationsRoute selectedId={null} />;
 }

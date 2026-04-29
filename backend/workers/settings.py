@@ -14,7 +14,12 @@ from arq.cron import cron
 
 from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
-from workers.conversation.handlers import handle_ghl_event, handle_inbound_message
+from workers.conversation.handlers import (
+    handle_ghl_event,
+    handle_inbound_message,
+    send_outbound_whatsapp,
+    update_outbound_status,
+)
 from workers.fine_tuning.handlers import (
     fine_tune_deploy,
     fine_tune_evaluate,
@@ -49,6 +54,10 @@ class WorkerSettings:
     functions: ClassVar[list[Any]] = [
         # queue: wa:inbound
         handle_inbound_message,
+        # queue: wa:outbound (composer-driven human replies)
+        send_outbound_whatsapp,
+        # queue: wa:status (delivered/read/failed callbacks)
+        update_outbound_status,
         # queue: ghl:events
         handle_ghl_event,
         # queue: scheduler:jobs
