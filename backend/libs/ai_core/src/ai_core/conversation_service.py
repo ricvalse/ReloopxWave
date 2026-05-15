@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from sqlalchemy import select
+
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import (
     ConversationContext,
@@ -104,6 +106,13 @@ class InboundResult:
     handled: bool
     conversation_id: UUID | None = None
     reply_text: str | None = None
+    reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class PhoneEchoResult:
+    handled: bool
+    conversation_id: UUID | None = None
     reason: str | None = None
 
 
@@ -333,6 +342,91 @@ class ConversationService:
             conversation_id=conv.id,
             reply_text=response.reply_text,
         )
+
+    async def handle_phone_app_echo(
+        self,
+        *,
+        phone_number_id: str,
+        customer_phone: str,
+        text: str,
+        wa_message_id: str,
+    ) -> PhoneEchoResult:
+        """Persist a message the merchant typed on their phone Business App.
+
+        Only fires for channels onboarded in 360dialog Coexistence mode; for
+        classic API channels this code path is never reached. We mirror the
+        inbound-side resolution (integration → tenant/lead/conversation) but
+        skip the LLM orchestrator entirely — the customer has already received
+        the reply on WhatsApp, this is purely a UI-mirror write.
+
+        Idempotent on `wa_message_id`: if the row already exists we return
+        without writing, so 360dialog retries are safe.
+        """
+        resolved = await self._resolve_integration(phone_number_id)
+        if resolved is None:
+            return PhoneEchoResult(handled=False, reason="no_integration")
+
+        worker_ctx = TenantContext(
+            tenant_id=resolved.tenant_id,
+            merchant_id=resolved.merchant_id,
+            role="worker",
+            actor_id=resolved.merchant_id,
+        )
+        async with tenant_session(worker_ctx) as session:
+            from db.models.conversation import Message as _Message  # avoid top-level cycle
+
+            existing_id = (
+                await session.execute(
+                    select(_Message.conversation_id).where(
+                        _Message.wa_message_id == wa_message_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                return PhoneEchoResult(
+                    handled=True,
+                    conversation_id=existing_id,
+                    reason="already_persisted",
+                )
+
+            leads = LeadRepository(session)
+            convs = ConversationRepository(session)
+            msgs = MessageRepository(session)
+
+            lead = await leads.upsert_by_phone(
+                merchant_id=resolved.merchant_id, phone=customer_phone
+            )
+            conv = await convs.get_active(
+                merchant_id=resolved.merchant_id, wa_contact_phone=customer_phone
+            )
+            if conv is None:
+                # First contact for this peer was the merchant texting them from
+                # the phone — open the thread so the UI shows it. No A/B variant
+                # is assigned: variants gate orchestrator behaviour, which echoes
+                # bypass.
+                conv = await convs.create(
+                    merchant_id=resolved.merchant_id,
+                    lead_id=lead.id,
+                    wa_phone_number_id=phone_number_id,
+                    wa_contact_phone=customer_phone,
+                    variant_id=None,
+                )
+
+            await msgs.persist_phone_echo_message(
+                conversation_id=conv.id,
+                merchant_id=resolved.merchant_id,
+                content=text,
+                wa_message_id=wa_message_id,
+            )
+            await convs.touch_last_message(conv.id)
+
+        logger.info(
+            "uc01.phone_echo.persisted",
+            phone_number_id=phone_number_id,
+            conversation_id=str(conv.id),
+            wa_message_id=wa_message_id,
+        )
+        return PhoneEchoResult(handled=True, conversation_id=conv.id, reason="persisted")
 
     # ---- helpers ----------------------------------------------------------
 

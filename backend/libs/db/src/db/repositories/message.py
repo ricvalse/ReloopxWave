@@ -45,6 +45,35 @@ class MessageRepository:
         await self._session.flush()
         return msg
 
+    async def persist_phone_echo_message(
+        self,
+        *,
+        conversation_id: UUID,
+        merchant_id: UUID,
+        content: str,
+        wa_message_id: str,
+    ) -> Message:
+        """Outbound message that originated from the merchant's phone Business App.
+
+        Stored as `role='agent', direction='out', status='sent'` — the message has
+        already been delivered by the time we hear about it, so we skip the
+        pending→sent state machine entirely. `meta.sender_type='phone'` lets the
+        UI distinguish phone-typed replies from composer-typed ones.
+        """
+        msg = Message(
+            conversation_id=conversation_id,
+            merchant_id=merchant_id,
+            role="agent",
+            direction="out",
+            status="sent",
+            content=content,
+            wa_message_id=wa_message_id,
+            meta={"sender_type": "phone"},
+        )
+        self._session.add(msg)
+        await self._session.flush()
+        return msg
+
     async def persist_assistant_message(
         self,
         *,

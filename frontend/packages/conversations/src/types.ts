@@ -20,6 +20,19 @@ export interface Conversation {
   unread_count?: number;
 }
 
+/**
+ * `phone` — message originated from the merchant's WhatsApp Business App on
+ * their handset (360dialog Coexistence echo). `human` — composer-typed reply
+ * via the web UI. `ai` — assistant turn. Other backends may omit `meta` or
+ * `sender_type` entirely, hence both are optional.
+ */
+export type SenderType = 'phone' | 'human' | 'ai';
+
+export interface MessageMeta {
+  sender_type?: SenderType;
+  [key: string]: unknown;
+}
+
 export interface Message {
   id: string;
   conversation_id: string;
@@ -33,6 +46,7 @@ export interface Message {
   read_at: string | null;
   failed_at: string | null;
   error: Record<string, unknown> | null;
+  meta?: MessageMeta | null;
   created_at: string;
 }
 
