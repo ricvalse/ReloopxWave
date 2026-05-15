@@ -187,6 +187,7 @@ class IntegrationRepository:
         channel_id: str | None = None,
         waba_id: str | None = None,
         display_phone: str | None = None,
+        coexistence_enabled: bool | None = None,
     ) -> Integration:
         # Autonomous flow passes the real per-channel D360 key in `api_key`.
         # Legacy manual-paste flow leaves it None; we encrypt a placeholder
@@ -209,6 +210,10 @@ class IntegrationRepository:
             meta["waba_id"] = waba_id
         if display_phone:
             meta["display_phone"] = display_phone
+        # `None` leaves any previous value untouched (re-running the autonomous
+        # flow without re-asking the merchant shouldn't silently flip the flag).
+        if coexistence_enabled is not None:
+            meta["coexistence_enabled"] = bool(coexistence_enabled)
 
         if integration is None:
             integration = Integration(

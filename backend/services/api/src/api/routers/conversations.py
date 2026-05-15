@@ -50,6 +50,7 @@ class MessageOut(BaseModel):
     read_at: datetime | None
     failed_at: datetime | None
     error: dict[str, Any] | None
+    meta: dict[str, Any] | None = None
     created_at: datetime
 
 
@@ -171,5 +172,6 @@ def _to_out(m: Message) -> MessageOut:
         read_at=m.read_at,
         failed_at=m.failed_at,
         error=m.error,
+        meta=dict(m.meta) if m.meta else None,
         created_at=m.created_at,
     )

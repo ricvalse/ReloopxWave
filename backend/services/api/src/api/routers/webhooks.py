@@ -18,7 +18,11 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.signatures import verify_ghl_signature
-from integrations.whatsapp.webhook import parse_inbound_payload, parse_status_payload
+from integrations.whatsapp.webhook import (
+    parse_inbound_payload,
+    parse_message_echo_payload,
+    parse_status_payload,
+)
 from shared import get_logger, get_settings
 
 router = APIRouter()
@@ -53,6 +57,28 @@ async def _handle_whatsapp_inbound(
         )
         enqueued_msgs += 1
 
+    # Coexistence: messages the merchant typed in the WhatsApp Business App on
+    # their phone are echoed back to us as `smb_message_echoes`. Persist them as
+    # outbound `role='agent'` rows so the conversations UI mirrors the phone
+    # screen; never run them through the LLM orchestrator (already sent).
+    echoes = parse_message_echo_payload(payload)
+    enqueued_echoes = 0
+    for ev in echoes:
+        if ev.text is None:
+            continue
+        pnid = phone_number_id_override or ev.phone_number_id
+        if not pnid or not ev.message_id or not ev.customer_phone:
+            continue
+        await arq.enqueue_job(
+            "handle_phone_app_echo",
+            pnid,
+            ev.customer_phone,
+            ev.text,
+            ev.message_id,
+            _job_id=f"wa:echo:{ev.message_id}",  # 360dialog may retry
+        )
+        enqueued_echoes += 1
+
     # Outbound status callbacks (delivered/read/failed/sent). Update the
     # corresponding outbound row's tick state. We dedup on
     # (wa_message_id, status) so retried webhooks are idempotent — Meta does
@@ -77,12 +103,14 @@ async def _handle_whatsapp_inbound(
         phone_number_id=phone_number_id_override,
         msg_events=len(events),
         msg_enqueued=enqueued_msgs,
+        echo_events=len(echoes),
+        echo_enqueued=enqueued_echoes,
         status_events=len(statuses),
         status_enqueued=enqueued_statuses,
     )
     return {
-        "accepted": len(events) + len(statuses),
-        "enqueued": enqueued_msgs + enqueued_statuses,
+        "accepted": len(events) + len(echoes) + len(statuses),
+        "enqueued": enqueued_msgs + enqueued_echoes + enqueued_statuses,
     }
 
 

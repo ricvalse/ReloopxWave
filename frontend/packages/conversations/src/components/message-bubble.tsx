@@ -24,6 +24,7 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   const isOut = message.direction === 'out';
   const isAgent = message.role === 'agent';
   const isFailed = message.status === 'failed';
+  const isFromPhone = message.meta?.sender_type === 'phone';
   const showTicks = isOut;
   const spacer = showTicks ? META_SPACER_WIDTH : META_SPACER_WIDTH_NO_TICKS;
 
@@ -54,6 +55,16 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
           isFailed && 'opacity-80',
         )}
       >
+        {isFromPhone && (
+          <span
+            className={cn(
+              'mb-0.5 block text-[10px] font-medium uppercase tracking-wide',
+              'text-[oklch(var(--chat-meta))]',
+            )}
+          >
+            Da telefono
+          </span>
+        )}
         <span className="whitespace-pre-wrap break-words leading-relaxed">
           {message.content}
           {/* Last-line meta spacer: invisible inline block reserving room
@@ -93,6 +104,7 @@ export const MessageBubble = memo(MessageBubbleImpl, (prev, next) => {
     prev.message.status === next.message.status &&
     prev.message.read_at === next.message.read_at &&
     prev.message.delivered_at === next.message.delivered_at &&
+    prev.message.meta?.sender_type === next.message.meta?.sender_type &&
     prev.grouped === next.grouped
   );
 });

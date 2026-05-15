@@ -17,6 +17,7 @@ from shared import configure_logging, get_settings, init_sentry
 from workers.conversation.handlers import (
     handle_ghl_event,
     handle_inbound_message,
+    handle_phone_app_echo,
     send_outbound_whatsapp,
     update_outbound_status,
 )
@@ -54,6 +55,8 @@ class WorkerSettings:
     functions: ClassVar[list[Any]] = [
         # queue: wa:inbound
         handle_inbound_message,
+        # queue: wa:echo (360dialog Coexistence — messages typed in the phone app)
+        handle_phone_app_echo,
         # queue: wa:outbound (composer-driven human replies)
         send_outbound_whatsapp,
         # queue: wa:status (delivered/read/failed callbacks)

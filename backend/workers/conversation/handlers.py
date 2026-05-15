@@ -64,6 +64,42 @@ async def handle_inbound_message(
     }
 
 
+async def handle_phone_app_echo(
+    ctx: dict,
+    phone_number_id: str,
+    customer_phone: str,
+    text: str,
+    wa_message_id: str,
+) -> dict:
+    """Mirror a phone-app-typed message into the conversations DB.
+
+    Only emitted by 360dialog Coexistence channels. The orchestrator is
+    deliberately skipped — the customer already saw the reply on WhatsApp.
+    """
+    runtime: Runtime = ctx["runtime"]
+    service: ConversationService = runtime.conversation_service
+
+    result = await service.handle_phone_app_echo(
+        phone_number_id=phone_number_id,
+        customer_phone=customer_phone,
+        text=text,
+        wa_message_id=wa_message_id,
+    )
+    logger.info(
+        "wa.phone_echo.handled",
+        phone_number_id=phone_number_id,
+        wa_message_id=wa_message_id,
+        handled=result.handled,
+        reason=result.reason,
+        conversation_id=str(result.conversation_id) if result.conversation_id else None,
+    )
+    return {
+        "handled": result.handled,
+        "reason": result.reason,
+        "conversation_id": str(result.conversation_id) if result.conversation_id else None,
+    }
+
+
 async def handle_ghl_event(
     ctx: dict,
     merchant_id: str,

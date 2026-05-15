@@ -75,10 +75,16 @@ class WhatsAppChannelProvisionIn(BaseModel):
     `channel_id` arrives from 360dialog's Embedded Signup popup redirect
     (the `channels=[...]` query param). `phone_number` is the E.164 number
     the merchant chose during signup, used as a display string only.
+
+    `coexistence_enabled` records which 360dialog Embedded Signup variant the
+    merchant ran. Set to True only after the "Connect a WhatsApp Business App"
+    flow — the channel will then emit `smb_message_echoes` events for
+    phone-typed messages, and the conversations UI labels them accordingly.
     """
 
     channel_id: str = Field(min_length=1, max_length=64)
     phone_number: str | None = Field(default=None, max_length=32)
+    coexistence_enabled: bool = Field(default=False)
 
 
 class PartnerIdOut(BaseModel):
@@ -252,6 +258,7 @@ async def whatsapp_provision_channel(
         channel_id=creds.channel_id,
         waba_id=creds.waba_id,
         display_phone=phone_info.display_phone_number or payload.phone_number,
+        coexistence_enabled=payload.coexistence_enabled,
     )
 
     logger.info(
@@ -260,11 +267,13 @@ async def whatsapp_provision_channel(
         merchant_id=str(merchant_id),
         phone_number_id=phone_info.phone_number_id,
         channel_id=creds.channel_id,
+        coexistence_enabled=payload.coexistence_enabled,
     )
     meta_out: dict[str, Any] = {
         "provider": "d360",
         "channel_id": creds.channel_id,
         "created_via": "partner_hub",
+        "coexistence_enabled": payload.coexistence_enabled,
     }
     if creds.waba_id:
         meta_out["waba_id"] = creds.waba_id
