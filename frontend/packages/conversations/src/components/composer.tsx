@@ -1,6 +1,6 @@
 'use client';
 
-import { Button, cn, Textarea, Tooltip, TooltipContent, TooltipTrigger } from '@reloop/ui';
+import { Button, cn, Tooltip, TooltipContent, TooltipTrigger } from '@reloop/ui';
 import { Paperclip, Send, Smile } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useSendMessage } from '../hooks/use-send-message';
@@ -61,62 +61,72 @@ export function Composer({ conversationId, disabled, disabledReason }: ComposerP
 
   if (disabled && disabledReason) {
     return (
-      <div className="border-t border-border bg-card-elevated px-4 py-3 text-center text-xs text-muted-foreground">
+      <div className="border-t border-border bg-card px-4 py-3 text-center text-xs text-muted-foreground">
         {disabledReason}
       </div>
     );
   }
 
   return (
-    <div className="border-t border-border bg-card-elevated">
-      <div className="mx-auto flex max-w-4xl items-end gap-2 px-4 py-3">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9 shrink-0 text-muted-foreground"
-              disabled
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">Allegati — disponibile a breve</TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9 shrink-0 text-muted-foreground"
-              disabled
-            >
-              <Smile className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">Emoji — disponibile a breve</TooltipContent>
-        </Tooltip>
-
-        <Textarea
-          ref={textareaRef}
-          rows={1}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Scrivi un messaggio…"
+    <div className="border-t border-border bg-card">
+      <div className="mx-auto flex max-w-3xl items-end gap-2 px-3 py-2 sm:px-4 sm:py-3">
+        <div
           className={cn(
-            'flex-1 resize-none border-border bg-background px-3 py-2 text-sm leading-5',
-            'min-h-9 max-h-40',
+            'flex flex-1 items-end gap-1 rounded-3xl border border-border bg-background pl-1 pr-1.5',
+            'transition-colors focus-within:border-ring',
           )}
-          disabled={disabled || sendMutation.isPending}
-        />
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 shrink-0 rounded-full text-muted-foreground"
+                disabled
+                aria-label="Emoji"
+              >
+                <Smile className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Emoji — disponibile a breve</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 shrink-0 rounded-full text-muted-foreground"
+                disabled
+                aria-label="Allegati"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Allegati — disponibile a breve</TooltipContent>
+          </Tooltip>
+
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Scrivi un messaggio…"
+            className={cn(
+              'flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-5 outline-none',
+              'placeholder:text-muted-foreground',
+              'min-h-9 max-h-40',
+            )}
+            disabled={disabled || sendMutation.isPending}
+          />
+        </div>
 
         <Button
           onClick={submit}
           size="icon"
           disabled={!canSend}
-          className="h-9 w-9 shrink-0"
+          className="h-10 w-10 shrink-0 rounded-full"
           aria-label="Invia"
         >
           <Send className="h-4 w-4" />

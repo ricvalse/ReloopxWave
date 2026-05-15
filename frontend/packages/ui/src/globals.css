@@ -31,6 +31,18 @@
     --sidebar-width-collapsed: 3.5rem;
   }
 
+  /* Chat surface tokens — only apply inside `.chat-surface`. Keeps the brand
+     primary intact for the rest of the app while giving the WhatsApp-style
+     chat region its own warm palette. */
+  .chat-surface {
+    --chat-wallpaper-bg: 0.955 0.008 85;
+    --chat-bubble-in: 1 0 0;
+    --chat-bubble-out: 0.94 0.045 277;
+    --chat-bubble-out-fg: 0.16 0 0;
+    --chat-meta: 0.55 0 0;
+    --chat-tile-rule: 0.93 0 0;
+  }
+
   .dark {
     --background: 0.145 0 0;
     --foreground: 0.985 0 0;
@@ -54,6 +66,15 @@
     --success-foreground: 0.145 0 0;
     --warning: 0.780 0.18 75;
     --warning-foreground: 0.145 0 0;
+  }
+
+  .dark .chat-surface {
+    --chat-wallpaper-bg: 0.165 0.005 270;
+    --chat-bubble-in: 0.22 0 0;
+    --chat-bubble-out: 0.32 0.08 277;
+    --chat-bubble-out-fg: 0.985 0 0;
+    --chat-meta: 0.65 0 0;
+    --chat-tile-rule: 0.25 0 0;
   }
 
   * {

@@ -53,7 +53,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
   }
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[360px_1fr] xl:grid-cols-[360px_1fr]">
+    <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[clamp(320px,30%,420px)_1fr]">
       {/* Thread list rail */}
       <aside
         className={cn(
@@ -62,12 +62,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
         )}
       >
         <div className="flex h-14 shrink-0 items-center border-b border-border px-4">
-          <h2 className="text-sm font-semibold tracking-tight">
-            Conversazioni{' '}
-            {conversations.length > 0 && (
-              <span className="text-muted-foreground">({conversations.length})</span>
-            )}
-          </h2>
+          <h2 className="text-sm font-semibold tracking-tight">Conversazioni</h2>
         </div>
         <div className="border-b border-border p-3">
           <div className="relative">

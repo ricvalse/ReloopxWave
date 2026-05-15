@@ -27,7 +27,7 @@ export function ThreadList({
   const rowVirtualizer = useVirtualizer({
     count: conversations.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 64,
+    estimateSize: () => 72,
     overscan: 8,
   });
 

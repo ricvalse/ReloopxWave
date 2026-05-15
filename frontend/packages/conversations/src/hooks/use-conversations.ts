@@ -5,7 +5,10 @@ import { useEffect } from 'react';
 import { useConversationsContext } from '../lib/context';
 import type { Conversation } from '../types';
 
-const CONV_LIST_KEY = ['conversations', 'list'] as const;
+/** Stable prefix for every conversations-list query, regardless of filter/limit.
+ *  Use with TanStack `setQueriesData({ queryKey: CONV_LIST_KEY })` to mutate
+ *  every cached variant in one shot — see `use-thread.ts` preview hydration. */
+export const CONV_LIST_KEY = ['conversations', 'list'] as const;
 const REALTIME_FALLBACK_MS = 30_000;
 
 export function useConversations({ limit = 100 }: { limit?: number } = {}) {

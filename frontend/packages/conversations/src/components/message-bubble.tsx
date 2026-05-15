@@ -14,59 +14,68 @@ interface MessageBubbleProps {
   onRetry?: (message: Message) => void;
 }
 
+// Reserves last-line space at the end of the text so the absolutely-positioned
+// timestamp+ticks don't overlap the final word — same trick WhatsApp uses.
+// Width is conservative for "12:34 ✓✓" plus padding.
+const META_SPACER_WIDTH = 68;
+const META_SPACER_WIDTH_NO_TICKS = 44;
+
 function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   const isOut = message.direction === 'out';
   const isAgent = message.role === 'agent';
-  const isAssistant = message.role === 'assistant';
+  const isFailed = message.status === 'failed';
+  const showTicks = isOut;
+  const spacer = showTicks ? META_SPACER_WIDTH : META_SPACER_WIDTH_NO_TICKS;
 
   return (
     <div
       className={cn(
-        'flex w-full px-4',
+        'flex w-full px-3 sm:px-6',
         isOut ? 'justify-end' : 'justify-start',
-        grouped ? 'mt-0.5' : 'mt-3',
+        grouped ? 'mt-0.5' : 'mt-2',
       )}
     >
       <div
         className={cn(
-          'flex max-w-[85%] flex-col gap-1 rounded-2xl px-3 py-2 text-sm shadow-sm sm:max-w-[70%]',
+          'relative max-w-[85%] rounded-2xl px-2.5 pb-1.5 pt-1.5 text-sm shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] sm:max-w-[68%]',
           isOut
             ? cn(
-                'rounded-tr-sm',
+                // Outbound: brand-tinted pastel for agent, plain card for assistant.
                 isAgent
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-card-elevated text-foreground border border-border',
+                  ? 'bg-[oklch(var(--chat-bubble-out))] text-[oklch(var(--chat-bubble-out-fg))]'
+                  : 'bg-[oklch(var(--chat-bubble-in))] text-foreground',
+                // Tail only on group leader.
+                !grouped && 'rounded-tr-[4px]',
               )
-            : 'rounded-tl-sm bg-card-elevated text-foreground border border-border',
-          message.status === 'failed' && 'opacity-80',
+            : cn(
+                'bg-[oklch(var(--chat-bubble-in))] text-foreground',
+                !grouped && 'rounded-tl-[4px]',
+              ),
+          isFailed && 'opacity-80',
         )}
       >
-        {/* Sender chip — only for outbound bot vs human distinction */}
-        {!grouped && isOut && isAssistant && (
-          <span className="text-[10px] font-medium uppercase tracking-wider opacity-70">
-            Bot
-          </span>
-        )}
-        {!grouped && isOut && isAgent && (
-          <span className="text-[10px] font-medium uppercase tracking-wider opacity-80">
-            Tu
-          </span>
-        )}
-
-        <div className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</div>
-
-        <div
+        <span className="whitespace-pre-wrap break-words leading-relaxed">
+          {message.content}
+          {/* Last-line meta spacer: invisible inline block reserving room
+              for the absolutely-positioned timestamp+ticks. */}
+          <span
+            aria-hidden
+            className="inline-block h-[1px] align-baseline"
+            style={{ width: spacer }}
+          />
+        </span>
+        <span
           className={cn(
-            'mt-0.5 flex items-center justify-end gap-1 text-[10px] tabular-nums',
-            isOut && isAgent ? 'opacity-80' : 'opacity-60',
+            'absolute bottom-1 right-2 inline-flex select-none items-center gap-1 text-[10px] tabular-nums',
+            'text-[oklch(var(--chat-meta))]',
           )}
         >
           <span>{formatBubbleTime(message.created_at)}</span>
-          {isOut && <StatusTicks status={message.status} className="-mb-px" />}
-        </div>
+          {showTicks && <StatusTicks status={message.status} className="-mb-px" />}
+        </span>
       </div>
 
-      {message.status === 'failed' && onRetry && (
+      {isFailed && onRetry && (
         <button
           onClick={() => onRetry(message)}
           className="ml-2 self-end text-[11px] font-medium text-destructive underline-offset-2 hover:underline"

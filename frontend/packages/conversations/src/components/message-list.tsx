@@ -4,6 +4,7 @@ import { Skeleton } from '@reloop/ui';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { isSameDay } from '../lib/time';
 import type { Message } from '../types';
+import { ChatWallpaper } from './chat-wallpaper';
 import { DaySeparator } from './day-separator';
 import { MessageBubble } from './message-bubble';
 
@@ -69,27 +70,37 @@ export function MessageList({ messages, isLoading, onRetry }: MessageListProps) 
 
   if (isLoading && messages.length === 0) {
     return (
-      <div className="flex h-full flex-col gap-3 overflow-hidden p-6">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className={i % 2 === 0 ? 'self-start' : 'self-end'}>
-            <Skeleton className="h-10 w-64 rounded-2xl" />
-          </div>
-        ))}
+      <div className="chat-surface relative h-full overflow-hidden bg-[oklch(var(--chat-wallpaper-bg))]">
+        <ChatWallpaper />
+        <div className="relative z-10 flex h-full flex-col gap-3 p-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className={i % 2 === 0 ? 'self-start' : 'self-end'}>
+              <Skeleton className="h-10 w-64 rounded-2xl" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
 
   if (messages.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        Nessun messaggio ancora.
+      <div className="chat-surface relative flex h-full items-center justify-center bg-[oklch(var(--chat-wallpaper-bg))] text-sm text-muted-foreground">
+        <ChatWallpaper />
+        <span className="relative z-10 rounded-full bg-background/80 px-3 py-1 shadow-sm">
+          Nessun messaggio ancora.
+        </span>
       </div>
     );
   }
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto pb-4">
-      <div className="mx-auto max-w-4xl">
+    <div
+      ref={scrollRef}
+      className="chat-surface relative h-full overflow-y-auto bg-[oklch(var(--chat-wallpaper-bg))] pb-4"
+    >
+      <ChatWallpaper />
+      <div className="relative z-10 mx-auto max-w-3xl py-2">
         {items.map((item) =>
           item.kind === 'separator' ? (
             <DaySeparator key={item.key} iso={item.iso} />
