@@ -238,8 +238,13 @@ async def whatsapp_provision_channel(
         await partner.close()
 
     # Use a temporary client just to bootstrap phone_number_id + webhook
-    # registration; nothing is sent or received yet.
-    waba = D360WhatsAppClient(api_key=creds.api_key, phone_number_id="")
+    # registration; nothing is sent or received yet. `creds.address` is the
+    # per-channel base URL returned by Partner Hub — passing it through means
+    # we honor any region/platform-specific host 360dialog assigns instead of
+    # always hitting the default `waba-v2.360dialog.io`.
+    waba = D360WhatsAppClient(
+        api_key=creds.api_key, phone_number_id="", base_url=creds.address
+    )
     try:
         phone_info = await waba.fetch_phone_number_id()
         webhook_url = (
