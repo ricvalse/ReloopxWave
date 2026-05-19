@@ -19,12 +19,20 @@ type Props = {
 };
 
 /**
- * Opens 360dialog's hosted Embedded Signup in a popup. After the merchant
- * completes Meta Business signup, 360dialog redirects to a URL pre-configured
- * in the Partner Hub admin (typically `/integrations` on the merchant portal),
- * where a useEffect picks up the `?client=&channels=` params and POSTs them to
- * `/integrations/whatsapp/channels`. This component only opens the popup — it
- * doesn't handle the callback itself.
+ * Opens 360dialog's hosted Embedded Signup in a popup.
+ *
+ * We pass `redirect_url` + `state` per 360dialog's Integrated Onboarding
+ * spec (https://docs.360dialog.com/partner/onboarding/integrated-onboarding/using-custom-io).
+ * `redirect_url` overrides the Partner-level setting registered in the
+ * 360dialog Hub — without it the popup falls back to whatever URL is
+ * registered for the Partner ID (which, if the Partner is shared between
+ * environments, can land on the wrong app).
+ *
+ * After Meta Business signup, 360dialog redirects to `${origin}/integrations`
+ * with `?client=&channels=` params (plus `state` echoed back). A useEffect
+ * in `integrations-panel.tsx` picks those up and POSTs to
+ * `/integrations/whatsapp/channels`. This component only opens the popup —
+ * it doesn't handle the callback itself.
  */
 export function ConnectWhatsAppButton({ merchantId, onPopupClosed, label, pending }: Props) {
   const [opening, setOpening] = useState(false);
@@ -54,9 +62,13 @@ export function ConnectWhatsAppButton({ merchantId, onPopupClosed, label, pendin
     if (!partnerId.data) return;
     setOpening(true);
 
-    const url =
-      `https://hub.360dialog.com/dashboard/app/${partnerId.data}` +
-      `/permissions?store_id=${encodeURIComponent(merchantId)}`;
+    const redirectUrl = `${window.location.origin}/integrations`;
+    const signupUrl = new URL(
+      `https://hub.360dialog.com/dashboard/app/${partnerId.data}/permissions`,
+    );
+    signupUrl.searchParams.set('redirect_url', redirectUrl);
+    signupUrl.searchParams.set('state', merchantId);
+    const url = signupUrl.toString();
 
     const left = Math.max(0, (window.screen.width - POPUP_W) / 2);
     const top = Math.max(0, (window.screen.height - POPUP_H) / 2);
