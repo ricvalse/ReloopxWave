@@ -48,26 +48,60 @@ def _build_client(
 
 @pytest.mark.asyncio
 async def test_fetch_phone_number_id_happy_path() -> None:
+    """Top-level `id` is the canonical extraction target for Cloud-API channels."""
     captured: list[dict[str, Any]] = []
     response = httpx.Response(
         200,
-        json={"id": "META-PNID-42", "display_phone_number": "+39 000 111 222"},
+        json={
+            "id": "META-PNID-42",
+            "health_status": {"can_send_messages": "AVAILABLE"},
+        },
     )
     client = _build_client(captured, response=response)
 
     info = await client.fetch_phone_number_id()
 
     assert info.phone_number_id == "META-PNID-42"
-    assert info.display_phone_number == "+39 000 111 222"
+    # /health_status doesn't return display_phone_number — caller falls back
+    # to the MSISDN it already has from BIO callback / Partner API.
+    assert info.display_phone_number is None
     assert captured[0]["method"] == "GET"
-    assert captured[0]["url"] == "https://waba-v2.360dialog.io/v1/configs/phone_number"
+    assert captured[0]["url"] == "https://waba-v2.360dialog.io/health_status"
     assert captured[0]["headers"]["d360-api-key"] == "ch-key"
 
 
 @pytest.mark.asyncio
-async def test_fetch_phone_number_id_missing_field_raises() -> None:
+async def test_fetch_phone_number_id_falls_back_to_entities() -> None:
+    """Some payloads omit the top-level `id` and only expose it inside
+    `health_status.entities[]` for the PHONE_NUMBER entity. Defensive fallback.
+    """
     captured: list[dict[str, Any]] = []
-    response = httpx.Response(200, json={"display_phone_number": "+39 000 111 222"})
+    response = httpx.Response(
+        200,
+        json={
+            "health_status": {
+                "entities": [
+                    {"entity_type": "WABA", "id": "WABA-1"},
+                    {"entity_type": "PHONE_NUMBER", "id": "META-PNID-42"},
+                ]
+            }
+        },
+    )
+    client = _build_client(captured, response=response)
+
+    info = await client.fetch_phone_number_id()
+
+    assert info.phone_number_id == "META-PNID-42"
+
+
+@pytest.mark.asyncio
+async def test_fetch_phone_number_id_missing_field_raises() -> None:
+    """Neither top-level `id` nor a PHONE_NUMBER entity present."""
+    captured: list[dict[str, Any]] = []
+    response = httpx.Response(
+        200,
+        json={"health_status": {"entities": [{"entity_type": "WABA", "id": "WABA-1"}]}},
+    )
     client = _build_client(captured, response=response)
 
     with pytest.raises(IntegrationError) as excinfo:
@@ -84,6 +118,24 @@ async def test_fetch_phone_number_id_4xx_raises() -> None:
     with pytest.raises(IntegrationError) as excinfo:
         await client.fetch_phone_number_id()
     assert excinfo.value.error_code == "d360_phone_number_failed"
+
+
+@pytest.mark.asyncio
+async def test_client_honors_base_url_override() -> None:
+    """If Partner Hub returns a non-default `address`, the client targets it."""
+    captured: list[dict[str, Any]] = []
+    response = httpx.Response(200, json={"id": "META-PNID-99"})
+    http = httpx.AsyncClient(
+        base_url="https://waba-eu.360dialog.io",
+        transport=_transport(captured, response=response),
+    )
+    client = D360WhatsAppClient(
+        api_key="ch-key", phone_number_id="", http=http
+    )
+
+    await client.fetch_phone_number_id()
+
+    assert captured[0]["url"] == "https://waba-eu.360dialog.io/health_status"
 
 
 @pytest.mark.asyncio

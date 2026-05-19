@@ -26,10 +26,12 @@ D360_BASE = "https://waba-v2.360dialog.io"
 
 @dataclass(slots=True, frozen=True)
 class PhoneNumberInfo:
-    """Result of `GET /v1/configs/phone_number`.
+    """Result of `GET /health_status`.
 
-    `id` is Meta's `phone_number_id` (the routing key for inbound webhooks),
-    distinct from the 360dialog channel id returned by Partner Hub.
+    `phone_number_id` is Meta's per-number id (the routing key for inbound
+    webhooks), distinct from the 360dialog channel id returned by Partner Hub.
+    `/health_status` doesn't return `display_phone_number`; the caller falls
+    back to the MSISDN it already has from the BIO callback / Partner API.
     """
 
     phone_number_id: str
@@ -45,13 +47,21 @@ class D360WhatsAppClient:
         api_key: str,
         phone_number_id: str,
         http: httpx.AsyncClient | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._api_key = api_key
         # phone_number_id is stored alongside the api_key for cross-provider
         # compatibility with the Meta client even though D360 doesn't need it
         # in the request path — handlers index integrations by phone_number_id.
         self._phone_number_id = phone_number_id
-        self._http = http or httpx.AsyncClient(base_url=D360_BASE, timeout=15.0)
+        # `base_url` lets the caller honor the per-channel `address` returned
+        # by Partner Hub when minting an api_key. Most channels resolve to
+        # the same `waba-v2.360dialog.io` host, but 360dialog reserves the
+        # right to issue per-region/per-platform URLs — using `address` makes
+        # us forward-compatible with that without changing call sites.
+        self._http = http or httpx.AsyncClient(
+            base_url=base_url or D360_BASE, timeout=15.0
+        )
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -135,9 +145,19 @@ class D360WhatsAppClient:
         Called once during onboarding — the Partner Hub returns a 360dialog
         channel id, but inbound webhooks route by Meta's id. Two distinct
         identifiers; this is the bridge.
+
+        We use `/health_status` rather than the older `/v1/configs/phone_number`
+        because the latter is an on-premise WABA endpoint and returns nothing
+        useful for "Cloud API hosted by Meta" channels — which is what
+        360dialog provisions by default now. `/health_status` is the only
+        endpoint we found that exposes Meta's per-number id when given a
+        channel-scoped D360-API-Key. The id appears both at top-level `id`
+        and inside `health_status.entities[]` for the `PHONE_NUMBER` entity;
+        top-level is the canonical target with the entities[] form as a
+        defensive fallback.
         """
         resp = await self._http.get(
-            "/v1/configs/phone_number",
+            "/health_status",
             headers={"D360-API-KEY": self._api_key},
         )
         if resp.status_code >= 400:
@@ -148,7 +168,19 @@ class D360WhatsAppClient:
                 body=resp.text[:500],
             )
         data: dict[str, Any] = resp.json()
+
         phone_number_id = data.get("id")
+        if not phone_number_id:
+            entities = (data.get("health_status") or {}).get("entities") or []
+            for entity in entities:
+                if (
+                    isinstance(entity, dict)
+                    and entity.get("entity_type") == "PHONE_NUMBER"
+                    and entity.get("id")
+                ):
+                    phone_number_id = entity["id"]
+                    break
+
         if not phone_number_id:
             raise IntegrationError(
                 "360dialog returned no phone_number_id",
