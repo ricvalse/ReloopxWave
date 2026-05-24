@@ -44,6 +44,16 @@ class RouterClient:
     ) -> None:
         if not base_url:
             raise ValueError("router base_url is required")
+        if not base_url.startswith(("http://", "https://")):
+            # httpx silently accepts a schemeless base_url at construction
+            # and only fails deep inside the connection pool when a request
+            # actually fires. Fail loudly here instead — production set
+            # `ROUTER_BASE_URL=router.relooptech.ai` once and got a 500
+            # with a 20-line httpcore traceback.
+            raise ValueError(
+                f"router base_url must start with http:// or https:// "
+                f"(got: {base_url!r})"
+            )
         if not shared_secret:
             raise ValueError("router shared_secret is required")
         self._shared_secret = shared_secret
@@ -90,6 +100,20 @@ class RouterClient:
             },
         )
         if resp.status_code >= 400:
+            # Surface the router's rejection reason in our own logs so
+            # debugging doesn't require a `railway logs --service router-api`
+            # round-trip. 401 here almost always means: secret mismatch
+            # between platform's ROUTER_SHARED_SECRET and the router's
+            # platform_registry.shared_secret row, or the router didn't
+            # rename `X-Amaliatech-Signature` → `X-Relooptech-Signature`,
+            # or the router re-serialized JSON before HMAC verification
+            # (must verify against raw bytes).
+            logger.warning(
+                "router.onboard_start.rejected",
+                status=resp.status_code,
+                body=resp.text[:500],
+                request_bytes=len(body),
+            )
             raise IntegrationError(
                 f"router /onboard/start failed ({resp.status_code})",
                 error_code="router_onboard_start_failed",
