@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Integration, Merchant
@@ -249,6 +249,27 @@ class IntegrationRepository:
 
         await self._session.flush()
         return integration
+
+    async def disconnect_whatsapp(self, merchant_id: UUID) -> bool:
+        """Wipe the WhatsApp integration row for `merchant_id`.
+
+        Hard-deletes so the merchant returns to the "no channel" state — the
+        next router `/internal/whatsapp-connected` notify will INSERT a fresh
+        row. Note: the router's `waba_mapping` for the merchant's previous
+        `phone_number_id` survives this call; cleaning it up requires a
+        merchant-scoped router endpoint we haven't built yet. If the merchant
+        re-onboards the same number, the router upserts in place and
+        everything reconciles; if they onboard a different number, the old
+        router mapping is dangling — see docs/runbooks for cleanup.
+        """
+        stmt = (
+            delete(Integration)
+            .where(Integration.merchant_id == merchant_id)
+            .where(Integration.provider == "whatsapp")
+        )
+        result = await self._session.execute(stmt)
+        await self._session.flush()
+        return (result.rowcount or 0) > 0
 
     async def list_status(self, merchant_id: UUID) -> list[IntegrationStatus]:
         stmt = select(Integration).where(Integration.merchant_id == merchant_id)

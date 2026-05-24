@@ -194,6 +194,8 @@ function WhatsAppCard({
           <ConnectWhatsAppButton
             onPopupClosed={onPopupClosed}
             label={connected ? 'Sostituisci canale' : undefined}
+            reconnect={connected}
+            onDisconnected={onPopupClosed}
           />
         </div>
       </CardContent>

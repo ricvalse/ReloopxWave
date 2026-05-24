@@ -206,6 +206,35 @@ async def whatsapp_onboard_start(
     )
 
 
+@router.post("/whatsapp/disconnect", status_code=204)
+async def whatsapp_disconnect(
+    ctx: CurrentContext, session: DBSession
+) -> Response:
+    """Wipe the calling merchant's WhatsApp integration row.
+
+    Used by the merchant portal's "Sostituisci canale" button: clears local
+    state so the merchant immediately sees a "no channel" UI, then the same
+    flow re-runs Embedded Signup. If they complete signup the router's
+    `/internal/whatsapp-connected` notify re-creates the row; if they cancel
+    they're left disconnected. The router's `waba_mapping` for the old
+    `phone_number_id` is NOT cleaned up here — that needs a merchant-scoped
+    router endpoint we don't have yet.
+    """
+    merchant_id = _require_merchant_scope(ctx)
+    settings = get_settings()
+    repo = IntegrationRepository(
+        session, kek_base64=settings.integrations_kek_base64
+    )
+    removed = await repo.disconnect_whatsapp(merchant_id)
+    logger.info(
+        "integrations.whatsapp.disconnected",
+        actor_id=str(ctx.actor_id),
+        merchant_id=str(merchant_id),
+        had_row=removed,
+    )
+    return Response(status_code=204)
+
+
 # ---- Status ----------------------------------------------------------------
 
 

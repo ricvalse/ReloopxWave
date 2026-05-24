@@ -10,30 +10,44 @@ const POPUP_H = 900;
 const POPUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 type Props = {
-  /** Re-rendered after Embedded Signup completes; lets the parent flip status. */
+  /** Called after the signup popup closes; lets the parent refetch status. */
   onPopupClosed?: () => void;
-  /** Override the default Italian label (e.g. for "Riconnetti"). */
+  /** Override the default Italian label. */
   label?: string;
   pending?: boolean;
+  /**
+   * When true, click first hard-disconnects the existing channel (`POST
+   * /integrations/whatsapp/disconnect`) and then opens Embedded Signup as if
+   * starting fresh. Used by the "Sostituisci canale" affordance.
+   */
+  reconnect?: boolean;
+  /** Called right after disconnect succeeds — parent should refetch status so
+   *  the UI reflects "no channel" before the popup opens. */
+  onDisconnected?: () => void;
 };
 
 /**
- * Opens 360dialog's hosted Embedded Signup via the Wave Marketing router.
+ * Opens 360dialog's Embedded Signup via the Relooptech router.
  *
- * Flow (see NEWPLATFORM_SETUP.md § Phase B4):
- *   1. POST `/integrations/whatsapp/onboard/start` on our backend — that
- *      call mints a one-shot state token on the router and returns the
- *      assembled hub URL we should navigate the merchant to.
- *   2. Open that URL in a popup. The Partner ID and router callback URL
- *      are already baked into `signup_url` by the backend.
- *   3. After signup, 360dialog redirects to the router's `/onboard/callback`,
- *      which fetches the per-channel key, fires
- *      `POST /internal/whatsapp-connected` to us, and finally bounces the
- *      browser to our `return_url` (the parent panel's `/integrations`
- *      page with `?provider=whatsapp&status=connected`). The popup-close
- *      watcher below re-fetches `/integrations/status` to flip the UI.
+ * Flow:
+ *   1. (Reconnect path only) POST `/integrations/whatsapp/disconnect` to wipe
+ *      the existing integration row.
+ *   2. POST `/integrations/whatsapp/onboard/start` — the backend asks the
+ *      router for a one-shot state token; the router returns the assembled
+ *      `connect_url` (partner_id lives only on the router).
+ *   3. Open `connect_url` in a popup. After signup, 360dialog redirects to
+ *      the router's `/onboard/callback`, the router fetches the per-channel
+ *      D360 key, fires `POST /internal/whatsapp-connected` to us, and
+ *      finally bounces the browser to `return_url`. The popup-close watcher
+ *      below re-fetches `/integrations/status` to flip the UI.
  */
-export function ConnectWhatsAppButton({ onPopupClosed, label, pending }: Props) {
+export function ConnectWhatsAppButton({
+  onPopupClosed,
+  label,
+  pending,
+  reconnect,
+  onDisconnected,
+}: Props) {
   const [opening, setOpening] = useState(false);
   const closeWatcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -49,6 +63,17 @@ export function ConnectWhatsAppButton({ onPopupClosed, label, pending }: Props) 
     },
   });
 
+  const disconnect = useMutation({
+    mutationFn: async (): Promise<void> => {
+      const api = getApiClient();
+      const { error } = await api.POST(
+        '/integrations/whatsapp/disconnect' as never,
+        {} as never,
+      );
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+    },
+  });
+
   useEffect(() => {
     return () => {
       if (closeWatcherRef.current) clearInterval(closeWatcherRef.current);
@@ -56,7 +81,27 @@ export function ConnectWhatsAppButton({ onPopupClosed, label, pending }: Props) 
   }, []);
 
   const handleClick = async () => {
+    if (reconnect) {
+      const confirmed = window.confirm(
+        'Sostituire il canale WhatsApp? Il numero attuale verrà scollegato e dovrai completare di nuovo la procedura di 360dialog.',
+      );
+      if (!confirmed) return;
+    }
+
     setOpening(true);
+
+    if (reconnect) {
+      try {
+        await disconnect.mutateAsync();
+      } catch {
+        setOpening(false);
+        return;
+      }
+      // Refetch status so the panel shows "Nessun numero collegato" while
+      // the popup is open.
+      onDisconnected?.();
+    }
+
     let signupUrl: string;
     try {
       const { signup_url } = await startOnboard.mutateAsync();
@@ -92,14 +137,25 @@ export function ConnectWhatsAppButton({ onPopupClosed, label, pending }: Props) 
     }, 1000);
   };
 
-  const disabled = pending || opening || startOnboard.isPending;
+  const disabled =
+    pending || opening || startOnboard.isPending || disconnect.isPending;
+
+  const buttonText = (() => {
+    if (disconnect.isPending) return 'Scollegamento…';
+    if (opening || startOnboard.isPending) return 'Apertura…';
+    return label ?? 'Collega WhatsApp';
+  })();
 
   return (
     <div className="flex flex-col items-end gap-1">
       <Button onClick={handleClick} disabled={disabled}>
-        {opening || startOnboard.isPending ? 'Apertura…' : (label ?? 'Collega WhatsApp')}
+        {buttonText}
       </Button>
-      {startOnboard.isError ? (
+      {disconnect.isError ? (
+        <p className="text-xs text-destructive">
+          Scollegamento fallito. Riprova tra qualche secondo.
+        </p>
+      ) : startOnboard.isError ? (
         <p className="text-xs text-destructive">
           Impossibile avviare la procedura. Riprova tra qualche secondo.
         </p>
