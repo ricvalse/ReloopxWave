@@ -127,8 +127,16 @@ ANTHROPIC_FALLBACK_ENABLED=false
 # --- Integrations (can be left blank initially; per-merchant overrides go via the admin UI) ---
 GHL_CLIENT_ID=
 GHL_CLIENT_SECRET=
-WHATSAPP_PARTNER_API_KEY=
-WHATSAPP_PARTNER_ID=
+
+# --- WhatsApp router (Relooptech-owned 360dialog Partner) ---
+# Wave Marketing no longer holds its own 360dialog Partner credentials.
+# Onboarding and inbound webhook delivery are mediated by the router at
+# router.relooptech.ai; per-merchant D360 keys are minted by the router
+# and delivered to us encrypted via the signed `/internal/whatsapp-connected`
+# notify (see docs/router-changes-prompt.md).
+ROUTER_BASE_URL=https://router.relooptech.ai
+ROUTER_SHARED_SECRET=<hex secret shared with the router's platform_registry row>
+ROUTER_PLATFORM_ID=wavemarketing
 
 # --- Crypto ---
 INTEGRATIONS_KEK_BASE64=<from step 1>
@@ -181,10 +189,10 @@ railway up --service api
 
 ## Webhook URLs to register
 
-Once `api` is live, register these with the providers (per-merchant — typically via the in-app integrations flow rather than directly in Meta/GHL):
+Once `api` is live, register these with the providers:
 
-- WhatsApp: `POST https://<api-domain>/webhooks/whatsapp/{phone_number_id}` (configured per-channel in the 360dialog Partner Hub; no signature secret to set)
-- GHL: `POST https://<api-domain>/webhooks/ghl/{merchant_id}`
+- WhatsApp: nothing to register on 360dialog directly. The router at `router.relooptech.ai` is what 360dialog calls; the router forwards to `POST https://<api-domain>/webhooks/whatsapp` (signed with `X-Relooptech-Signature` HMAC against `ROUTER_SHARED_SECRET`). The router also calls `POST https://<api-domain>/internal/whatsapp-connected` on onboarding to deliver the per-merchant D360 key. Both endpoints reject unsigned/badly-signed bodies with 401.
+- GHL: `POST https://<api-domain>/webhooks/ghl/{merchant_id}` (per-merchant, configured during the in-app GHL OAuth flow).
 
 ## Rollbacks
 
