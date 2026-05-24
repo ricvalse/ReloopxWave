@@ -26,8 +26,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from api.dependencies.session import DBSession
-from db import IntegrationRepository
+from db import IntegrationRepository, session_scope
 from integrations.router import SIGNATURE_HEADER, verify_router_signature
 from shared import get_logger, get_settings
 
@@ -51,10 +50,16 @@ class NotifyPayload(BaseModel):
     channels: list[NotifyChannel]
 
 
+# NB: do NOT take the tenant-scoped `DBSession` dependency here. It resolves
+# through `get_tenant_context` → `verify_supabase_jwt`, which FastAPI runs
+# *before* this handler body — so a router notify (signed, no JWT) would be
+# rejected with 403 `missing_token` before the signature check below ever runs.
+# The router authenticates by HMAC signature, not a Supabase JWT. We open a
+# plain `session_scope()` after verifying the signature, same as the inbound
+# webhook → worker path does for other externally-triggered writes.
 @router.post("/whatsapp-connected")
 async def whatsapp_connected(
     request: Request,
-    session: DBSession,
     x_relooptech_signature: str = Header(default="", alias=SIGNATURE_HEADER),
 ) -> dict[str, Any]:
     settings = get_settings()
@@ -81,7 +86,9 @@ async def whatsapp_connected(
         raise HTTPException(status_code=400, detail="invalid payload") from exc
 
     if payload.event not in {"whatsapp.connected", "whatsapp.key_rotated"}:
-        logger.warning("router.notify.unknown_event", event=payload.event)
+        # NB: structlog's first positional arg is the log event name, so the
+        # payload's `event` field must be passed under a different key.
+        logger.warning("router.notify.unknown_event", notify_event=payload.event)
         raise HTTPException(status_code=400, detail="unknown event")
 
     if payload.platform_id != settings.router_platform_id:
@@ -102,28 +109,28 @@ async def whatsapp_connected(
         )
         raise HTTPException(status_code=400, detail="invalid customer_id") from exc
 
-    repo = IntegrationRepository(
-        session, kek_base64=settings.integrations_kek_base64
-    )
-
-    for ch in payload.channels:
-        await repo.upsert_whatsapp(
-            merchant_id=merchant_id,
-            phone_number_id=ch.phone_number_id,
-            api_key=ch.channel_api_key,
-            channel_id=ch.channel_id,
-            waba_id=ch.waba_id,
-            waba_base_url=ch.waba_base_url,
-            display_phone=ch.phone_number,
+    async with session_scope() as session:
+        repo = IntegrationRepository(
+            session, kek_base64=settings.integrations_kek_base64
         )
-        logger.info(
-            "router.notify.channel_persisted",
-            event=payload.event,
-            merchant_id=str(merchant_id),
-            phone_number_id=ch.phone_number_id,
-            channel_id=ch.channel_id,
-            waba_id=ch.waba_id,
-            rotated=payload.event == "whatsapp.key_rotated",
-        )
+        for ch in payload.channels:
+            await repo.upsert_whatsapp(
+                merchant_id=merchant_id,
+                phone_number_id=ch.phone_number_id,
+                api_key=ch.channel_api_key,
+                channel_id=ch.channel_id,
+                waba_id=ch.waba_id,
+                waba_base_url=ch.waba_base_url,
+                display_phone=ch.phone_number,
+            )
+            logger.info(
+                "router.notify.channel_persisted",
+                notify_event=payload.event,
+                merchant_id=str(merchant_id),
+                phone_number_id=ch.phone_number_id,
+                channel_id=ch.channel_id,
+                waba_id=ch.waba_id,
+                rotated=payload.event == "whatsapp.key_rotated",
+            )
 
     return {"received": len(payload.channels), "event": payload.event}
