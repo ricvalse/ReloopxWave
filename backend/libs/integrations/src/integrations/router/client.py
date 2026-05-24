@@ -1,10 +1,10 @@
 """Router — `POST /onboard/start` client.
 
 Server-to-server call. The router mints a one-shot CSRF state token tied
-to (platform_id, customer_id, return_url) and returns it. The platform
-hands the state to the browser, which navigates to
-`https://hub.360dialog.com/dashboard/app/<partner_id>/permissions?redirect_url=
-<router>/onboard/callback?platform=<id>&state=<state>`.
+to (platform_id, customer_id, return_url), assembles the full 360dialog
+Embedded Signup URL (`connect_url`) using its own copy of the partner_id,
+and returns both. The platform navigates the browser straight to
+`connect_url` — partner_id never leaves the router.
 
 The router authenticates this call by verifying `X-Relooptech-Signature`
 (HMAC-SHA256 of the raw JSON body using the platform's `shared_secret`).
@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 
 @dataclass(slots=True, frozen=True)
 class OnboardStartResult:
+    connect_url: str
     state: str
     expires_in: int
 
@@ -97,13 +98,15 @@ class RouterClient:
             )
         data = resp.json()
         state = data.get("state")
-        if not state:
+        connect_url = data.get("connect_url")
+        if not state or not connect_url:
             raise IntegrationError(
-                "router /onboard/start returned no state",
-                error_code="router_onboard_start_no_state",
+                "router /onboard/start missing state or connect_url",
+                error_code="router_onboard_start_bad_response",
                 body=str(data)[:500],
             )
         return OnboardStartResult(
+            connect_url=str(connect_url),
             state=str(state),
             expires_in=int(data.get("expires_in") or 0),
         )

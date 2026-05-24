@@ -63,12 +63,6 @@ class Settings(BaseSettings):
     router_base_url: str = ""
     router_shared_secret: str = ""
     router_platform_id: str = "wavemarketing"
-    # 360dialog Partner ID owned by the router. The merchant browser uses it
-    # to build the Embedded Signup URL
-    # `https://hub.360dialog.com/dashboard/app/<partner_id>/permissions`.
-    # Treated as public — the secret is the router's shared secret, not this
-    # ID. Operator hands it over when registering the platform.
-    router_360dialog_partner_id: str = ""
 
     public_api_base_url: str = ""
     public_web_admin_url: str = ""

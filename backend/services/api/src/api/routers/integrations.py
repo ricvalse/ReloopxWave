@@ -19,7 +19,6 @@ Scope:
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote, urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Response
@@ -65,9 +64,9 @@ class WhatsAppOnboardStartIn(BaseModel):
 
 
 class WhatsAppOnboardStartOut(BaseModel):
-    # Full URL the frontend should navigate to. Pre-assembled here so the
-    # browser never sees the 360dialog Partner ID directly (the operator
-    # configures it server-side via ROUTER_360DIALOG_PARTNER_ID).
+    # Full URL the frontend should navigate to. The router builds it
+    # server-side using its own copy of the 360dialog Partner ID, so the
+    # browser (and this service) never sees the partner_id.
     signup_url: str
     state: str
     expires_in: int
@@ -165,13 +164,14 @@ async def whatsapp_onboard_start(
     ctx: CurrentContext,
     session: DBSession,
 ) -> WhatsAppOnboardStartOut:
-    """Mint a router state token and assemble the 360dialog signup URL.
+    """Mint a router state token and return the 360dialog signup URL.
 
-    The browser opens `signup_url`. 360dialog handles Embedded Signup, then
-    redirects to `<router>/onboard/callback?platform=...&state=...`, the
-    router fetches the per-channel D360 key, fires
-    `POST /internal/whatsapp-connected` to us, and finally redirects the
-    browser back to `return_url`.
+    The router assembles the full Embedded Signup URL (`connect_url`) using
+    its own copy of the partner_id and returns it; we just hand it to the
+    browser. 360dialog then redirects to
+    `<router>/onboard/callback?platform=...&state=...`, the router fetches
+    the per-channel D360 key, fires `POST /internal/whatsapp-connected` to
+    us, and finally redirects the browser back to `return_url`.
     """
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
@@ -193,24 +193,6 @@ async def whatsapp_onboard_start(
     finally:
         await client.close()
 
-    # `redirect_url` is a query param on the hub URL; its VALUE is the
-    # router's callback URL with its own `platform=...&state=...` query
-    # string. The inner URL must be percent-encoded as a whole so its `?`
-    # and `&` don't terminate the outer query string. urlencode handles
-    # that for us.
-    router_callback = (
-        settings.router_base_url.rstrip("/")
-        + "/onboard/callback?"
-        + urlencode(
-            {"platform": settings.router_platform_id, "state": result.state}
-        )
-    )
-    signup_url = (
-        f"https://hub.360dialog.com/dashboard/app/"
-        f"{quote(settings.router_360dialog_partner_id, safe='')}/permissions?"
-        + urlencode({"redirect_url": router_callback})
-    )
-
     logger.info(
         "integrations.whatsapp.onboard.started",
         actor_id=str(ctx.actor_id),
@@ -218,7 +200,7 @@ async def whatsapp_onboard_start(
         expires_in=result.expires_in,
     )
     return WhatsAppOnboardStartOut(
-        signup_url=signup_url,
+        signup_url=result.connect_url,
         state=result.state,
         expires_in=result.expires_in,
     )
@@ -322,7 +304,6 @@ def _require_router_config(settings: Any) -> None:
             ("ROUTER_BASE_URL", settings.router_base_url),
             ("ROUTER_SHARED_SECRET", settings.router_shared_secret),
             ("ROUTER_PLATFORM_ID", settings.router_platform_id),
-            ("ROUTER_360DIALOG_PARTNER_ID", settings.router_360dialog_partner_id),
         )
         if not value
     ]
