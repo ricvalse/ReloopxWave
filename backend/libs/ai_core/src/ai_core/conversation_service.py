@@ -81,9 +81,12 @@ class TurnContext:
     conversation_id: UUID
     lead_phone: str
     phone_number_id: str
-    # Per-channel D360 key for outbound sends. Action handlers receive
-    # this so they don't need to re-resolve the integration row.
+    # Per-channel D360 key and base URL for outbound sends. Action handlers
+    # receive these so they don't need to re-resolve the integration row.
+    # `waba_base_url` is the per-channel host the router stored on the
+    # integration row; None means "use the D360 default host".
     api_key: str = ""
+    waba_base_url: str | None = None
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
@@ -96,6 +99,7 @@ class ReplySender(Protocol):
         api_key: str,
         to_phone: str,
         text: str,
+        waba_base_url: str | None = None,
     ) -> str: ...
 
 
@@ -324,6 +328,7 @@ class ConversationService:
             lead_phone=from_phone,
             phone_number_id=phone_number_id,
             api_key=resolved.api_key,
+            waba_base_url=resolved.waba_base_url,
         )
 
         await self._sender.send(
@@ -331,6 +336,7 @@ class ConversationService:
             api_key=resolved.api_key,
             to_phone=from_phone,
             text=response.reply_text,
+            waba_base_url=resolved.waba_base_url,
         )
 
         # Action handlers run after the turn is durable and the reply is out.

@@ -54,13 +54,21 @@ class Settings(BaseSettings):
     ghl_webhook_secret: str = ""
     ghl_oauth_state_secret: str = ""
     ghl_redirect_uri: str = ""
-    # 360dialog is the only WhatsApp provider. All merchants share a single
-    # Partner — one API key in env, no per-merchant secrets stored. The
-    # Partner ID keys the upcoming autonomous channel-creation flow
-    # (Partner Hub admin API). Inbound webhooks trust the path-level
-    # phone_number_id; signature verification is intentionally not enforced.
-    whatsapp_partner_api_key: str = ""
-    whatsapp_partner_id: str = ""
+
+    # WhatsApp is mediated by the Wave Marketing router (a 360dialog Partner
+    # owned by the platform team). Wave Marketing no longer holds a Partner
+    # API key itself — the router mints per-channel D360 keys during
+    # onboarding and delivers them to us via the signed
+    # `POST /internal/whatsapp-connected` notify. See NEWPLATFORM_SETUP.md.
+    router_base_url: str = ""
+    router_shared_secret: str = ""
+    router_platform_id: str = "wavemarketing"
+    # 360dialog Partner ID owned by the router. The merchant browser uses it
+    # to build the Embedded Signup URL
+    # `https://hub.360dialog.com/dashboard/app/<partner_id>/permissions`.
+    # Treated as public — the secret is the router's shared secret, not this
+    # ID. Operator hands it over when registering the platform.
+    router_360dialog_partner_id: str = ""
 
     public_api_base_url: str = ""
     public_web_admin_url: str = ""

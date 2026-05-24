@@ -1,21 +1,16 @@
-"""Per-merchant external integrations — GHL (OAuth2) + WhatsApp (360dialog).
+"""Per-merchant external integrations — GHL (OAuth2) + WhatsApp (router-mediated).
 
 Scope:
 - `POST /integrations/ghl/oauth/start` — mints a signed state, returns the
   GHL marketplace URL. Merchant user opens it in a new tab.
 - `GET /integrations/ghl/oauth/callback` — verifies state, exchanges code,
   encrypts + persists the token bundle, redirects to the merchant portal.
-- `GET /integrations/whatsapp/partner-id` — public, returns the platform
-  Partner ID so the merchant portal can build the 360dialog Embedded
-  Signup popup URL.
-- `POST /integrations/whatsapp/channels` — completes the autonomous
-  channel-creation flow: takes a 360dialog `channel_id` from the popup
-  redirect, generates a per-channel API key via Partner Hub, fetches the
-  Meta phone_number_id, registers the inbound webhook, and persists the
-  encrypted credentials to the merchant.
-- `POST /integrations/whatsapp/verify` — manual fallback: accepts a
-  `phone_number_id` directly and stores it without per-channel keys
-  (uses `WHATSAPP_PARTNER_API_KEY` for outbound). Kept for ops use.
+- `POST /integrations/whatsapp/onboard/start` — server-to-server proxy to
+  the router's `/onboard/start`. Mints a one-shot state token tied to the
+  caller's merchant_id and returns the assembled 360dialog Embedded Signup
+  URL the browser should navigate to. The router's `/onboard/callback` is
+  what 360dialog redirects back to; we receive the resulting channel via
+  `POST /internal/whatsapp-connected` (see `internal.py`).
 - `GET /integrations/status` — returns connection cards for the caller's
   merchant (agency admins can pass `?merchant_id=<uuid>` to view a specific
   merchant under their tenant).
@@ -24,6 +19,7 @@ Scope:
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote, urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Response
@@ -32,8 +28,7 @@ from pydantic import BaseModel, Field
 from api.dependencies.session import CurrentContext, DBSession
 from db import IntegrationRepository, MerchantRepository
 from integrations import (
-    D360PartnerClient,
-    D360WhatsAppClient,
+    RouterClient,
     build_authorize_url,
     exchange_authorization_code,
     sign_oauth_state,
@@ -60,35 +55,22 @@ class OAuthStartResponse(BaseModel):
     authorize_url: str
 
 
-class WhatsAppVerifyIn(BaseModel):
-    phone_number_id: str = Field(
-        min_length=1,
-        max_length=64,
-        description="360dialog channel id (the 'phone_number_id' Meta uses) for this merchant.",
-    )
-    display_phone: str | None = Field(default=None, max_length=32)
-
-
-class WhatsAppChannelProvisionIn(BaseModel):
-    """Input for `POST /integrations/whatsapp/channels`.
-
-    `channel_id` arrives from 360dialog's Embedded Signup popup redirect
-    (the `channels=[...]` query param). `phone_number` is the E.164 number
-    the merchant chose during signup, used as a display string only.
-
-    `coexistence_enabled` records which 360dialog Embedded Signup variant the
-    merchant ran. Set to True only after the "Connect a WhatsApp Business App"
-    flow — the channel will then emit `smb_message_echoes` events for
-    phone-typed messages, and the conversations UI labels them accordingly.
+class WhatsAppOnboardStartIn(BaseModel):
+    """Optional override for where the browser lands after the router's
+    `/onboard/callback` finishes. Defaults to the merchant portal's
+    `/integrations?provider=whatsapp&status=connected`.
     """
 
-    channel_id: str = Field(min_length=1, max_length=64)
-    phone_number: str | None = Field(default=None, max_length=32)
-    coexistence_enabled: bool = Field(default=False)
+    return_url: str | None = Field(default=None, max_length=512)
 
 
-class PartnerIdOut(BaseModel):
-    partner_id: str
+class WhatsAppOnboardStartOut(BaseModel):
+    # Full URL the frontend should navigate to. Pre-assembled here so the
+    # browser never sees the 360dialog Partner ID directly (the operator
+    # configures it server-side via ROUTER_360DIALOG_PARTNER_ID).
+    signup_url: str
+    state: str
+    expires_in: int
 
 
 class ConnectionOut(BaseModel):
@@ -174,186 +156,71 @@ async def ghl_oauth_callback(code: str, state: str, session: DBSession) -> Respo
     )
 
 
-# ---- WhatsApp partner ID (public bootstrap for the popup URL) -------------
+# ---- WhatsApp router-mediated onboarding ----------------------------------
 
 
-@router.get("/whatsapp/partner-id", response_model=PartnerIdOut)
-async def whatsapp_partner_id() -> PartnerIdOut:
-    """Public — the merchant portal needs the Partner ID to build the URL
-    `https://hub.360dialog.com/dashboard/app/{partner_id}/permissions?...`
-    that opens the Embedded Signup popup. Treating Partner ID as public is
-    the same posture amalia-ai takes; the secret is the Partner API key,
-    not the ID.
-    """
-    settings = get_settings()
-    if not settings.whatsapp_partner_id:
-        raise IntegrationError(
-            "WHATSAPP_PARTNER_ID is not configured on this deployment",
-            error_code="d360_partner_id_not_configured",
-        )
-    return PartnerIdOut(partner_id=settings.whatsapp_partner_id)
+@router.post("/whatsapp/onboard/start", response_model=WhatsAppOnboardStartOut)
+async def whatsapp_onboard_start(
+    payload: WhatsAppOnboardStartIn,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> WhatsAppOnboardStartOut:
+    """Mint a router state token and assemble the 360dialog signup URL.
 
-
-# ---- WhatsApp autonomous channel provisioning -----------------------------
-
-
-@router.post("/whatsapp/channels", response_model=ConnectionOut)
-async def whatsapp_provision_channel(
-    payload: WhatsAppChannelProvisionIn, ctx: CurrentContext, session: DBSession
-) -> ConnectionOut:
-    """Complete the autonomous flow after 360dialog Embedded Signup.
-
-    Inputs come from the popup redirect: a `channel_id` 360dialog created
-    for the merchant, plus the phone_number they chose. We:
-      1. Mint a per-channel D360 API key via Partner Hub.
-      2. Fetch Meta's phone_number_id for that channel.
-      3. Register the inbound webhook URL.
-      4. Persist (merchant, channel) with the encrypted key.
-
-    Any 4xx from 360dialog surfaces verbatim — the merchant sees what the
-    BSP rejected and can retry. We do not write a partial integrations row
-    on failure: the merchant restarts from the popup.
+    The browser opens `signup_url`. 360dialog handles Embedded Signup, then
+    redirects to `<router>/onboard/callback?platform=...&state=...`, the
+    router fetches the per-channel D360 key, fires
+    `POST /internal/whatsapp-connected` to us, and finally redirects the
+    browser back to `return_url`.
     """
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
 
-    if not settings.whatsapp_partner_api_key or not settings.whatsapp_partner_id:
-        raise IntegrationError(
-            "WHATSAPP_PARTNER_API_KEY / WHATSAPP_PARTNER_ID are not both configured",
-            error_code="d360_partner_not_configured",
-        )
-    if not settings.public_api_base_url:
-        raise IntegrationError(
-            "PUBLIC_API_BASE_URL must be set so 360dialog can deliver inbound webhooks",
-            error_code="d360_no_public_api_url",
-        )
+    _require_router_config(settings)
 
-    partner = D360PartnerClient(
-        partner_id=settings.whatsapp_partner_id,
-        partner_api_key=settings.whatsapp_partner_api_key,
+    return_url = payload.return_url or _default_return_url(settings)
+
+    client = RouterClient(
+        base_url=settings.router_base_url,
+        shared_secret=settings.router_shared_secret,
     )
     try:
-        creds = await partner.generate_channel_api_key(payload.channel_id)
-    finally:
-        await partner.close()
-
-    # Use a temporary client just to bootstrap phone_number_id + webhook
-    # registration; nothing is sent or received yet. `creds.address` is the
-    # per-channel base URL returned by Partner Hub — passing it through means
-    # we honor any region/platform-specific host 360dialog assigns instead of
-    # always hitting the default `waba-v2.360dialog.io`.
-    waba = D360WhatsAppClient(
-        api_key=creds.api_key, phone_number_id="", base_url=creds.address
-    )
-    try:
-        phone_info = await waba.fetch_phone_number_id()
-        webhook_url = (
-            settings.public_api_base_url.rstrip("/")
-            + f"/webhooks/whatsapp/{phone_info.phone_number_id}"
+        result = await client.onboard_start(
+            platform_id=settings.router_platform_id,
+            customer_id=merchant_id,
+            return_url=return_url,
         )
-        await waba.configure_webhook(webhook_url)
     finally:
-        await waba.close()
+        await client.close()
 
-    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
-    await repo.upsert_whatsapp(
-        merchant_id=merchant_id,
-        phone_number_id=phone_info.phone_number_id,
-        api_key=creds.api_key,
-        channel_id=creds.channel_id,
-        waba_id=creds.waba_id,
-        display_phone=phone_info.display_phone_number or payload.phone_number,
-        coexistence_enabled=payload.coexistence_enabled,
+    # `redirect_url` is a query param on the hub URL; its VALUE is the
+    # router's callback URL with its own `platform=...&state=...` query
+    # string. The inner URL must be percent-encoded as a whole so its `?`
+    # and `&` don't terminate the outer query string. urlencode handles
+    # that for us.
+    router_callback = (
+        settings.router_base_url.rstrip("/")
+        + "/onboard/callback?"
+        + urlencode(
+            {"platform": settings.router_platform_id, "state": result.state}
+        )
+    )
+    signup_url = (
+        f"https://hub.360dialog.com/dashboard/app/"
+        f"{quote(settings.router_360dialog_partner_id, safe='')}/permissions?"
+        + urlencode({"redirect_url": router_callback})
     )
 
     logger.info(
-        "integrations.whatsapp.channel_provisioned",
+        "integrations.whatsapp.onboard.started",
         actor_id=str(ctx.actor_id),
         merchant_id=str(merchant_id),
-        phone_number_id=phone_info.phone_number_id,
-        channel_id=creds.channel_id,
-        coexistence_enabled=payload.coexistence_enabled,
+        expires_in=result.expires_in,
     )
-    meta_out: dict[str, Any] = {
-        "provider": "d360",
-        "channel_id": creds.channel_id,
-        "created_via": "partner_hub",
-        "coexistence_enabled": payload.coexistence_enabled,
-    }
-    if creds.waba_id:
-        meta_out["waba_id"] = creds.waba_id
-    display = phone_info.display_phone_number or payload.phone_number
-    if display:
-        meta_out["display_phone"] = display
-    return ConnectionOut(
-        provider="whatsapp",
-        connected=True,
-        status="active",
-        external_account_id=phone_info.phone_number_id,
-        expires_at=None,
-        meta=meta_out,
-    )
-
-
-# ---- WhatsApp manual verify (legacy/ops fallback) -------------------------
-
-
-@router.post("/whatsapp/verify", response_model=ConnectionOut)
-async def whatsapp_verify(
-    payload: WhatsAppVerifyIn, ctx: CurrentContext, session: DBSession
-) -> ConnectionOut:
-    merchant_id = _require_merchant_scope(ctx)
-    settings = get_settings()
-
-    if not settings.whatsapp_partner_api_key or not settings.whatsapp_partner_id:
-        raise IntegrationError(
-            "WHATSAPP_PARTNER_API_KEY / WHATSAPP_PARTNER_ID are not configured",
-            error_code="d360_not_configured",
-        )
-
-    # Confirm the Partner key + Partner ID work against the Partner Hub
-    # before we record the merchant→channel mapping. The Partner key is
-    # the platform-level `x-api-key` for `hub.360dialog.io`; calling the
-    # WABA per-channel endpoint with it always 401s, since that endpoint
-    # expects a per-channel `D360-API-Key`.
-    partner = D360PartnerClient(
-        partner_id=settings.whatsapp_partner_id,
-        partner_api_key=settings.whatsapp_partner_api_key,
-    )
-    try:
-        await partner.list_channels()
-    except IntegrationError as e:
-        raise IntegrationError(
-            "360dialog rejected the shared API key",
-            error_code="d360_verify_failed",
-            **{k: v for k, v in e.context.items() if k in {"status", "body"}},
-        ) from e
-    finally:
-        await partner.close()
-
-    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
-    await repo.upsert_whatsapp(
-        merchant_id=merchant_id,
-        phone_number_id=payload.phone_number_id,
-        display_phone=payload.display_phone,
-    )
-
-    logger.info(
-        "integrations.whatsapp.verified",
-        actor_id=str(ctx.actor_id),
-        merchant_id=str(merchant_id),
-        phone_number_id=payload.phone_number_id,
-    )
-    meta_out: dict[str, Any] = {"provider": "d360"}
-    if payload.display_phone:
-        meta_out["display_phone"] = payload.display_phone
-    return ConnectionOut(
-        provider="whatsapp",
-        connected=True,
-        status="active",
-        external_account_id=payload.phone_number_id,
-        expires_at=None,
-        meta=meta_out,
+    return WhatsAppOnboardStartOut(
+        signup_url=signup_url,
+        state=result.state,
+        expires_in=result.expires_in,
     )
 
 
@@ -446,6 +313,34 @@ def _ghl_redirect_uri(settings: Any) -> str:
         )
     base = settings.public_api_base_url.rstrip("/")
     return f"{base}/integrations/ghl/oauth/callback"
+
+
+def _require_router_config(settings: Any) -> None:
+    missing = [
+        name
+        for name, value in (
+            ("ROUTER_BASE_URL", settings.router_base_url),
+            ("ROUTER_SHARED_SECRET", settings.router_shared_secret),
+            ("ROUTER_PLATFORM_ID", settings.router_platform_id),
+            ("ROUTER_360DIALOG_PARTNER_ID", settings.router_360dialog_partner_id),
+        )
+        if not value
+    ]
+    if missing:
+        raise IntegrationError(
+            f"Router config missing: {', '.join(missing)}",
+            error_code="router_not_configured",
+        )
+
+
+def _default_return_url(settings: Any) -> str:
+    if settings.public_web_merchant_url:
+        base = settings.public_web_merchant_url.rstrip("/")
+        return f"{base}/integrations?provider=whatsapp&status=connected"
+    # Last-resort fallback so /onboard/start can mint a state even on a
+    # freshly-deployed environment without the merchant URL yet — the
+    # operator should still set PUBLIC_WEB_MERCHANT_URL before going live.
+    return "about:blank?integrations_whatsapp=connected"
 
 
 def _merchant_redirect(settings: Any, *, status: str, provider: str) -> str:

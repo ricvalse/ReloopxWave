@@ -116,7 +116,9 @@ async def _maybe_send_reminder(
         # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
         # sends within TTL.
         client = build_whatsapp_sender(
-            phone_number_id=wa.phone_number_id, api_key=wa.api_key
+            phone_number_id=wa.phone_number_id,
+            api_key=wa.api_key,
+            waba_base_url=wa.waba_base_url,
         )
         try:
             await client.send_text(to_phone=cand.wa_contact_phone, text=text)

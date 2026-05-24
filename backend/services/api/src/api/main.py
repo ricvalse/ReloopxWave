@@ -24,6 +24,7 @@ from api.routers import (
     bot_config,
     conversations,
     integrations,
+    internal,
     knowledge_base,
     merchants,
     playground,
@@ -105,6 +106,10 @@ def create_app() -> FastAPI:
 
     # Public webhooks (signature-validated, no JWT).
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+    # Router → platform notify endpoints (HMAC-signed, no JWT). The
+    # `/internal/whatsapp-connected` path is part of the platform contract
+    # in NEWPLATFORM_SETUP.md and must match the router's registered URL.
+    app.include_router(internal.router, prefix="/internal", tags=["internal"])
 
     return app
 

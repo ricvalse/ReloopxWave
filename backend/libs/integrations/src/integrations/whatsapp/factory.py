@@ -1,25 +1,21 @@
 """WhatsApp sender factory.
 
-Wave Marketing operates a single 360dialog Partner; each merchant's phone
-number is a channel under it. Two routes for getting an API key:
+Wave Marketing reaches 360dialog through the platform-wide router. Per-merchant
+channels are minted by the router during onboarding and delivered to us via the
+signed `/internal/whatsapp-connected` notify — alongside the `waba_base_url` the
+channel resolves to (most channels stay on `waba-v2.360dialog.io`, but the
+router honors any region-specific host 360dialog assigns).
 
-  - **Autonomous flow (default)** — each merchant has its own per-channel
-    `D360-API-Key` minted by the Partner Hub during onboarding, stored
-    encrypted in `integrations.secret_ciphertext`. Callers pass it in via
-    `api_key=`.
-  - **Legacy manual-paste flow** — older rows have the placeholder string
-    `"d360-shared-channel"` instead of a real key. We recognise that and
-    fall back to the platform-level `WHATSAPP_PARTNER_API_KEY` so those
-    merchants keep working until they re-onboard.
+Outbound never traverses the router: each merchant talks directly to 360dialog
+with its own `D360-API-Key`. So this factory just needs the per-channel key
+and base URL the IntegrationRepository has on file.
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol
 
 from integrations.whatsapp.d360_client import D360WhatsAppClient
-from shared import get_settings
-
-PLACEHOLDER_API_KEY = "d360-shared-channel"
 
 
 class WhatsAppSender(Protocol):
@@ -29,19 +25,25 @@ class WhatsAppSender(Protocol):
 
 
 def build_whatsapp_sender(
-    *, phone_number_id: str, api_key: str | None = None
+    *,
+    phone_number_id: str,
+    api_key: str,
+    waba_base_url: str | None = None,
 ) -> WhatsAppSender:
     """Return a 360dialog sender for `phone_number_id`.
 
-    `api_key`: per-channel D360 key resolved from the integrations row. If
-    None or the legacy placeholder, falls back to the platform Partner key.
+    `api_key` is the per-channel `D360-API-Key` the router delivered through
+    `/internal/whatsapp-connected`. `waba_base_url` is the per-channel host the
+    router also delivered — None falls back to the D360 default inside the
+    client.
     """
-    settings = get_settings()
-    key = api_key
-    if not key or key == PLACEHOLDER_API_KEY:
-        key = settings.whatsapp_partner_api_key
-    if not key:
+    if not api_key:
         raise RuntimeError(
-            "WHATSAPP_PARTNER_API_KEY is not configured — outbound WhatsApp is disabled."
+            "WhatsApp channel api_key is missing — re-run router onboarding "
+            "for this merchant to receive a fresh key."
         )
-    return D360WhatsAppClient(api_key=key, phone_number_id=phone_number_id)
+    return D360WhatsAppClient(
+        api_key=api_key,
+        phone_number_id=phone_number_id,
+        base_url=waba_base_url or None,
+    )

@@ -313,6 +313,7 @@ class BookSlotHandler:
             api_key=turn_ctx.api_key,
             to_phone=turn_ctx.lead_phone,
             text=text,
+            waba_base_url=turn_ctx.waba_base_url,
         )
 
 

@@ -38,6 +38,7 @@ def integration() -> ResolvedWhatsAppIntegration:
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
         api_key="test-channel-key",
+        waba_base_url=None,
         meta={},
     )
 
@@ -112,7 +113,7 @@ def _patch_session(
 
         async def close(self): ...
 
-    def fake_factory(*, phone_number_id, api_key=None):
+    def fake_factory(*, phone_number_id, api_key=None, waba_base_url=None):
         return FakeWAClient(access_token=api_key or "fake", phone_number_id=phone_number_id)
 
     monkeypatch.setattr(no_answer, "tenant_session", fake_tenant_session)

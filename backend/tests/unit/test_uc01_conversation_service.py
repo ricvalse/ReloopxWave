@@ -53,6 +53,7 @@ class FakeSender(ReplySender):
         api_key: str,
         to_phone: str,
         text: str,
+        waba_base_url: str | None = None,
     ) -> str:
         self.calls.append(
             {
@@ -60,6 +61,7 @@ class FakeSender(ReplySender):
                 "api_key": api_key,
                 "to": to_phone,
                 "text": text,
+                "waba_base_url": waba_base_url,
             }
         )
         return "wamid.fake"
@@ -74,6 +76,7 @@ def resolved_integration() -> ResolvedWhatsAppIntegration:
         tenant_id=uuid.uuid4(),
         phone_number_id="PNID-1",
         api_key="test-channel-key",
+        waba_base_url=None,
         meta={"phone_number_id": "PNID-1"},
     )
 

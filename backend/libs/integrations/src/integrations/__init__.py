@@ -8,6 +8,13 @@ from integrations.ghl.oauth import (
     verify_oauth_state,
 )
 from integrations.ghl.signatures import verify_ghl_signature
+from integrations.router import (
+    SIGNATURE_HEADER,
+    OnboardStartResult,
+    RouterClient,
+    sign_router_payload,
+    verify_router_signature,
+)
 from integrations.supabase_admin import InvitedUser, SupabaseAdminClient
 from integrations.supabase_storage import SupabaseStorage
 from integrations.whatsapp.d360_client import D360WhatsAppClient
@@ -15,25 +22,20 @@ from integrations.whatsapp.factory import (
     WhatsAppSender,
     build_whatsapp_sender,
 )
-from integrations.whatsapp.partner_client import (
-    ChannelCredentials,
-    D360PartnerClient,
-    PartnerChannel,
-)
 from integrations.whatsapp.webhook import (
     WhatsAppInboundEvent,
     parse_inbound_payload,
 )
 
 __all__ = [
-    "ChannelCredentials",
-    "D360PartnerClient",
     "D360WhatsAppClient",
     "ExchangedTokens",
     "GHLClient",
     "GHLTokenBundle",
     "InvitedUser",
-    "PartnerChannel",
+    "OnboardStartResult",
+    "RouterClient",
+    "SIGNATURE_HEADER",
     "SupabaseAdminClient",
     "SupabaseStorage",
     "VerifiedState",
@@ -44,6 +46,8 @@ __all__ = [
     "exchange_authorization_code",
     "parse_inbound_payload",
     "sign_oauth_state",
+    "sign_router_payload",
     "verify_ghl_signature",
     "verify_oauth_state",
+    "verify_router_signature",
 ]

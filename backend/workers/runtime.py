@@ -27,8 +27,9 @@ class WhatsAppReplySender:
     used by ConversationService.
 
     `api_key` is the per-channel D360 key the caller already resolved from
-    the integrations row. Legacy rows pass the placeholder; the factory
-    falls back to the platform Partner key for those.
+    the integrations row (delivered by the router). `waba_base_url` is the
+    per-channel host returned alongside that key — None falls back to the
+    D360 default inside the client.
     """
 
     async def send(
@@ -38,8 +39,13 @@ class WhatsAppReplySender:
         api_key: str,
         to_phone: str,
         text: str,
+        waba_base_url: str | None = None,
     ) -> str:
-        sender = build_whatsapp_sender(phone_number_id=phone_number_id, api_key=api_key)
+        sender = build_whatsapp_sender(
+            phone_number_id=phone_number_id,
+            api_key=api_key,
+            waba_base_url=waba_base_url,
+        )
         try:
             resp = await sender.send_text(to_phone=to_phone, text=text)
             return str(

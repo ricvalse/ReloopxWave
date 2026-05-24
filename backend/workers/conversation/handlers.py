@@ -190,10 +190,15 @@ async def send_outbound_whatsapp(ctx: dict, message_id: str) -> dict:
         to_phone = conv.wa_contact_phone
         phone_number_id = resolved.phone_number_id
         api_key = resolved.api_key
+        waba_base_url = resolved.waba_base_url
 
     # HTTP call OUTSIDE the session — long external IO shouldn't hold a row lock.
     try:
-        sender = build_whatsapp_sender(phone_number_id=phone_number_id, api_key=api_key)
+        sender = build_whatsapp_sender(
+            phone_number_id=phone_number_id,
+            api_key=api_key,
+            waba_base_url=waba_base_url,
+        )
         try:
             resp = await sender.send_text(to_phone=to_phone, text=text_to_send)
         finally:

@@ -23,18 +23,19 @@ from shared import EncryptedSecret, decrypt_secret, encrypt_secret
 class ResolvedWhatsAppIntegration:
     """Per-merchant WhatsApp routing record.
 
-    Each merchant owns its own 360dialog channel under Wave Marketing's
-    Partner. `api_key` is the per-channel D360 key (used as `D360-API-Key`
-    header on outbound). For legacy rows written by the manual-paste flow
-    `api_key` is the placeholder `"d360-shared-channel"` — the sender
-    factory recognises that and substitutes the platform-level key
-    (`WHATSAPP_PARTNER_API_KEY`).
+    Each merchant owns its own 360dialog channel under the router's Partner.
+    `api_key` is the per-channel `D360-API-Key` the router minted during
+    onboarding and delivered via `/internal/whatsapp-connected`.
+    `waba_base_url` is the per-channel host returned by 360dialog when the
+    key was minted — None means "use the D360 default host". Outbound never
+    traverses the router; sends go straight from us to `waba_base_url`.
     """
 
     merchant_id: UUID
     tenant_id: UUID
     phone_number_id: str
     api_key: str
+    waba_base_url: str | None
     meta: dict[str, Any]
 
 
@@ -76,12 +77,15 @@ class IntegrationRepository:
         if row is None:
             return None
         integration, tenant_id = row
+        meta = dict(integration.meta or {})
+        base_url = meta.get("waba_base_url")
         return ResolvedWhatsAppIntegration(
             merchant_id=integration.merchant_id,
             tenant_id=tenant_id,
             phone_number_id=phone_number_id,
             api_key=self._decrypt(integration),
-            meta=dict(integration.meta or {}),
+            waba_base_url=str(base_url) if base_url else None,
+            meta=meta,
         )
 
     async def resolve_ghl(self, merchant_id: UUID) -> ResolvedGHLIntegration | None:
@@ -183,35 +187,41 @@ class IntegrationRepository:
         *,
         merchant_id: UUID,
         phone_number_id: str,
-        api_key: str | None = None,
+        api_key: str,
         channel_id: str | None = None,
         waba_id: str | None = None,
+        waba_base_url: str | None = None,
         display_phone: str | None = None,
         coexistence_enabled: bool | None = None,
     ) -> Integration:
-        # Autonomous flow passes the real per-channel D360 key in `api_key`.
-        # Legacy manual-paste flow leaves it None; we encrypt a placeholder
-        # to satisfy the NOT NULL constraint and the sender factory falls
-        # back to the platform-level key.
-        plaintext = api_key if api_key is not None else "d360-shared-channel"
+        # The router delivers a per-channel `D360-API-Key` via the signed
+        # `/internal/whatsapp-connected` notify. We always encrypt a real key
+        # here — there is no shared/placeholder fallback now that Wave
+        # Marketing doesn't hold a Partner key of its own.
+        if not api_key:
+            raise ValueError(
+                "api_key is required (router delivers per-channel keys)"
+            )
         aad = f"wa:{merchant_id}".encode()
-        secret = encrypt_secret(plaintext, kek_base64=self._kek, aad=aad)
+        secret = encrypt_secret(api_key, kek_base64=self._kek, aad=aad)
 
         integration = await self._get("whatsapp", merchant_id)
         meta: dict[str, Any] = {
             **(integration.meta if integration else {}),
             "phone_number_id": phone_number_id,
             "provider": "d360",
-            "created_via": "partner_hub" if api_key is not None else "manual",
+            "created_via": "router",
         }
         if channel_id:
             meta["channel_id"] = channel_id
         if waba_id:
             meta["waba_id"] = waba_id
+        if waba_base_url:
+            meta["waba_base_url"] = waba_base_url
         if display_phone:
             meta["display_phone"] = display_phone
-        # `None` leaves any previous value untouched (re-running the autonomous
-        # flow without re-asking the merchant shouldn't silently flip the flag).
+        # `None` leaves any previous value untouched (re-running onboarding
+        # without re-asking the merchant shouldn't silently flip the flag).
         if coexistence_enabled is not None:
             meta["coexistence_enabled"] = bool(coexistence_enabled)
 

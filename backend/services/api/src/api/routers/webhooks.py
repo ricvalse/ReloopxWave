@@ -1,13 +1,18 @@
 """Public webhooks — no JWT dependency. Signature validation happens per-route.
 
-WhatsApp comes in via 360dialog only — Wave Marketing operates as a single
-360dialog Partner; every merchant's number is a channel under that partner.
-360dialog forwards Meta's WABA payload shape unchanged, so the parser is the
-same one Meta would have used. Inbound trust is path-only: the
-`phone_number_id` in the URL is resolved to a merchant by the worker via
-the `integrations` table; events for unknown channels are dropped there.
-HMAC signature verification is intentionally not enforced (matches the
-other Reloop platform).
+WhatsApp comes in via the platform-wide router (a 360dialog Partner owned by
+relooptech). The router signs every inbound POST with HMAC-SHA256 of the raw
+body using the platform's `shared_secret` (`ROUTER_SHARED_SECRET` here). We
+verify before parsing — a missing or mismatched `X-Relooptech-Signature` is
+401 with the body still on the wire.
+
+Inbound payloads are byte-identical to Meta Cloud API webhooks (360dialog
+forwards them unchanged through the router). The same parsers used by the
+old direct-360dialog path still apply.
+
+The router treats:
+  2xx = done, 5xx = transient retry, 4xx = immediate DLQ.
+Stay under the 10s deadline; offload everything heavy to ARQ.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.signatures import verify_ghl_signature
+from integrations.router import SIGNATURE_HEADER, verify_router_signature
 from integrations.whatsapp.webhook import (
     parse_inbound_payload,
     parse_message_echo_payload,
@@ -29,60 +35,83 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-async def _handle_whatsapp_inbound(
-    request: Request, *, phone_number_id_override: str | None
+@router.post("/whatsapp")
+async def whatsapp_inbound(
+    request: Request,
+    x_relooptech_signature: str = Header(default="", alias=SIGNATURE_HEADER),
 ) -> dict[str, Any]:
-    payload = await request.json()
+    """Inbound from the router. Body is the unchanged Meta Cloud API envelope
+    360dialog forwarded; the channel id lives in
+    `entry[].changes[].value.metadata.phone_number_id`. The router has its
+    own 24h dedupe, but we still dedup by `messages[].id` / `message_echoes[].id`
+    at the arq job-id boundary in case the router ever shards or re-delivers.
+    """
+    settings = get_settings()
+    raw = await request.body()
+
+    if not verify_router_signature(
+        raw_body=raw,
+        header_value=x_relooptech_signature,
+        shared_secret=settings.router_shared_secret,
+    ):
+        logger.warning(
+            "webhook.router.signature_rejected",
+            bytes=len(raw),
+            has_header=bool(x_relooptech_signature),
+        )
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        # 4xx — bad body. The router treats 4xx as immediate DLQ, which is
+        # what we want for malformed JSON: re-trying won't fix it.
+        raise HTTPException(status_code=400, detail="invalid json") from None
+
     arq = request.app.state.arq
 
-    # Inbound messages — text-bearing turns go to the orchestrator.
+    # Inbound messages — text-bearing turns go to the orchestrator. The
+    # `phone_number_id` on each event comes from the payload itself
+    # (`metadata.phone_number_id`); the router does not put it in the URL.
     events = parse_inbound_payload(payload)
     enqueued_msgs = 0
     for ev in events:
-        if ev.text is None:
-            continue
-        # Prefer the URL path segment when present (autonomous-flow channels
-        # are pinned to a per-phone webhook); fall back to the channel id
-        # carried in `metadata.phone_number_id` so a single shared URL works.
-        pnid = phone_number_id_override or ev.phone_number_id
-        if not pnid:
+        if ev.text is None or not ev.phone_number_id:
             continue
         await arq.enqueue_job(
             "handle_inbound_message",
-            pnid,
+            ev.phone_number_id,
             ev.from_phone,
             ev.text,
             ev.message_id,
-            _job_id=f"wa:msg:{ev.message_id}",  # dedup if 360dialog retries
+            _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )
         enqueued_msgs += 1
 
-    # Coexistence: messages the merchant typed in the WhatsApp Business App on
-    # their phone are echoed back to us as `smb_message_echoes`. Persist them as
-    # outbound `role='agent'` rows so the conversations UI mirrors the phone
-    # screen; never run them through the LLM orchestrator (already sent).
+    # Coexistence: messages the merchant typed in the WhatsApp Business App
+    # on their phone arrive as `smb_message_echoes`. Persist them as outbound
+    # `role='agent'` rows so the conversations UI mirrors the phone screen;
+    # never run them through the LLM orchestrator (already sent).
     echoes = parse_message_echo_payload(payload)
     enqueued_echoes = 0
     for ev in echoes:
-        if ev.text is None:
+        if ev.text is None or not ev.phone_number_id:
             continue
-        pnid = phone_number_id_override or ev.phone_number_id
-        if not pnid or not ev.message_id or not ev.customer_phone:
+        if not ev.message_id or not ev.customer_phone:
             continue
         await arq.enqueue_job(
             "handle_phone_app_echo",
-            pnid,
+            ev.phone_number_id,
             ev.customer_phone,
             ev.text,
             ev.message_id,
-            _job_id=f"wa:echo:{ev.message_id}",  # 360dialog may retry
+            _job_id=f"wa:echo:{ev.message_id}",
         )
         enqueued_echoes += 1
 
     # Outbound status callbacks (delivered/read/failed/sent). Update the
-    # corresponding outbound row's tick state. We dedup on
-    # (wa_message_id, status) so retried webhooks are idempotent — Meta does
-    # NOT promise at-most-once.
+    # corresponding outbound row's tick state. Dedup on
+    # (wa_message_id, status) so retries are idempotent.
     statuses = parse_status_payload(payload)
     enqueued_statuses = 0
     for st in statuses:
@@ -99,8 +128,7 @@ async def _handle_whatsapp_inbound(
         enqueued_statuses += 1
 
     logger.info(
-        "webhook.d360.inbound",
-        phone_number_id=phone_number_id_override,
+        "webhook.router.inbound",
         msg_events=len(events),
         msg_enqueued=enqueued_msgs,
         echo_events=len(echoes),
@@ -112,28 +140,6 @@ async def _handle_whatsapp_inbound(
         "accepted": len(events) + len(echoes) + len(statuses),
         "enqueued": enqueued_msgs + enqueued_echoes + enqueued_statuses,
     }
-
-
-@router.post("/whatsapp")
-async def whatsapp_inbound_shared(request: Request) -> dict[str, Any]:
-    """Channel-id is read from `metadata.phone_number_id` in the body.
-
-    Use this URL when 360dialog is configured with a single Partner-level
-    webhook for every channel (the simpler operational pattern). The
-    per-phone route below stays in place for the autonomous Embedded
-    Signup flow which programmatically pins a per-channel webhook.
-    """
-    return await _handle_whatsapp_inbound(request, phone_number_id_override=None)
-
-
-@router.post("/whatsapp/{phone_number_id}")
-async def whatsapp_inbound(
-    phone_number_id: str,
-    request: Request,
-) -> dict[str, Any]:
-    return await _handle_whatsapp_inbound(
-        request, phone_number_id_override=phone_number_id
-    )
 
 
 @router.post("/ghl/{merchant_id}")
