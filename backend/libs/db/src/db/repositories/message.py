@@ -37,6 +37,7 @@ class MessageRepository:
             conversation_id=conversation_id,
             merchant_id=merchant_id,
             role="user",
+            direction="in",
             content=content,
             wa_message_id=wa_message_id,
             variant_id=variant_id,
@@ -90,12 +91,14 @@ class MessageRepository:
             conversation_id=conversation_id,
             merchant_id=merchant_id,
             role="assistant",
+            direction="out",
             content=content,
             model=model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
             variant_id=variant_id,
+            meta={"sender_type": "ai"},
         )
         self._session.add(msg)
         await self._session.flush()

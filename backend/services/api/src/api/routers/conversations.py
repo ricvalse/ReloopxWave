@@ -127,6 +127,7 @@ async def send_message(
         content=body.text,
         status="pending",
         client_message_id=body.client_message_id,
+        meta={"sender_type": "human"},
     )
     session.add(msg)
     await session.flush()
