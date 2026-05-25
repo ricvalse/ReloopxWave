@@ -44,6 +44,21 @@ from shared import get_logger
 logger = get_logger(__name__)
 
 
+def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
+    """Map stored messages to LLM-payload roles.
+
+    DB roles are broader than the LLM role set (`user|assistant|system|tool`):
+    `agent` marks a business-side reply typed by a human (composer) or echoed
+    from the merchant's phone. To the model those are assistant-side turns, so
+    we fold `agent` into `assistant` — otherwise OpenAI rejects the request
+    with a 400 (`Invalid value: 'agent'`).
+    """
+    return [
+        ChatMessage(role="assistant" if m.role == "agent" else m.role, content=m.content)
+        for m in history
+    ]
+
+
 # ---- Action dispatcher ----------------------------------------------------
 
 class ActionHandler(Protocol):
@@ -171,16 +186,18 @@ class ConversationService:
             role="worker",
             actor_id=resolved.merchant_id,  # worker-owned operation
         )
-        # Phase 1: DB-bound work that must commit atomically.
-        # LLM and integrations calls happen INSIDE the session because the session
-        # doesn't start a transaction until the first query; but we explicitly avoid
-        # holding one across long HTTP calls by flushing and committing before the
-        # external sends below.
+        # Phase 1: persist the inbound message in its OWN transaction, so it is
+        # durable regardless of what happens to the reply. A failure while
+        # generating the reply (LLM 400/timeout, RAG, network) must never lose
+        # the customer's message. Idempotent on `wa_message_id`: a redelivered
+        # webhook / retried job reuses the existing row instead of duplicating.
         async with tenant_session(worker_ctx) as session:
             leads = LeadRepository(session)
             convs = ConversationRepository(session)
             msgs = MessageRepository(session)
             analytics = AnalyticsRepository(session)
+
+            already_persisted = await msgs.find_by_wa_message_id(wa_message_id)
 
             lead = await leads.upsert_by_phone(merchant_id=resolved.merchant_id, phone=from_phone)
 
@@ -201,23 +218,31 @@ class ConversationService:
                     variant_id=variant_id,
                 )
 
+            # History for the LLM = turns BEFORE this inbound. On a retry the
+            # inbound is already stored, so exclude it explicitly by wa_message_id.
             history = await msgs.list_history(conv.id, limit=30)
-            await msgs.persist_user_message(
-                conversation_id=conv.id,
-                merchant_id=resolved.merchant_id,
-                content=text,
-                wa_message_id=wa_message_id,
-                variant_id=conv.variant_id,
-            )
+            history = [m for m in history if m.wa_message_id != wa_message_id]
 
             # Auto-reply gate: AND of merchant master + per-thread takeover.
-            # If either is off, persist the inbound + emit analytics + return.
-            # The merchant is expected to reply via the composer; the bot stays silent.
             merchant_auto_reply = await self._resolve_bool(
                 session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=True
             )
-            if not merchant_auto_reply or not conv.auto_reply:
-                await convs.touch_last_message(conv.id)
+            auto_reply_on = bool(merchant_auto_reply and conv.auto_reply)
+
+            if already_persisted is None:
+                await msgs.persist_user_message(
+                    conversation_id=conv.id,
+                    merchant_id=resolved.merchant_id,
+                    content=text,
+                    wa_message_id=wa_message_id,
+                    variant_id=conv.variant_id,
+                )
+                received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}
+                if not auto_reply_on:
+                    received_props["auto_reply_skipped"] = True
+                    received_props["reason"] = (
+                        "merchant_off" if not merchant_auto_reply else "conversation_off"
+                    )
                 await analytics.emit(
                     tenant_id=resolved.tenant_id,
                     merchant_id=resolved.merchant_id,
@@ -225,28 +250,43 @@ class ConversationService:
                     subject_type="conversation",
                     subject_id=conv.id,
                     variant_id=conv.variant_id,
-                    properties={
-                        "role": "user",
-                        "lead_id": str(lead.id),
-                        "auto_reply_skipped": True,
-                        "reason": (
-                            "merchant_off" if not merchant_auto_reply else "conversation_off"
-                        ),
-                    },
+                    properties=received_props,
                 )
+            await convs.touch_last_message(conv.id)
+
+            # Capture scalars + the prepared history while the session is open;
+            # the ORM objects detach after the commit below.
+            conv_id = conv.id
+            conv_variant_id = conv.variant_id
+            lead_id = lead.id
+            lead_score = lead.score
+            chat_history = _to_chat_history(history)
+
+            if not auto_reply_on:
                 logger.info(
                     "uc01.auto_reply_skipped",
-                    conversation_id=str(conv.id),
+                    conversation_id=str(conv_id),
                     merchant_id=str(resolved.merchant_id),
                     merchant_auto_reply=merchant_auto_reply,
                     conversation_auto_reply=conv.auto_reply,
                 )
-                return InboundResult(
-                    handled=True,
-                    conversation_id=conv.id,
-                    reply_text=None,
-                    reason="auto_reply_off",
-                )
+            # Exit of `async with` commits the inbound (and the skip-path analytics).
+
+        if not auto_reply_on:
+            return InboundResult(
+                handled=True,
+                conversation_id=conv_id,
+                reply_text=None,
+                reason="auto_reply_off",
+            )
+
+        # Phase 2: generate + persist the reply in a SEPARATE transaction. If the
+        # LLM or any step here fails, only the reply rolls back — the inbound
+        # above is already committed and the job can be retried safely.
+        async with tenant_session(worker_ctx) as session:
+            convs = ConversationRepository(session)
+            msgs = MessageRepository(session)
+            analytics = AnalyticsRepository(session)
 
             system_prompt = await self._resolve_system_prompt(
                 session=session, merchant_id=resolved.merchant_id
@@ -268,45 +308,36 @@ class ConversationService:
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
                 tenant_id=resolved.tenant_id,
-                lead_id=lead.id,
-                lead_score=lead.score,
+                lead_id=lead_id,
+                lead_score=lead_score,
                 hot_threshold=hot_threshold,
                 system_prompt=system_prompt,
-                history=[ChatMessage(role=m.role, content=m.content) for m in history],
+                history=chat_history,
                 kb_chunks=kb_chunks,
-                variant_id=conv.variant_id,
+                variant_id=conv_variant_id,
             )
 
             response: OrchestratorResponse = await self._orchestrator.run(ctx, text)
 
             await msgs.persist_assistant_message(
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 merchant_id=resolved.merchant_id,
                 content=response.reply_text,
                 model=response.model,
                 tokens_in=response.tokens_in,
                 tokens_out=response.tokens_out,
                 latency_ms=response.latency_ms,
-                variant_id=conv.variant_id,
+                variant_id=conv_variant_id,
             )
-            await convs.touch_last_message(conv.id)
+            await convs.touch_last_message(conv_id)
 
-            await analytics.emit(
-                tenant_id=resolved.tenant_id,
-                merchant_id=resolved.merchant_id,
-                event_type="message.received",
-                subject_type="conversation",
-                subject_id=conv.id,
-                variant_id=conv.variant_id,
-                properties={"role": "user", "lead_id": str(lead.id)},
-            )
             await analytics.emit(
                 tenant_id=resolved.tenant_id,
                 merchant_id=resolved.merchant_id,
                 event_type="message.replied",
                 subject_type="conversation",
-                subject_id=conv.id,
-                variant_id=conv.variant_id,
+                subject_id=conv_id,
+                variant_id=conv_variant_id,
                 properties={
                     "role": "assistant",
                     "model": response.model,
@@ -316,15 +347,14 @@ class ConversationService:
                     "actions": [a.kind for a in response.actions],
                 },
             )
-            # Exit of `async with` commits the turn. If anything above raised, the
-            # rollback leaves the conversation consistent — we never sent the reply.
+            # Exit of `async with` commits the reply.
 
-        # Phase 2: external sends, with their own sessions where needed.
+        # Phase 3: external sends, with their own sessions where needed.
         turn_ctx = TurnContext(
             tenant_id=resolved.tenant_id,
             merchant_id=resolved.merchant_id,
-            lead_id=lead.id,
-            conversation_id=conv.id,
+            lead_id=lead_id,
+            conversation_id=conv_id,
             lead_phone=from_phone,
             phone_number_id=phone_number_id,
             api_key=resolved.api_key,
@@ -345,7 +375,7 @@ class ConversationService:
 
         return InboundResult(
             handled=True,
-            conversation_id=conv.id,
+            conversation_id=conv_id,
             reply_text=response.reply_text,
         )
 

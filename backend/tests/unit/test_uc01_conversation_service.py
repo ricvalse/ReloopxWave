@@ -18,6 +18,7 @@ from ai_core.conversation_service import (
     ActionDispatcher,
     ConversationService,
     ReplySender,
+    _to_chat_history,
 )
 from ai_core.orchestrator import OrchestratorAction, OrchestratorResponse
 from db import ResolvedWhatsAppIntegration
@@ -35,6 +36,7 @@ class FakeConversation:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     merchant_id: uuid.UUID = field(default_factory=uuid.uuid4)
     variant_id: str | None = None
+    auto_reply: bool = True
 
 
 class FakeSession:
@@ -149,6 +151,8 @@ def service(
         def __init__(self, session):
             self.user_calls: list = []
             self.assistant_calls: list = []
+        async def find_by_wa_message_id(self, wa_message_id):
+            return None
         async def list_history(self, conversation_id, *, limit=30):
             return []
         async def persist_user_message(self, **kw):
@@ -248,3 +252,214 @@ async def test_action_dispatcher_calls_registered_handler(
 
     assert len(seen) == 1
     assert seen[0].kind == "none"
+
+
+@dataclass
+class _StoredMsg:
+    role: str
+    content: str
+
+
+def test_to_chat_history_folds_agent_into_assistant() -> None:
+    """`agent` (human composer / phone echo) must map to `assistant` so the
+    OpenAI payload stays within the accepted role set; other roles pass through."""
+    history = [
+        _StoredMsg(role="user", content="Ciao"),
+        _StoredMsg(role="assistant", content="Come posso aiutarti?"),
+        _StoredMsg(role="agent", content="Rispondo io dal telefono"),
+        _StoredMsg(role="system", content="ctx"),
+    ]
+
+    out = _to_chat_history(history)
+
+    assert [m.role for m in out] == ["user", "assistant", "assistant", "system"]
+    assert out[2].content == "Rispondo io dal telefono"
+
+
+async def test_inbound_persisted_even_when_reply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_integration: ResolvedWhatsAppIntegration,
+) -> None:
+    """Durability: a failure during reply generation must NOT lose the inbound.
+
+    The inbound is persisted in its own phase that completes before the reply
+    phase runs, so when the orchestrator raises, the user message is already
+    saved and no assistant message is written."""
+    from ai_core import conversation_service as cs
+
+    user_calls: list = []
+    assistant_calls: list = []
+
+    async def fake_resolve(self, phone_number_id):
+        return resolved_integration
+
+    async def fake_resolve_int(self, session, merchant_id, key, *, default):
+        return 80
+
+    async def fake_resolve_bool(self, session, merchant_id, key, *, default):
+        return True
+
+    async def fake_resolve_prompt(self, *, session, merchant_id):
+        return "system prompt"
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_integration", fake_resolve)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_int", fake_resolve_int)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", fake_resolve_bool)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_system_prompt", fake_resolve_prompt)
+
+    lead = FakeLead()
+    conv = FakeConversation()
+
+    @asynccontextmanager
+    async def fake_tenant_session(ctx):
+        yield FakeSession()
+
+    monkeypatch.setattr(cs, "tenant_session", fake_tenant_session)
+
+    class FakeLeadRepo:
+        def __init__(self, session): ...
+        async def upsert_by_phone(self, *, merchant_id, phone):
+            return lead
+
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def get_active(self, *, merchant_id, wa_contact_phone):
+            return conv
+        async def touch_last_message(self, conversation_id):
+            return None
+
+    class FakeMsgRepo:
+        def __init__(self, session): ...
+        async def find_by_wa_message_id(self, wa_message_id):
+            return None
+        async def list_history(self, conversation_id, *, limit=30):
+            return []
+        async def persist_user_message(self, **kw):
+            user_calls.append(kw)
+        async def persist_assistant_message(self, **kw):
+            assistant_calls.append(kw)
+
+    class FakeAnalyticsRepo:
+        def __init__(self, session): ...
+        async def emit(self, **kw):
+            return None
+
+    monkeypatch.setattr(cs, "LeadRepository", FakeLeadRepo)
+    monkeypatch.setattr(cs, "ConversationRepository", FakeConvRepo)
+    monkeypatch.setattr(cs, "MessageRepository", FakeMsgRepo)
+    monkeypatch.setattr(cs, "AnalyticsRepository", FakeAnalyticsRepo)
+
+    orch = AsyncMock()
+    orch.run = AsyncMock(side_effect=RuntimeError("LLM blew up"))
+
+    svc = ConversationService(
+        orchestrator=orch,
+        action_dispatcher=ActionDispatcher(),
+        reply_sender=FakeSender(),
+        embedder=None,
+        kek_base64="unused",
+    )
+
+    with pytest.raises(RuntimeError):
+        await svc.handle_inbound(
+            phone_number_id="PNID-1",
+            from_phone="39333000000",
+            text="ciao",
+            wa_message_id="wamid.in.999",
+        )
+
+    # Inbound was persisted before the reply phase failed; reply was not.
+    assert len(user_calls) == 1
+    assert user_calls[0]["wa_message_id"] == "wamid.in.999"
+    assert assistant_calls == []
+
+
+async def test_inbound_idempotent_on_redelivery(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_integration: ResolvedWhatsAppIntegration,
+    orchestrator_response: OrchestratorResponse,
+) -> None:
+    """A redelivered webhook (wa_message_id already stored) must not re-insert
+    the inbound, but should still produce a reply."""
+    from ai_core import conversation_service as cs
+
+    user_calls: list = []
+
+    async def fake_resolve(self, phone_number_id):
+        return resolved_integration
+
+    async def fake_resolve_int(self, session, merchant_id, key, *, default):
+        return 80
+
+    async def fake_resolve_bool(self, session, merchant_id, key, *, default):
+        return True
+
+    async def fake_resolve_prompt(self, *, session, merchant_id):
+        return "system prompt"
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_integration", fake_resolve)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_int", fake_resolve_int)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", fake_resolve_bool)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_system_prompt", fake_resolve_prompt)
+
+    conv = FakeConversation()
+
+    @asynccontextmanager
+    async def fake_tenant_session(ctx):
+        yield FakeSession()
+
+    monkeypatch.setattr(cs, "tenant_session", fake_tenant_session)
+
+    class FakeLeadRepo:
+        def __init__(self, session): ...
+        async def upsert_by_phone(self, *, merchant_id, phone):
+            return FakeLead()
+
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def get_active(self, *, merchant_id, wa_contact_phone):
+            return conv
+        async def touch_last_message(self, conversation_id):
+            return None
+
+    class FakeMsgRepo:
+        def __init__(self, session): ...
+        async def find_by_wa_message_id(self, wa_message_id):
+            return object()  # already stored
+        async def list_history(self, conversation_id, *, limit=30):
+            return []
+        async def persist_user_message(self, **kw):
+            user_calls.append(kw)
+        async def persist_assistant_message(self, **kw):
+            return None
+
+    class FakeAnalyticsRepo:
+        def __init__(self, session): ...
+        async def emit(self, **kw):
+            return None
+
+    monkeypatch.setattr(cs, "LeadRepository", FakeLeadRepo)
+    monkeypatch.setattr(cs, "ConversationRepository", FakeConvRepo)
+    monkeypatch.setattr(cs, "MessageRepository", FakeMsgRepo)
+    monkeypatch.setattr(cs, "AnalyticsRepository", FakeAnalyticsRepo)
+
+    orch = AsyncMock()
+    orch.run = AsyncMock(return_value=orchestrator_response)
+
+    svc = ConversationService(
+        orchestrator=orch,
+        action_dispatcher=ActionDispatcher(),
+        reply_sender=FakeSender(),
+        embedder=None,
+        kek_base64="unused",
+    )
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao",
+        wa_message_id="wamid.dup.1",
+    )
+
+    assert result.handled is True
+    assert user_calls == []  # no re-insert

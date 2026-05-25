@@ -12,6 +12,16 @@ class MessageRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def find_by_wa_message_id(self, wa_message_id: str) -> Message | None:
+        """Return the message with this WhatsApp id, or None.
+
+        Used to make inbound persistence idempotent: the WA webhook may be
+        re-delivered and the worker job re-run, so we skip the insert when the
+        message is already stored. `wa_message_id` is indexed for this lookup.
+        """
+        stmt = select(Message).where(Message.wa_message_id == wa_message_id).limit(1)
+        return (await self._session.execute(stmt)).scalars().first()
+
     async def list_history(self, conversation_id: UUID, *, limit: int = 30) -> list[Message]:
         """Returns the last `limit` messages in chronological (oldest-first) order."""
         stmt = (
