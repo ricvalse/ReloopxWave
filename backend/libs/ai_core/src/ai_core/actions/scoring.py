@@ -1,14 +1,17 @@
 """UC-05 — update_score action handler.
 
-The orchestrator emits `update_score` with a `signals` dict in the payload
-(boolean flags matching `ai_core.scoring.SIGNAL_WEIGHTS`). This handler:
-  1. Derives extra signals from conversation-level facts (engagement, timing).
-  2. Combines with the LLM-reported signals.
-  3. Runs `score_lead` and persists the result.
-  4. Emits `lead_score_changed` when the score crosses the hot/cold threshold.
+Scoring is always-on: `ConversationService` derives behavioural signals from
+cumulative conversation state (name/email on file, engagement, sentiment,
+booking intent), merges them with any content signals the LLM reported this
+turn, and injects a single `update_score` action carrying the merged `signals`
+dict (boolean flags matching `ai_core.scoring.SIGNAL_WEIGHTS`). This handler:
+  1. Whitelists the signals (defensive against hallucinated keys).
+  2. Runs `score_lead` over the cumulative signal set and persists the result.
+  3. Emits `lead_score_changed` with the previous/new hot/cold temperature.
 
-Keeping scoring as an action (vs. always-on post-turn hook) lets the LLM tell
-us *why* a signal is present — the `reason_codes` then surface in the UI.
+Because the signals reflect accumulated state rather than only the current
+message, the score is stable across turns — a single late negative turn no
+longer craters an otherwise-hot lead.
 """
 from __future__ import annotations
 

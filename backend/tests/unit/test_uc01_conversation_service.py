@@ -29,6 +29,9 @@ from db import ResolvedWhatsAppIntegration
 class FakeLead:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     score: int = 0
+    name: str | None = None
+    email: str | None = None
+    sentiment: str | None = None
 
 
 @dataclass

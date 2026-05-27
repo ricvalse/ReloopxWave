@@ -113,14 +113,38 @@ class _StructuredResponse(BaseModel):
 
 
 _RESPONSE_SCHEMA_HINT = (
-    "Rispondi SEMPRE con un JSON che rispetta esattamente questo schema:\n"
+    "Rispondi SEMPRE con un JSON valido che rispetta esattamente questo schema:\n"
     "{\n"
     '  "reply_text": "<testo da inviare all\'utente>",\n'
     '  "actions": [\n'
     '    {"kind": "book_slot|move_pipeline|update_score|escalate_human|none", "payload": {}}\n'
     "  ]\n"
     "}\n"
-    "`actions` può essere lista vuota. `reply_text` non deve mai essere vuoto."
+    "`reply_text` non deve mai essere vuoto. `actions` può essere lista vuota.\n"
+    "\n"
+    "Emetti le azioni SOLO quando i criteri sono soddisfatti, riempiendo il payload:\n"
+    "\n"
+    '- "book_slot": quando l\'utente vuole prenotare/fissare un appuntamento o '
+    "accetta uno slot proposto. payload: {\n"
+    '    "preferred_start_iso": "<ISO8601, es. 2026-06-03T15:00:00, se l\'utente indica data/ora>",\n'
+    '    "contact_fields": {"name": "<se noto>", "email": "<se noto>"}\n'
+    "  }\n"
+    '- "move_pipeline": quando il lead è chiaramente qualificato e pronto ad '
+    "avanzare (intenzione forte, budget/tempistiche confermati). payload: {\n"
+    '    "stage": "<nome stage target, opzionale>"\n'
+    "  }\n"
+    '- "update_score": ad OGNI turno in cui il messaggio rivela qualcosa di '
+    "rilevante sul lead. payload: {\n"
+    '    "signals": { ... usa SOLO queste chiavi booleane, true se vere in QUESTO '
+    "messaggio ... }\n"
+    "  }\n"
+    "  chiavi valide per signals: has_name, has_email, has_budget, has_timeline, "
+    "asked_for_booking, objection_price, objection_trust, objection_competitor, "
+    "dropped_off, profanity.\n"
+    '- "escalate_human": quando l\'utente è arrabbiato, minaccia reclami/azioni '
+    "legali, o chiede esplicitamente una persona. payload: {}\n"
+    '- "none": negli altri casi.\n'
+    "Puoi emettere più azioni nello stesso turno (es. update_score + book_slot)."
 )
 
 CRITICAL_KEYWORDS = (

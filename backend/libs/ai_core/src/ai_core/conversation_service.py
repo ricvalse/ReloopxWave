@@ -27,6 +27,8 @@ from ai_core.orchestrator import (
     OrchestratorResponse,
 )
 from ai_core.rag import Embedder, RAGEngine
+from ai_core.scoring import derive_conversation_signals
+from ai_core.sentiment import SentimentAnalyzer
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     ABRepository,
@@ -156,12 +158,14 @@ class ConversationService:
         action_dispatcher: ActionDispatcher,
         reply_sender: ReplySender,
         embedder: Embedder | None = None,
+        sentiment: SentimentAnalyzer | None = None,
         kek_base64: str,
     ) -> None:
         self._orchestrator = orchestrator
         self._dispatcher = action_dispatcher
         self._sender = reply_sender
         self._embedder = embedder
+        self._sentiment = sentiment
         self._kek = kek_base64
 
     async def handle_inbound(
@@ -260,6 +264,8 @@ class ConversationService:
             conv_variant_id = conv.variant_id
             lead_id = lead.id
             lead_score = lead.score
+            lead_name = lead.name
+            lead_email = lead.email
             chat_history = _to_chat_history(history)
 
             if not auto_reply_on:
@@ -319,6 +325,20 @@ class ConversationService:
 
             response: OrchestratorResponse = await self._orchestrator.run(ctx, text)
 
+            # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
+            # inbound text. Best-effort — never blocks the reply.
+            sentiment: str | None = None
+            if self._sentiment is not None:
+                sentiment = await self._sentiment.analyze(
+                    merchant_id=resolved.merchant_id,
+                    tenant_id=resolved.tenant_id,
+                    text=text,
+                )
+                if lead_id is not None and sentiment:
+                    await LeadRepository(session).update_sentiment(
+                        lead_id, sentiment=sentiment
+                    )
+
             await msgs.persist_assistant_message(
                 conversation_id=conv_id,
                 merchant_id=resolved.merchant_id,
@@ -369,9 +389,29 @@ class ConversationService:
             waba_base_url=resolved.waba_base_url,
         )
 
+        # UC-05 — always-on cumulative scoring. Derive behavioural signals from
+        # accumulated state (name/email on file, engagement, sentiment, booking
+        # intent) and merge with any content signals the LLM reported this turn,
+        # then ensure exactly one update_score action carries the merged set.
+        from ai_core.actions.scoring import derive_signals_from_llm_payload
+
+        llm_signals: dict[str, bool] = {}
+        for a in response.actions:
+            if a.kind == "update_score":
+                llm_signals.update(derive_signals_from_llm_payload(a.payload))
+        merged_signals = derive_conversation_signals(
+            has_name=bool(lead_name),
+            has_email=bool(lead_email),
+            turn_count=len(chat_history) + 1,
+            sentiment=sentiment,
+            asked_for_booking=any(a.kind == "book_slot" for a in response.actions),
+            llm_signals=llm_signals,
+        )
+        actions = _with_score_action(response.actions, merged_signals)
+
         # Action handlers run after the turn is durable and the reply is out.
         # Each handler manages its own session/transaction.
-        await self._dispatcher.dispatch(response.actions, turn_ctx)
+        await self._dispatcher.dispatch(actions, turn_ctx)
 
         return InboundResult(
             handled=True,
@@ -597,6 +637,32 @@ class ConversationService:
         if isinstance(value, bool):
             return value
         return default
+
+
+def _with_score_action(
+    actions: list[OrchestratorAction], signals: dict[str, bool]
+) -> list[OrchestratorAction]:
+    """Ensure a single update_score action carries the merged signals.
+
+    Merges into the LLM's update_score action if it emitted one, else appends a
+    fresh one. With no signals at all we leave the action list untouched (the
+    handler would be a no-op anyway).
+    """
+    if not signals:
+        return actions
+    out: list[OrchestratorAction] = []
+    found = False
+    for a in actions:
+        if a.kind == "update_score":
+            found = True
+            payload = dict(a.payload)
+            payload["signals"] = signals
+            out.append(OrchestratorAction(kind="update_score", payload=payload))
+        else:
+            out.append(a)
+    if not found:
+        out.append(OrchestratorAction(kind="update_score", payload={"signals": signals}))
+    return out
 
 
 async def _assign_ab_variant(

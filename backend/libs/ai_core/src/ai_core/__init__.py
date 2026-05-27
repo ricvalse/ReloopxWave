@@ -26,7 +26,8 @@ from ai_core.playground import (
 )
 from ai_core.rag import Embedder, RAGEngine, RetrievedChunk
 from ai_core.router import ModelRouter, RoutingRequest
-from ai_core.scoring import LeadScore, score_lead
+from ai_core.scoring import LeadScore, derive_conversation_signals, score_lead
+from ai_core.sentiment import SentimentAnalyzer
 
 __all__ = [
     "ActionDispatcher",
@@ -54,7 +55,9 @@ __all__ = [
     "ReplySender",
     "RetrievedChunk",
     "RoutingRequest",
+    "SentimentAnalyzer",
     "TurnContext",
     "classify_objections",
+    "derive_conversation_signals",
     "score_lead",
 ]

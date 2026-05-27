@@ -13,6 +13,7 @@ from ai_core import (
     ConversationService,
     ModelRouter,
     ReplySender,
+    SentimentAnalyzer,
 )
 from ai_core.actions import BookSlotHandler, MovePipelineHandler, UpdateScoreHandler
 from ai_core.rag import Embedder
@@ -67,6 +68,8 @@ def build_runtime(settings: Settings) -> Runtime:
     orchestrator = ConversationOrchestrator(router)
     dispatcher = ActionDispatcher()
     sender: ReplySender = WhatsAppReplySender()
+    # UC-04/05 — per-turn sentiment, routed to gpt-5-nano via the same router.
+    sentiment = SentimentAnalyzer(router)
 
     # UC-02
     booking = BookSlotHandler(
@@ -99,6 +102,7 @@ def build_runtime(settings: Settings) -> Runtime:
         action_dispatcher=dispatcher,
         reply_sender=sender,
         embedder=embedder,
+        sentiment=sentiment,
         kek_base64=settings.integrations_kek_base64,
     )
     return Runtime(settings=settings, conversation_service=service, embedder=embedder)
