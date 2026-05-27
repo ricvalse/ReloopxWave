@@ -11,6 +11,7 @@ from db.repositories.kb import KnowledgeBaseRepository
 from db.repositories.lead import LeadRepository, ReactivationCandidate
 from db.repositories.message import MessageRepository
 from db.repositories.objection import CategoryCount, ObjectionRepository
+from db.repositories.prompt import PromptRepository
 from db.repositories.template import BotTemplateRepository
 from db.repositories.tenant import MerchantRepository, TenantRepository, UserRepository
 
@@ -27,6 +28,7 @@ __all__ = [
     "MerchantRepository",
     "MessageRepository",
     "ObjectionRepository",
+    "PromptRepository",
     "ReactivationCandidate",
     "ReminderCandidate",
     "ResolvedGHLIntegration",

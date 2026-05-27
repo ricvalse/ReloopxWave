@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
-from db import ABRepository
+from db import ABRepository, PromptRepository
 from shared import NotFoundError, PermissionDeniedError
 
 router = APIRouter()
@@ -19,6 +19,11 @@ class VariantIn(BaseModel):
     id: str
     weight: int = Field(..., ge=0, le=100)
     prompt_template_id: UUID | None = None
+    # Authored system prompt for this arm. When set, it's persisted as a
+    # versioned PromptTemplate (kind=system, variant_id=id) so the conversation
+    # path resolves a *different* prompt per variant — the thing that makes the
+    # A/B test actually compare two behaviours (UC-09).
+    prompt_body: str | None = None
 
 
 class ExperimentIn(BaseModel):
@@ -55,11 +60,27 @@ async def create_experiment(
     _validate_weights(payload.variants)
 
     repo = ABRepository(session)
+    prompts = PromptRepository(session)
+
+    variants_payload: list[dict[str, Any]] = []
+    for v in payload.variants:
+        entry: dict[str, Any] = {"id": v.id, "weight": v.weight}
+        if v.prompt_template_id is not None:
+            entry["prompt_template_id"] = str(v.prompt_template_id)
+        if v.prompt_body and v.prompt_body.strip():
+            template_id = await prompts.upsert_system_prompt(
+                merchant_id=ctx.merchant_id,  # type: ignore[arg-type]
+                variant_id=v.id,
+                body=v.prompt_body.strip(),
+            )
+            entry["prompt_template_id"] = str(template_id)
+        variants_payload.append(entry)
+
     exp = await repo.create(
         merchant_id=ctx.merchant_id,  # type: ignore[arg-type]
         name=payload.name,
         description=payload.description,
-        variants=[v.model_dump() for v in payload.variants],
+        variants=variants_payload,
         primary_metric=payload.primary_metric,
         min_sample_size=payload.min_sample_size,
     )

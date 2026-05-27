@@ -57,6 +57,13 @@ class LeadRepository:
         lead.score = score
         lead.score_reasons = reasons
 
+    async def update_sentiment(self, lead_id: UUID, *, sentiment: str) -> None:
+        """Persist the latest turn-level sentiment label (UC-04 input)."""
+        lead = await self._session.get(Lead, lead_id)
+        if lead is None:
+            return
+        lead.sentiment = sentiment
+
     async def list_reactivation_candidates(
         self,
         *,

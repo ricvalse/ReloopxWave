@@ -86,13 +86,28 @@ class PlaygroundRunner:
                 except Exception as e:
                     logger.warning("uc08.rag_failed", error=str(e))
 
+            # If the merchant left the prompt editor empty but picked a variant,
+            # preview that saved variant's authored system prompt (UC-09).
+            system_prompt = (req.system_prompt or "").strip()
+            if req.variant_id and not system_prompt:
+                from ai_core.prompt_manager import PromptManager
+
+                async def _typed() -> str:
+                    return system_prompt
+
+                system_prompt = await PromptManager(session).resolve_system_prompt(
+                    merchant_id=req.merchant_id,
+                    variant_id=req.variant_id,
+                    fallback=_typed,
+                )
+
             orchestrator_ctx = ConversationContext(
                 merchant_id=req.merchant_id,
                 tenant_id=req.tenant_id,
                 lead_id=None,
                 lead_score=0,
                 hot_threshold=80,
-                system_prompt=req.system_prompt,
+                system_prompt=system_prompt,
                 history=[ChatMessage(role=m.role, content=m.content) for m in req.history],
                 kb_chunks=kb_chunks,
                 variant_id=req.variant_id,

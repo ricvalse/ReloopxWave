@@ -7,7 +7,6 @@ import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 
 type Experiment = components['schemas']['ExperimentOut'];
-type ExperimentIn = components['schemas']['ExperimentIn'];
 
 type Metrics = {
   experiment_id: string;
@@ -153,15 +152,30 @@ function CreateExperimentForm({
   const [description, setDescription] = useState('');
   const [weightA, setWeightA] = useState(50);
   const [primaryMetric, setPrimaryMetric] = useState('booking.created');
+  const [promptControl, setPromptControl] = useState('');
+  const [promptVariant, setPromptVariant] = useState('');
 
   const create = useMutation({
     mutationFn: async (): Promise<Experiment> => {
-      const payload: ExperimentIn = {
+      // `prompt_body` per variant is what makes the two arms behave
+      // differently: the backend persists each as a versioned PromptTemplate
+      // (variant_id=id) that the conversation path resolves at runtime (UC-09).
+      const payload = {
         name,
         description: description || null,
         variants: [
-          { id: 'control', weight: weightA, prompt_template_id: null },
-          { id: 'variant', weight: 100 - weightA, prompt_template_id: null },
+          {
+            id: 'control',
+            weight: weightA,
+            prompt_template_id: null,
+            prompt_body: promptControl.trim() || null,
+          },
+          {
+            id: 'variant',
+            weight: 100 - weightA,
+            prompt_template_id: null,
+            prompt_body: promptVariant.trim() || null,
+          },
         ],
         primary_metric: primaryMetric,
         min_sample_size: 100,
@@ -239,6 +253,38 @@ function CreateExperimentForm({
               className="w-full"
             />
           </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="ab-prompt-control">
+                Prompt variante <code className="font-mono text-xs">control</code>
+              </label>
+              <textarea
+                id="ab-prompt-control"
+                rows={4}
+                value={promptControl}
+                onChange={(e) => setPromptControl(e.target.value)}
+                placeholder="Lascia vuoto per usare il prompt corrente del bot."
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="ab-prompt-variant">
+                Prompt variante <code className="font-mono text-xs">variant</code>
+              </label>
+              <textarea
+                id="ab-prompt-variant"
+                rows={4}
+                value={promptVariant}
+                onChange={(e) => setPromptVariant(e.target.value)}
+                placeholder="Il system prompt alternativo da testare."
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Almeno una variante dovrebbe avere un prompt diverso, altrimenti i due
+            bracci si comportano in modo identico.
+          </p>
           {create.error ? (
             <p className="text-sm text-destructive">
               {create.error instanceof Error ? create.error.message : 'Errore'}

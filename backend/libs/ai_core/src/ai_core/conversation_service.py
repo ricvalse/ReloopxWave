@@ -289,7 +289,7 @@ class ConversationService:
             analytics = AnalyticsRepository(session)
 
             system_prompt = await self._resolve_system_prompt(
-                session=session, merchant_id=resolved.merchant_id
+                session=session, merchant_id=resolved.merchant_id, variant_id=conv_variant_id
             )
             kb_chunks = []
             if self._embedder is not None:
@@ -476,7 +476,29 @@ class ConversationService:
             repo = IntegrationRepository(session, kek_base64=self._kek)
             return await repo.resolve_whatsapp(phone_number_id)
 
-    async def _resolve_system_prompt(self, *, session: Any, merchant_id: UUID) -> str:
+    async def _resolve_system_prompt(
+        self, *, session: Any, merchant_id: UUID, variant_id: str | None = None
+    ) -> str:
+        """Resolve the system prompt for this turn (UC-09 aware).
+
+        Delegates to `PromptManager`: when the conversation is enrolled in an
+        A/B experiment and the assigned variant has an authored `system`
+        template, that template's body is used — this is what makes the two
+        arms behave differently. Otherwise the config-cascade prompt below is
+        used as the fallback.
+        """
+        from ai_core.prompt_manager import PromptManager
+
+        manager = PromptManager(session)
+        return await manager.resolve_system_prompt(
+            merchant_id=merchant_id,
+            variant_id=variant_id,
+            fallback=lambda: self._cascade_system_prompt(
+                session=session, merchant_id=merchant_id
+            ),
+        )
+
+    async def _cascade_system_prompt(self, *, session: Any, merchant_id: UUID) -> str:
         """Build the per-merchant system prompt from the config cascade.
 
         Falls back to `DEFAULT_SYSTEM_PROMPT` when nothing is configured — so
