@@ -7,6 +7,7 @@ can only post into their own threads), then enqueue an ARQ job that calls
 the 360dialog send API and updates the row to `sent` / `failed`. Status
 callbacks (delivered/read) come back through `routers/webhooks.py`.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -54,6 +55,16 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
+class UpdateNoteIn(BaseModel):
+    # Cleared note arrives as null (or empty string, normalised to null below).
+    internal_note: str | None = Field(default=None, max_length=4000)
+
+
+class ConversationNoteOut(BaseModel):
+    id: UUID
+    internal_note: str | None
+
+
 @router.get("/")
 async def list_conversations(ctx: CurrentContext, session: DBSession) -> list[dict]:
     """Kept for parity — frontend usually reads conversations directly via Supabase client."""
@@ -90,9 +101,7 @@ async def send_message(
     # RLS will already block cross-tenant reads; a NULL here means
     # not-found or not-yours, which we treat the same way externally.
     conv = (
-        await session.execute(
-            select(Conversation).where(Conversation.id == conversation_id)
-        )
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
     ).scalar_one_or_none()
     if conv is None:
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -157,6 +166,48 @@ async def send_message(
         merchant_id=str(conv.merchant_id),
     )
     return _to_out(msg)
+
+
+@router.patch("/{conversation_id}/notes", response_model=ConversationNoteOut)
+async def update_note(
+    conversation_id: UUID,
+    body: UpdateNoteIn,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> ConversationNoteOut:
+    """Set the agent's free-text internal note on a conversation.
+
+    Same trust boundary as send_message: RLS scopes the lookup to the
+    caller's merchant, so a NULL row means not-found-or-not-yours and we
+    return 404 either way (never leak the existence of foreign threads).
+    An empty string is normalised to NULL so "cleared" and "never set"
+    are the same state. The note lives on `conversations`, which is
+    published to supabase_realtime — the resulting UPDATE reconciles the
+    frontend's optimistic write through the list subscription.
+    """
+    if ctx.merchant_id is None and ctx.role != "agency_admin":
+        raise PermissionDeniedError(
+            "Merchant context required to edit conversation notes",
+            error_code="no_merchant_context",
+        )
+
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    note = body.internal_note.strip() if body.internal_note else None
+    conv.internal_note = note or None
+    await session.commit()
+
+    logger.info(
+        "conversations.note.updated",
+        conversation_id=str(conversation_id),
+        merchant_id=str(conv.merchant_id),
+        cleared=conv.internal_note is None,
+    )
+    return ConversationNoteOut(id=conv.id, internal_note=conv.internal_note)
 
 
 def _to_out(m: Message) -> MessageOut:

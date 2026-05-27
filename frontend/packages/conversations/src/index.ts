@@ -14,12 +14,16 @@ export { MessageBubble } from './components/message-bubble';
 export { DaySeparator } from './components/day-separator';
 export { StatusTicks } from './components/status-ticks';
 export { Composer } from './components/composer';
+export { FilterTabs, matchesInboxFilter } from './components/filter-tabs';
+export { DetailPanel } from './components/detail/detail-panel';
 
 // Hooks
 export { useConversations } from './hooks/use-conversations';
 export { useThread, threadQueryKey } from './hooks/use-thread';
 export { useSendMessage } from './hooks/use-send-message';
 export { useToggleAutoReply } from './hooks/use-toggle-auto-reply';
+export { useLeadDetail } from './hooks/use-lead-detail';
+export { useUpdateNotes } from './hooks/use-update-notes';
 
 // Types
 export type {
@@ -29,6 +33,9 @@ export type {
   MessageDirection,
   MessageRole,
   ThreadFilters,
+  InboxFilter,
+  Lead,
+  Objection,
 } from './types';
 
 // Lib utils

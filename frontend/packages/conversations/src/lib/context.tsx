@@ -32,6 +32,11 @@ export interface ConversationsContextValue {
   merchantAutoReplyEnabled?: boolean;
   /** Called when the user flips the merchant master from inside the workspace. */
   onMerchantAutoReplyChange?: (enabled: boolean) => void;
+  /**
+   * Show the lead-centric detail panel (right rail / mobile sheet). Defaults to
+   * true. Set false to render the classic two-pane inbox without the panel.
+   */
+  customerDetailEnabled?: boolean;
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(null);

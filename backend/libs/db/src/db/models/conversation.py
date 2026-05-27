@@ -39,6 +39,9 @@ class Conversation(Base, TimestampMixin):
     # Per-thread bot takeover. AND-ed with bot_configs.overrides.bot.auto_reply_enabled
     # in ConversationService.handle_inbound — either off → no assistant turn.
     auto_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Free-text internal note shown in the inbox detail panel. Per-thread,
+    # edited by an agent; NULL when empty. See migration 0012.
+    internal_note: Mapped[str | None] = mapped_column(String, nullable=True)
     meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821

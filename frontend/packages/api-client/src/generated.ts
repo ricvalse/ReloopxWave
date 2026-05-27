@@ -366,6 +366,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/{conversation_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Message
+         * @description Insert a `pending` outbound message and enqueue the WA send.
+         *
+         *     RLS scopes the conversation lookup; merchants cannot post into a thread
+         *     they don't own. Idempotency: a duplicate POST with the same
+         *     (conversation_id, client_message_id) returns the existing row instead of
+         *     a 409 — this matches the composer retry semantics where the user clicks
+         *     "Riprova" on a previously-failed bubble.
+         */
+        post: operations["send_message_conversations__conversation_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{conversation_id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Note
+         * @description Set the agent's free-text internal note on a conversation.
+         *
+         *     Same trust boundary as send_message: RLS scopes the lookup to the
+         *     caller's merchant, so a NULL row means not-found-or-not-yours and we
+         *     return 404 either way (never leak the existence of foreign threads).
+         *     An empty string is normalised to NULL so "cleared" and "never set"
+         *     are the same state. The note lives on `conversations`, which is
+         *     published to supabase_realtime — the resulting UPDATE reconciles the
+         *     frontend's optimistic write through the list subscription.
+         */
+        patch: operations["update_note_conversations__conversation_id__notes_patch"];
+        trace?: never;
+    };
     "/analytics/merchant/kpis": {
         parameters: {
             query?: never;
@@ -594,31 +648,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/integrations/whatsapp/partner-id": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Whatsapp Partner Id
-         * @description Public — the merchant portal needs the Partner ID to build the URL
-         *     `https://hub.360dialog.com/dashboard/app/{partner_id}/permissions?...`
-         *     that opens the Embedded Signup popup. Treating Partner ID as public is
-         *     the same posture amalia-ai takes; the secret is the Partner API key,
-         *     not the ID.
-         */
-        get: operations["whatsapp_partner_id_integrations_whatsapp_partner_id_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/integrations/whatsapp/channels": {
+    "/integrations/whatsapp/onboard/start": {
         parameters: {
             query?: never;
             header?: never;
@@ -628,28 +658,24 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Whatsapp Provision Channel
-         * @description Complete the autonomous flow after 360dialog Embedded Signup.
+         * Whatsapp Onboard Start
+         * @description Mint a router state token and return the 360dialog signup URL.
          *
-         *     Inputs come from the popup redirect: a `channel_id` 360dialog created
-         *     for the merchant, plus the phone_number they chose. We:
-         *       1. Mint a per-channel D360 API key via Partner Hub.
-         *       2. Fetch Meta's phone_number_id for that channel.
-         *       3. Register the inbound webhook URL.
-         *       4. Persist (merchant, channel) with the encrypted key.
-         *
-         *     Any 4xx from 360dialog surfaces verbatim — the merchant sees what the
-         *     BSP rejected and can retry. We do not write a partial integrations row
-         *     on failure: the merchant restarts from the popup.
+         *     The router assembles the full Embedded Signup URL (`connect_url`) using
+         *     its own copy of the partner_id and returns it; we just hand it to the
+         *     browser. 360dialog then redirects to
+         *     `<router>/onboard/callback?platform=...&state=...`, the router fetches
+         *     the per-channel D360 key, fires `POST /internal/whatsapp-connected` to
+         *     us, and finally redirects the browser back to `return_url`.
          */
-        post: operations["whatsapp_provision_channel_integrations_whatsapp_channels_post"];
+        post: operations["whatsapp_onboard_start_integrations_whatsapp_onboard_start_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/integrations/whatsapp/verify": {
+    "/integrations/whatsapp/disconnect": {
         parameters: {
             query?: never;
             header?: never;
@@ -658,8 +684,19 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Whatsapp Verify */
-        post: operations["whatsapp_verify_integrations_whatsapp_verify_post"];
+        /**
+         * Whatsapp Disconnect
+         * @description Wipe the calling merchant's WhatsApp integration row.
+         *
+         *     Used by the merchant portal's "Sostituisci canale" button: clears local
+         *     state so the merchant immediately sees a "no channel" UI, then the same
+         *     flow re-runs Embedded Signup. If they complete signup the router's
+         *     `/internal/whatsapp-connected` notify re-creates the row; if they cancel
+         *     they're left disconnected. The router's `waba_mapping` for the old
+         *     `phone_number_id` is NOT cleaned up here — that needs a merchant-scoped
+         *     router endpoint we don't have yet.
+         */
+        post: operations["whatsapp_disconnect_integrations_whatsapp_disconnect_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -683,7 +720,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/webhooks/whatsapp/{phone_number_id}": {
+    "/webhooks/whatsapp": {
         parameters: {
             query?: never;
             header?: never;
@@ -692,8 +729,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Whatsapp Inbound */
-        post: operations["whatsapp_inbound_webhooks_whatsapp__phone_number_id__post"];
+        /**
+         * Whatsapp Inbound
+         * @description Inbound from the router. Body is the unchanged Meta Cloud API envelope
+         *     360dialog forwarded; the channel id lives in
+         *     `entry[].changes[].value.metadata.phone_number_id`. The router has its
+         *     own 24h dedupe, but we still dedup by `messages[].id` / `message_echoes[].id`
+         *     at the arq job-id boundary in case the router ever shards or re-delivers.
+         */
+        post: operations["whatsapp_inbound_webhooks_whatsapp_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -711,6 +755,23 @@ export interface paths {
         put?: never;
         /** Ghl Inbound */
         post: operations["ghl_inbound_webhooks_ghl__merchant_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/whatsapp-connected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Whatsapp Connected */
+        post: operations["whatsapp_connected_internal_whatsapp_connected_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -820,6 +881,11 @@ export interface components {
             system_prompt_additions?: string | null;
             /** First Message */
             first_message?: string | null;
+            /**
+             * Auto Reply Enabled
+             * @default true
+             */
+            auto_reply_enabled: boolean;
         };
         /**
          * BusinessConfig
@@ -860,6 +926,16 @@ export interface components {
             meta: {
                 [key: string]: unknown;
             };
+        };
+        /** ConversationNoteOut */
+        ConversationNoteOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Internal Note */
+            internal_note: string | null;
         };
         /** EscalationConfig */
         EscalationConfig: {
@@ -1062,6 +1138,50 @@ export interface components {
             /** Locale */
             locale?: string | null;
         };
+        /** MessageOut */
+        MessageOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Role */
+            role: string;
+            /** Direction */
+            direction: string;
+            /** Content */
+            content: string;
+            /** Status */
+            status: string;
+            /** Client Message Id */
+            client_message_id: string | null;
+            /** Wa Message Id */
+            wa_message_id: string | null;
+            /** Delivered At */
+            delivered_at: string | null;
+            /** Read At */
+            read_at: string | null;
+            /** Failed At */
+            failed_at: string | null;
+            /** Error */
+            error: {
+                [key: string]: unknown;
+            } | null;
+            /** Meta */
+            meta?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** NoAnswerConfig */
         NoAnswerConfig: {
             /**
@@ -1105,11 +1225,6 @@ export interface components {
             };
             /** Locked Keys */
             locked_keys: string[];
-        };
-        /** PartnerIdOut */
-        PartnerIdOut: {
-            /** Partner Id */
-            partner_id: string;
         };
         /** PipelineConfig */
         PipelineConfig: {
@@ -1242,6 +1357,16 @@ export interface components {
              */
             cold_threshold: number;
         };
+        /** SendMessageIn */
+        SendMessageIn: {
+            /** Text */
+            text: string;
+            /**
+             * Client Message Id
+             * @description Caller-provided UUID. Used to deduplicate retries and to reconcile the frontend's optimistic insert with the canonical row.
+             */
+            client_message_id: string;
+        };
         /** StatusOut */
         StatusOut: {
             /**
@@ -1320,6 +1445,11 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** UpdateNoteIn */
+        UpdateNoteIn: {
+            /** Internal Note */
+            internal_note?: string | null;
+        };
         /** UserOut */
         UserOut: {
             /**
@@ -1364,28 +1494,23 @@ export interface components {
             prompt_template_id?: string | null;
         };
         /**
-         * WhatsAppChannelProvisionIn
-         * @description Input for `POST /integrations/whatsapp/channels`.
-         *
-         *     `channel_id` arrives from 360dialog's Embedded Signup popup redirect
-         *     (the `channels=[...]` query param). `phone_number` is the E.164 number
-         *     the merchant chose during signup, used as a display string only.
+         * WhatsAppOnboardStartIn
+         * @description Optional override for where the browser lands after the router's
+         *     `/onboard/callback` finishes. Defaults to the merchant portal's
+         *     `/integrations?provider=whatsapp&status=connected`.
          */
-        WhatsAppChannelProvisionIn: {
-            /** Channel Id */
-            channel_id: string;
-            /** Phone Number */
-            phone_number?: string | null;
+        WhatsAppOnboardStartIn: {
+            /** Return Url */
+            return_url?: string | null;
         };
-        /** WhatsAppVerifyIn */
-        WhatsAppVerifyIn: {
-            /**
-             * Phone Number Id
-             * @description 360dialog channel id (the 'phone_number_id' Meta uses) for this merchant.
-             */
-            phone_number_id: string;
-            /** Display Phone */
-            display_phone?: string | null;
+        /** WhatsAppOnboardStartOut */
+        WhatsAppOnboardStartOut: {
+            /** Signup Url */
+            signup_url: string;
+            /** State */
+            state: string;
+            /** Expires In */
+            expires_in: number;
         };
     };
     responses: never;
@@ -2223,6 +2348,80 @@ export interface operations {
             };
         };
     };
+    send_message_conversations__conversation_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessageIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_note_conversations__conversation_id__notes_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNoteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationNoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     merchant_kpis_analytics_merchant_kpis_get: {
         parameters: {
             query?: {
@@ -2664,27 +2863,7 @@ export interface operations {
             };
         };
     };
-    whatsapp_partner_id_integrations_whatsapp_partner_id_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PartnerIdOut"];
-                };
-            };
-        };
-    };
-    whatsapp_provision_channel_integrations_whatsapp_channels_post: {
+    whatsapp_onboard_start_integrations_whatsapp_onboard_start_post: {
         parameters: {
             query?: never;
             header?: {
@@ -2695,7 +2874,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WhatsAppChannelProvisionIn"];
+                "application/json": components["schemas"]["WhatsAppOnboardStartIn"];
             };
         };
         responses: {
@@ -2705,7 +2884,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConnectionOut"];
+                    "application/json": components["schemas"]["WhatsAppOnboardStartOut"];
                 };
             };
             /** @description Validation Error */
@@ -2719,7 +2898,7 @@ export interface operations {
             };
         };
     };
-    whatsapp_verify_integrations_whatsapp_verify_post: {
+    whatsapp_disconnect_integrations_whatsapp_disconnect_post: {
         parameters: {
             query?: never;
             header?: {
@@ -2728,20 +2907,14 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["WhatsAppVerifyIn"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ConnectionOut"];
-                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -2788,13 +2961,13 @@ export interface operations {
             };
         };
     };
-    whatsapp_inbound_webhooks_whatsapp__phone_number_id__post: {
+    whatsapp_inbound_webhooks_whatsapp_post: {
         parameters: {
             query?: never;
-            header?: never;
-            path: {
-                phone_number_id: string;
+            header?: {
+                "X-Relooptech-Signature"?: string;
             };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2856,6 +3029,39 @@ export interface operations {
             };
         };
     };
+    whatsapp_connected_internal_whatsapp_connected_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Relooptech-Signature"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
 }
 export enum ApiPaths {
     health_health_get = "/health",
@@ -2883,6 +3089,8 @@ export enum ApiPaths {
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
+    send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",
+    update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
@@ -2896,10 +3104,10 @@ export enum ApiPaths {
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",
     ghl_oauth_start_integrations_ghl_oauth_start_post = "/integrations/ghl/oauth/start",
     ghl_oauth_callback_integrations_ghl_oauth_callback_get = "/integrations/ghl/oauth/callback",
-    whatsapp_partner_id_integrations_whatsapp_partner_id_get = "/integrations/whatsapp/partner-id",
-    whatsapp_provision_channel_integrations_whatsapp_channels_post = "/integrations/whatsapp/channels",
-    whatsapp_verify_integrations_whatsapp_verify_post = "/integrations/whatsapp/verify",
+    whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
+    whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
-    whatsapp_inbound_webhooks_whatsapp__phone_number_id__post = "/webhooks/whatsapp/{phone_number_id}",
-    ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}"
+    whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",
+    ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}",
+    whatsapp_connected_internal_whatsapp_connected_post = "/internal/whatsapp-connected"
 }

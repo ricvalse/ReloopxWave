@@ -3,13 +3,15 @@
 import {
   Avatar,
   AvatarFallback,
+  Badge,
   Button,
   Switch,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
+  cn,
 } from '@reloop/ui';
-import { ArrowLeft, MoreHorizontal, Search } from 'lucide-react';
+import { ArrowLeft, PanelRight, Search } from 'lucide-react';
 import { useToggleAutoReply } from '../hooks/use-toggle-auto-reply';
 import { useConversationsContext } from '../lib/context';
 import { contactDisplayName, contactInitials } from '../lib/initials';
@@ -18,11 +20,22 @@ import type { Conversation } from '../types';
 interface ThreadHeaderProps {
   conversation: Conversation;
   onBack?: () => void;
+  /** Toggle the lead detail panel (right rail on desktop, sheet on mobile). */
+  onToggleDetail?: () => void;
+  /** Whether the detail panel is currently open (for the toggle's active state). */
+  detailActive?: boolean;
 }
 
-export function ThreadHeader({ conversation, onBack }: ThreadHeaderProps) {
+export function ThreadHeader({
+  conversation,
+  onBack,
+  onToggleDetail,
+  detailActive,
+}: ThreadHeaderProps) {
   const { merchantAutoReplyEnabled } = useConversationsContext();
   const toggle = useToggleAutoReply();
+
+  const resolved = conversation.status !== 'active';
 
   const phone = conversation.wa_contact_phone;
   const name = (conversation.meta?.['contact_name'] as string | undefined) ?? null;
@@ -66,7 +79,15 @@ export function ThreadHeader({ conversation, onBack }: ThreadHeaderProps) {
         <AvatarFallback className="text-[12px] font-semibold">{initials}</AvatarFallback>
       </Avatar>
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-semibold leading-tight">{display}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold leading-tight">{display}</span>
+          <Badge
+            variant={resolved ? 'secondary' : 'success'}
+            className="hidden shrink-0 sm:inline-flex"
+          >
+            {resolved ? 'Risolta' : 'Attiva'}
+          </Badge>
+        </div>
         <span className="truncate text-[11px] text-muted-foreground">
           {phone && name ? `${phone} · ${statusLine}` : statusLine}
         </span>
@@ -107,9 +128,26 @@ export function ThreadHeader({ conversation, onBack }: ThreadHeaderProps) {
       >
         <Search className="h-4 w-4" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Altro">
-        <MoreHorizontal className="h-4 w-4" />
-      </Button>
+      {onToggleDetail && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'h-8 w-8',
+                detailActive ? 'bg-accent text-foreground' : 'text-muted-foreground',
+              )}
+              onClick={onToggleDetail}
+              aria-label="Mostra dettagli contatto"
+              aria-pressed={detailActive}
+            >
+              <PanelRight className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Dettagli contatto</TooltipContent>
+        </Tooltip>
+      )}
     </header>
   );
 }

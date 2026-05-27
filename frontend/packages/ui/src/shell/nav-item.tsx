@@ -22,16 +22,20 @@ export function SidebarNavItem({ item }: SidebarNavItemProps) {
     <Link
       href={item.href as Route}
       className={cn(
-        'group flex h-9 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
+        'group relative flex h-9 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
         'text-muted-foreground hover:bg-accent hover:text-foreground',
-        isActive && 'bg-accent text-foreground',
+        isActive && 'bg-accent font-semibold text-foreground',
         collapsed && 'w-9 justify-center px-0',
       )}
     >
+      {/* Subtle active accent bar (expanded only). */}
+      {isActive && !collapsed && (
+        <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-primary" />
+      )}
       <item.icon
         className={cn(
           'h-4 w-4 shrink-0',
-          isActive ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground',
+          isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground',
         )}
       />
       {!collapsed && <span className="truncate">{item.label}</span>}

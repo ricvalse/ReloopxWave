@@ -29,8 +29,9 @@ export function InboxRoute({ selectedId }: InboxRouteProps) {
       apiBaseUrl={apiBaseUrl}
       composerEnabled
       adminMode
+      customerDetailEnabled
     >
-      <div className="h-full">
+      <div className="h-full overflow-hidden">
         <ConversationsWorkspace selectedId={selectedId} onSelect={handleSelect} />
       </div>
     </ConversationsProvider>
