@@ -4,60 +4,77 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repo currently contains **only a design document** (`reloop-ai-architettura.md`, in Italian) for Reloop AI — there is no code, no build system, no tests, and no commits yet. The document is the authoritative source of truth for architecture, stack choices, data model, and the 13 use cases (UC-01 through UC-13). Read it before making any structural decisions; quote it with `reloop-ai-architettura.md:<line>` when confirming intent.
+This is an **implemented two-toolchain monorepo**, not a design doc anymore. Frontend (`frontend/`, Turborepo + pnpm) and backend (`backend/`, uv workspace) are both built out and deployed (Vercel + Railway + Supabase Cloud EU). `reloop-ai-architettura.md` (Italian) remains the **spec / source of truth** for intent — quote it as `reloop-ai-architettura.md:<line>` when confirming design decisions, but the code is now ahead of it in places (see "Deviations from the spec" below).
 
-Before scaffolding anything, confirm with the user which area they want to start (frontend or backend) — they share one repo but have separate toolchains.
+`cd frontend` or `cd backend` to enter the right world — each has its own package manager, lockfile, and lint/test commands. A cross-cutting change (new FastAPI endpoint + UI that consumes it) ships as a single PR.
+
+**Current coverage:** 9 of 13 use cases (UC-01,02,03,06,07,08,10 + dashboard KPIs) work end-to-end; UC-04/05/09/11/12/13 are partial; the fine-tuning pipeline (weeks 9–10) is incomplete. The full gap analysis and the sequenced plan to reach 100% live in **`docs/completion-plan.md`** — read it before starting feature work, and update it as items land.
 
 ## Product shape (one paragraph)
 
-Reloop AI is a **two-level multitenant SaaS**: agency tenants (admin panel) own many merchant sub-tenants (merchant portal). An AI agent runs conversations on WhatsApp Cloud API, reading/writing to the merchant's GoHighLevel (GHL) CRM. The differentiator is per-tenant fine-tuning of `gpt-4.1-mini` on real conversation logs (weeks 9–10 of the roadmap). Isolation between tenants is enforced by Postgres Row-Level Security keyed on Supabase JWT custom claims `tenant_id` and `merchant_id`.
+Reloop AI is a **two-level multitenant SaaS**: agency tenants (admin panel, `web-admin`) own many merchant sub-tenants (merchant portal, `web-merchant`). An AI agent runs WhatsApp conversations, reading/writing the merchant's GoHighLevel (GHL) CRM. The differentiator is per-tenant fine-tuning of `gpt-4.1-mini` on real conversation logs. Tenant isolation is enforced by Postgres Row-Level Security keyed on Supabase JWT custom claims `tenant_id` and `merchant_id`.
 
-## Planned architecture (the parts that require reading multiple sections)
+## Build, test, run
 
-**Single monorepo, two toolchains side-by-side** (section 3). Rationale: one developer on the project — operational simplicity wins over toolchain isolation. Do not try to split into separate repos, and do not introduce a cross-language build orchestrator (Nx, Bazel).
+**Backend** (`cd backend`, package manager **uv**):
+- Tests: `uv run pytest tests/unit` (74 unit tests, fast, no DB). `uv run pytest tests/integration` needs a live Postgres (RLS isolation tests).
+- Lint/format: `uv run ruff check` / `uv run ruff format`. Type check: `uv run mypy`.
+- API entry: `services/api/src/api/main.py:create_app` → `app`. Run local: `uvicorn api.main:app --reload`.
+- Worker entry: **`workers.settings.WorkerSettings`** (single consolidated ARQ process). Run local: `arq workers.settings.WorkerSettings`.
 
-- `frontend/` — Turborepo + pnpm workspaces. Two Next.js 15 apps (`apps/web-admin`, `apps/web-merchant`) sharing `packages/ui`, `packages/api-client` (generated from backend OpenAPI), `packages/supabase-client`, `packages/config`.
-- `backend/` — uv workspace. `services/api` (FastAPI), `workers/{conversation,scheduler,fine_tuning}` (ARQ on Redis), `libs/{ai_core,integrations,db,config_resolver,shared}`.
-- `infra/{railway,docker}`, `docs/{decisions,runbooks}`, `scripts/`, `.github/workflows/` live at the repo root.
+**Frontend** (`cd frontend`, package manager **pnpm** + Turborepo):
+- `pnpm dev` / `pnpm lint` / `pnpm build` (via turbo). Two apps: `apps/web-admin`, `apps/web-merchant`.
+- After any FastAPI signature change, regenerate the typed client: `scripts/generate-api-types.sh` (spin up backend → download `openapi.json` → `openapi-typescript` → `frontend/packages/api-client/src/generated.ts`). CI fails on uncommitted drift — regenerate and commit.
 
-`cd frontend` or `cd backend` to enter the right world — each has its own package manager, lockfile, and lint/test commands. GitHub Actions uses **path filters** so changes in `frontend/**` only run frontend jobs and vice versa. A cross-cutting change (new FastAPI endpoint + UI that consumes it) ships as a single PR.
+## Where the code lives (actual layout)
 
-**Two data-access paths from the frontend** (section 4.4). The choice is deliberate — do not route everything through the backend:
-- Direct to Supabase (`@supabase/supabase-js`) for auth, RLS-protected list/detail reads, Storage uploads, Realtime subscriptions.
-- Through FastAPI (typed OpenAPI client) only when there is business logic, orchestration, or external side effects (onboarding, GHL OAuth, playground LLM calls, report generation).
+**Backend** (`backend/`):
+- `services/api/src/api/` — FastAPI. `routers/` (auth, tenants, merchants, users, bot_config, knowledge_base, conversations, analytics, playground, ab_test, reports, integrations, webhooks, internal), `dependencies/` (JWT verify, tenant context, RBAC, DB session with `SET LOCAL` for RLS), `schemas/`, `core/`, `main.py`.
+- `workers/` — **one ARQ process**, not three. `settings.py:WorkerSettings` registers all handlers + `cron_jobs`; `runtime.py` builds the shared context (router, WhatsApp sender, etc.). Domain modules: `conversation/handlers.py`, `scheduler/{no_answer,reactivation,objections,kpi_rollup,kb_reindex,integration_health,analytics_export}.py`, `fine_tuning/{collect,export,handlers}.py`. Cron-scheduled today: `followup_no_answer` (every 15m), `reactivate_dormant_leads` (daily 09:00), `daily_kpi_rollup`, `integration_health`. Other jobs are registered but **only invoked on demand** (`objection_extraction`, `kb_reindex`, `fine_tune_*`).
+- `libs/ai_core/src/ai_core/` — `orchestrator.py` (entry per turn, structured-JSON actions), `conversation_service.py` (the real conversation pipeline), `router.py` (ModelRouter), `llm.py` (LLMClient impls), `scoring.py`, `objections.py`, `playground.py`, `actions/{booking,pipeline,scoring}.py`, `rag/{indexer,chunker,retriever}.py`, `ft/anonymizer.py`.
+- `libs/integrations/src/integrations/` — `ghl/` (client, oauth, signatures), `whatsapp/` (`d360_client.py`, `factory.py`, `webhook.py`), `router/` (BSP routing layer), `supabase_admin.py`, `supabase_storage.py`.
+- `libs/db/src/db/` — `models/` (tenant, bot, conversation, lead, kb, ab, analytics, integration, ft), `repositories/`, `migrations/versions/` (Alembic, currently up to 0012).
+- `libs/config_resolver/src/config_resolver/` — three-level cascade + `schema.py` (Pydantic, all spec-9.4 keys with defaults/ranges).
+- `libs/shared/src/shared/` — settings, logging (structlog), crypto, errors.
 
-Both paths present the same Supabase JWT; the backend verifies it via Supabase JWKS. RLS policies read the claims directly, so isolation holds regardless of which path is used.
+**Frontend** (`frontend/`):
+- `apps/web-admin/src/app/` — `(app)/dashboard` (UC-12), `templates` (UC-10), `merchants`, `settings`, `billing`, `auth`, `login`. **Canonical routes live under the `(app)/` route group**; some empty top-level dirs (e.g. `app/dashboard/`) are dead leftovers — don't add pages there.
+- `apps/web-merchant/src/app/` — `(app)/dashboard` (UC-11), `bot/{config,knowledge-base,playground,ab-testing}`, `conversations`, `reports/objections` (UC-13), `integrations`, `settings`.
+- `packages/` — `ui` (shadcn-based primitives/patterns/shell/charts), `api-client` (generated from OpenAPI — never hand-edit `generated.ts`), `supabase-client` (the only place that imports `@supabase/supabase-js` — keep it swappable), `config`, `conversations` (shared conversation/composer components).
 
-**Worker consolidation (section 5.5, 13.2).** The three `workers/` directories are logical organization only — in production they deploy as a **single ARQ process** subscribed to all queues (`wa:inbound`, `scheduler:jobs`, `ft:pipeline`). Keep the code split by domain but register handlers in one `WorkerSettings`.
+The **UC → component map is `reloop-ai-architettura.md` section 10** (lines ~635-650). When the user references "UC-XX", look there first.
 
-**Config resolution is a three-level cascade** (section 9): merchant override → agency default → system default. All lookups go through `libs/config_resolver.resolve()` with Redis caching (~60s TTL) and invalidation on write. For V1, overrides live in JSONB columns (`bot_configs.overrides`, `bot_templates.defaults`); the parameter schema is defined once in `libs/config_resolver/schema.py` and exported to the frontend via OpenAPI so both sides validate against the same Pydantic model. A dedicated `config_values` table is the V2 path if audit/diffs are needed — don't introduce it prematurely.
+## Architecture rules (don't regress these)
 
-**Model routing** (section 6.7). `gpt-5-mini` is the default, `gpt-5-nano` for sentiment, `gpt-5.2` only on escalation triggers (long context, hot lead, critical objection keywords, long turn count). After fine-tuning ships, the per-tenant FT model on `gpt-4.1-mini` replaces the default for that tenant — rollout via A/B (UC-09), not a flag flip. Anthropic `claude-sonnet-4-6` is fallback-only, behind a feature flag.
+- **Single repo, two toolchains side-by-side.** Don't split into separate repos; don't introduce a cross-language build orchestrator (Nx, Bazel). GitHub Actions uses path filters (`frontend/**` vs `backend/**`).
+- **Two data-access paths from the frontend** (spec 4.4) — deliberate, don't route everything through the backend: direct to Supabase (`@supabase/supabase-js`) for auth, RLS-protected list/detail reads, Storage uploads, Realtime; through FastAPI (typed OpenAPI client) only for business logic / orchestration / external side effects. Both present the same Supabase JWT; the backend verifies it via JWKS.
+- **Workers deploy as one ARQ process** (`workers.settings.WorkerSettings`) subscribed to all queues. Keep code split by domain, register handlers in the one `WorkerSettings`.
+- **Config resolution is a three-level cascade** merchant → agency → system, all via `config_resolver.resolve()` with Redis caching (~60s) and invalidation on write. Overrides in JSONB (`bot_configs.overrides`, `bot_templates.defaults`); the schema is defined once in `libs/config_resolver/schema.py` and exported to the frontend via OpenAPI. Don't add a `config_values` table (V2 path) prematurely.
+- **Model routing** (spec 6.7): `gpt-5-mini` default, `gpt-5-nano` for sentiment, `gpt-5.2` on escalation (long context >4000 tok, hot lead, critical-objection keywords, many turns), `claude-sonnet-4-6` fallback behind a feature flag. The escalation triggers are implemented in `router.py`. The per-tenant FT-model override hook (`FtModelProvider`) exists but **is not yet wired** — see completion plan 2.5.
+- **Vector search is `pgvector` inside Supabase Postgres** (HNSW, `vector_cosine_ops`, `<=>` operator) — no external vector DB. RLS applies to KB chunks too.
 
-**Vector search uses `pgvector` inside Supabase Postgres** (section 6.3, 8.2) — not Qdrant/Pinecone. This is an explicit choice so KB chunks inherit the same RLS, backup, and compliance as the rest of the data. Don't add an external vector DB.
+## Deviations from the spec (know these before editing)
 
-**Use-case → component map is section 10.** When the user references "UC-XX", look there first to see which directories and libs are implicated.
-
-## Stack (non-obvious choices)
-
-- Backend package manager is **uv** (not Poetry); linter/formatter is **ruff**, type-checker **mypy**, testing **pytest + pytest-asyncio**, logging **structlog**.
-- Frontend uses **TanStack Query** for server state and **Zustand** for local — do not add Redux. Types from the backend live in `frontend/packages/api-client/src/generated.ts` and are regenerated by `scripts/generate-api-types.sh` (spin up backend → download `openapi.json` → run `openapi-typescript`). Frontend CI runs this script and fails on uncommitted drift, so you must regenerate and commit after any FastAPI signature change (section 15: "Drift contratto OpenAPI").
-- `@supabase/supabase-js` lives in `packages/supabase-client` specifically so the Supabase Auth dependency is swappable later (section 15: "Lock-in Supabase Auth"). Don't scatter direct Supabase imports through app code.
-- Infra split: **Vercel** for frontend, **Railway** for FastAPI + ARQ worker + Redis, **Supabase Cloud (EU / Frankfurt)** for Postgres/Auth/Storage/Realtime. EU region is a GDPR requirement, not a preference.
+- **WhatsApp uses 360dialog, not Meta Cloud API direct.** `integrations/whatsapp/d360_client.py` + `factory.py` + a `integrations/router/` BSP layer, with 360dialog Coexistence (mirrors phone-app messages). The spec still says "Meta BSP diretto" — treat 360dialog as the production reality.
+- **Prompt Manager is missing.** `prompt_templates` table exists but is never read; the orchestrator ignores `variant_id`. As a result **A/B variants currently run the identical prompt** (UC-09 measures but can't differentiate). Highest-leverage fix (completion plan 1.1).
+- **No Sentiment Analyzer** despite `lead.sentiment` column and a dead `purpose="sentiment"` router branch (UC-04, plan 1.3).
+- **Dashboard Realtime is dead**: `analytics_events` is not in the `supabase_realtime` publication (only `messages`/`conversations`/notes are), so the dashboard subscriptions receive nothing (plan 1.5).
+- **PostHog is wired** (`main.py:46`); Sentry and log aggregation (Logtail/Grafana) from spec 13.5 are not yet.
 
 ## Security invariants (don't regress these)
 
-- Every new table needs RLS policies keyed on `auth.jwt() ->> 'tenant_id'` and `merchant_id`. CI should include isolation tests with two tenants asserting cross-tenant reads fail (section 15).
-- The backend may only use the Supabase **service role** for explicit admin operations (merchant creation, etc.), and every such call must be logged with `actor_id`. Don't reach for it as a convenience.
-- External credentials (GHL, WhatsApp) are encrypted at rest with AES-256-GCM in the `integrations` table; the KEK is an env var.
-- WhatsApp webhooks must validate HMAC-SHA256 signatures before enqueue; GHL webhooks use OAuth2 + signature. Drop unsigned events.
-- Fine-tuning datasets must pass the `data_anonymizer` step (presidio + regex) before reaching OpenAI. This is contractual (Art. 5.2), not optional.
+- Every new table needs RLS policies keyed on `auth.jwt() ->> 'tenant_id'` and `merchant_id`. Isolation tests with two tenants live in `backend/tests/integration/test_isolation*.py` — keep them passing and extend them for new tables.
+- The backend may use the Supabase **service role** only for explicit admin operations (merchant creation, FT runs, etc.), and every such call must be logged with `actor_id`. Don't reach for it as a convenience.
+- External credentials (GHL, WhatsApp) are encrypted at rest with AES-256-GCM in `integrations`; the KEK is an env var (rotation runbook: `docs/runbooks/rotate-kek.md`).
+- WhatsApp/360dialog webhooks validate HMAC-SHA256 before enqueue; GHL webhooks use OAuth2 + signature. Drop unsigned events.
+- Fine-tuning datasets must pass `data_anonymizer` before reaching OpenAI (contractual, Art. 5.2). **Currently regex-only — presidio NER is required and not yet added** (plan 2.2).
 
-## Where decisions live
+## Where decisions and procedures live
 
-- Architecture-level choices that span frontend and backend belong as ADRs in `docs/decisions/` — this is the shared space explicitly called out in section 3. If you make a non-obvious call during implementation (e.g. picking JSONB over a config table, pinning a `pgvector` version), write an ADR there rather than burying it in a commit message.
-- Operational procedures (restore drills, migrations, rollbacks) go in `docs/runbooks/`.
+- ADRs in `docs/decisions/` (0001 monorepo, 0002 pgvector, 0003 consolidated worker, 0004 all-Railway deploy, 0005 360dialog channel creation). Make a non-obvious call during implementation → write an ADR, don't bury it in a commit.
+- Operational procedures in `docs/runbooks/` (ECIRCUITBREAKER recovery, migration rollback, KEK rotation, Supabase restore drill).
+- The path to V1 100% is `docs/completion-plan.md` — keep it current as items ship.
 
 ## Language and writing conventions
 
-The architecture doc is in **Italian**. When writing code comments, commit messages, and PR descriptions, follow whatever the user uses in conversation — don't auto-translate the doc's terminology (e.g. "Dashboard Unificata", "Obiezioni") when referencing it, keep the Italian names so they match the spec.
+The architecture doc is in **Italian**. Match the user's language in conversation for comments, commit messages, and PR descriptions; keep the spec's Italian terminology (e.g. "Dashboard Unificata", "Obiezioni", UC names) so it lines up with `reloop-ai-architettura.md`.

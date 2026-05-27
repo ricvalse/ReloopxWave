@@ -33,6 +33,10 @@ export function AgencyDashboard() {
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as AgencyKpis;
     },
+    // Realtime (below) is the primary refresh path; this is a safety-net poll
+    // so the dashboard still converges if a realtime event is missed/dropped.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   // UC-12 — subscribe to all analytics_events for the tenant; RLS ensures

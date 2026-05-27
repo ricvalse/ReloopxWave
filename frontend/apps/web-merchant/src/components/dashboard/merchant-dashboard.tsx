@@ -34,6 +34,10 @@ export function MerchantDashboard() {
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Kpis;
     },
+    // Realtime (below) is the primary refresh path; this is a safety-net poll
+    // so the dashboard still converges if a realtime event is missed/dropped.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   // UC-11 — Supabase Realtime: invalidate on new analytics_events for this merchant.
@@ -101,7 +105,7 @@ export function MerchantDashboard() {
       </Card>
 
       <div className="text-xs text-muted-foreground">
-        Attivo Supabase Realtime: questa dashboard si aggiorna sola quando arrivano nuovi eventi.
+        Aggiornamento in tempo reale via Supabase Realtime, con refresh automatico ogni 30s come rete di sicurezza.
       </div>
     </div>
   );
