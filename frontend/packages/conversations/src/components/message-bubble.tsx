@@ -22,11 +22,14 @@ const META_SPACER_WIDTH_NO_TICKS = 44;
 
 function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   const isOut = message.direction === 'out';
-  const isAgent = message.role === 'agent';
   const isFailed = message.status === 'failed';
   const isFromPhone = message.meta?.sender_type === 'phone';
   const showTicks = isOut;
   const spacer = showTicks ? META_SPACER_WIDTH : META_SPACER_WIDTH_NO_TICKS;
+
+  // WhatsApp palette: green bubbles outbound, white bubbles inbound.
+  // Meta (timestamp/ticks/"Da telefono") inverts so it stays readable on green.
+  const metaColor = isOut ? 'text-white/75' : 'text-black/45 dark:text-white/55';
 
   return (
     <div
@@ -41,15 +44,13 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
           'relative max-w-[85%] rounded-2xl px-2.5 pb-1.5 pt-1.5 text-sm shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] sm:max-w-[68%]',
           isOut
             ? cn(
-                // Outbound: brand-tinted pastel for agent, plain card for assistant.
-                isAgent
-                  ? 'bg-[oklch(var(--chat-bubble-out))] text-[oklch(var(--chat-bubble-out-fg))]'
-                  : 'bg-[oklch(var(--chat-bubble-in))] text-foreground',
-                // Tail only on group leader.
+                // Outbound: WhatsApp green, white text. Tail only on group leader.
+                'bg-[#25d366] text-white dark:bg-[#005c4b]',
                 !grouped && 'rounded-tr-[4px]',
               )
             : cn(
-                'bg-[oklch(var(--chat-bubble-in))] text-foreground',
+                // Inbound: white card. Tail only on group leader.
+                'bg-white text-gray-900 dark:bg-[#202c33] dark:text-gray-100',
                 !grouped && 'rounded-tl-[4px]',
               ),
           isFailed && 'opacity-80',
@@ -59,7 +60,7 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
           <span
             className={cn(
               'mb-0.5 block text-[10px] font-medium uppercase tracking-wide',
-              'text-[oklch(var(--chat-meta))]',
+              metaColor,
             )}
           >
             Da telefono
@@ -78,7 +79,7 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
         <span
           className={cn(
             'absolute bottom-1 right-2 inline-flex select-none items-center gap-1 text-[10px] tabular-nums',
-            'text-[oklch(var(--chat-meta))]',
+            metaColor,
           )}
         >
           <span>{formatBubbleTime(message.created_at)}</span>

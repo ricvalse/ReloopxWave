@@ -30,8 +30,9 @@ export function StatusTicks({ status, className }: StatusTicksProps) {
     );
   }
   if (status === 'read') {
+    // WhatsApp blue read ticks — reads correctly on the green outbound bubble.
     return (
-      <CheckCheck className={cn('h-3 w-3 text-primary', className)} aria-label="Letto" />
+      <CheckCheck className={cn('h-3 w-3 text-[#53bdeb]', className)} aria-label="Letto" />
     );
   }
   return null;

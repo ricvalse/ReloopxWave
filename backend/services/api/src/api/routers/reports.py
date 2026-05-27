@@ -45,7 +45,12 @@ async def objection_report(
                 "samples": samples,
             }
         )
-    return {"since_days": since_days, "categories": payload}
+
+    # Per-day, per-category series powering the heatmap + trend view (UC-13).
+    trend = await repo.category_histogram_by_day(
+        merchant_id=ctx.merchant_id, since_days=since_days
+    )
+    return {"since_days": since_days, "categories": payload, "trend": trend}
 
 
 @router.post("/objections/extract/{conversation_id}")

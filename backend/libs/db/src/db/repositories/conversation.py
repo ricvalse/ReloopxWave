@@ -135,6 +135,41 @@ class ConversationRepository:
             )
         return results
 
+    async def close_idle_active(
+        self, *, min_idle_minutes: int, limit: int = 500
+    ) -> list[UUID]:
+        """Close active conversations with no activity for `min_idle_minutes`.
+
+        There is no explicit 'conversation closed' event in the WhatsApp flow, so
+        we approximate close = prolonged silence. Returns the ids that were
+        closed so the caller can enqueue UC-13 objection extraction for each.
+        The threshold must sit *after* the follow-up window (UC-03) so we don't
+        cut off pending reminders.
+        """
+        cutoff = datetime.now(tz=UTC) - timedelta(minutes=min_idle_minutes)
+        ids = list(
+            (
+                await self._session.execute(
+                    select(Conversation.id)
+                    .where(
+                        Conversation.status == "active",
+                        Conversation.last_message_at.is_not(None),
+                        Conversation.last_message_at < cutoff,
+                    )
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if ids:
+            await self._session.execute(
+                update(Conversation)
+                .where(Conversation.id.in_(ids))
+                .values(status="closed")
+            )
+        return ids
+
     async def record_reminder_sent(self, conversation_id: UUID) -> None:
         """Atomically increment reminders_sent and stamp last_reminder_at in conversation.meta.
 

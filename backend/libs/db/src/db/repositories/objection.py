@@ -73,6 +73,26 @@ class ObjectionRepository:
         )
         return [CategoryCount(category=c, count=int(n)) for c, n in rows.all()]
 
+    async def category_histogram_by_day(
+        self, *, merchant_id: UUID, since_days: int = 30
+    ) -> list[dict[str, Any]]:
+        """Per-day, per-category counts for the objection heatmap/trend (UC-13)."""
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
+        day = func.date_trunc("day", Objection.created_at).label("day")
+        rows = await self._session.execute(
+            select(day, Objection.category, func.count(Objection.id))
+            .where(
+                Objection.merchant_id == merchant_id,
+                Objection.created_at >= since,
+            )
+            .group_by(day, Objection.category)
+            .order_by(day)
+        )
+        return [
+            {"day": d.date().isoformat(), "category": c, "count": int(n)}
+            for d, c, n in rows.all()
+        ]
+
     async def recent_samples(
         self, *, merchant_id: UUID, category: str, limit: int = 5
     ) -> list[dict[str, Any]]:

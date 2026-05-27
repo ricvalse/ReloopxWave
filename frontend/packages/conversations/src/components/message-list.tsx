@@ -1,12 +1,14 @@
 'use client';
 
-import { Skeleton } from '@reloop/ui';
+import { Skeleton, cn } from '@reloop/ui';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { isSameDay } from '../lib/time';
 import type { Message } from '../types';
-import { ChatWallpaper } from './chat-wallpaper';
 import { DaySeparator } from './day-separator';
 import { MessageBubble } from './message-bubble';
+
+// Plain WhatsApp-style chat surface: light gray (matches Amalia) / dark slate.
+const CHAT_SURFACE_BG = 'bg-[#f0f2f5] dark:bg-[#0b141a]';
 
 interface MessageListProps {
   messages: Message[];
@@ -70,9 +72,8 @@ export function MessageList({ messages, isLoading, onRetry }: MessageListProps) 
 
   if (isLoading && messages.length === 0) {
     return (
-      <div className="chat-surface relative h-full overflow-hidden bg-[oklch(var(--chat-wallpaper-bg))]">
-        <ChatWallpaper />
-        <div className="relative z-10 flex h-full flex-col gap-3 p-6">
+      <div className={cn('h-full overflow-hidden', CHAT_SURFACE_BG)}>
+        <div className="flex h-full flex-col gap-3 p-6">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className={i % 2 === 0 ? 'self-start' : 'self-end'}>
               <Skeleton className="h-10 w-64 rounded-2xl" />
@@ -85,9 +86,13 @@ export function MessageList({ messages, isLoading, onRetry }: MessageListProps) 
 
   if (messages.length === 0) {
     return (
-      <div className="chat-surface relative flex h-full items-center justify-center bg-[oklch(var(--chat-wallpaper-bg))] text-sm text-muted-foreground">
-        <ChatWallpaper />
-        <span className="relative z-10 rounded-full bg-background/80 px-3 py-1 shadow-sm">
+      <div
+        className={cn(
+          'flex h-full items-center justify-center text-sm text-muted-foreground',
+          CHAT_SURFACE_BG,
+        )}
+      >
+        <span className="rounded-full bg-background/80 px-3 py-1 shadow-sm">
           Nessun messaggio ancora.
         </span>
       </div>
@@ -97,10 +102,9 @@ export function MessageList({ messages, isLoading, onRetry }: MessageListProps) 
   return (
     <div
       ref={scrollRef}
-      className="chat-surface relative h-full overflow-y-auto bg-[oklch(var(--chat-wallpaper-bg))] pb-4"
+      className={cn('h-full overflow-y-auto pb-4', CHAT_SURFACE_BG)}
     >
-      <ChatWallpaper />
-      <div className="relative z-10 mx-auto max-w-3xl py-2">
+      <div className="mx-auto max-w-3xl py-2">
         {items.map((item) =>
           item.kind === 'separator' ? (
             <DaySeparator key={item.key} iso={item.iso} />

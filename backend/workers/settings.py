@@ -29,6 +29,7 @@ from workers.fine_tuning.handlers import (
 from workers.runtime import build_runtime
 from workers.scheduler.handlers import (
     build_analytics_export,
+    close_idle_conversations,
     daily_kpi_rollup,
     followup_no_answer,
     integration_health_check,
@@ -68,6 +69,7 @@ class WorkerSettings:
         reactivate_dormant_leads,
         daily_kpi_rollup,
         objection_extraction,
+        close_idle_conversations,
         kb_reindex,
         integration_health_check,
         build_analytics_export,
@@ -99,4 +101,8 @@ class WorkerSettings:
             timeout=300,
             max_tries=1,
         ),
+        # UC-13: hourly sweep that closes long-idle conversations and enqueues
+        # objection extraction for each — the automatic post-conversation
+        # trigger the spec calls for (previously extraction was manual-only).
+        cron(close_idle_conversations, minute=20, timeout=300, max_tries=1),
     ]

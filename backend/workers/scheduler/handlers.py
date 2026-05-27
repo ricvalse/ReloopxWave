@@ -11,6 +11,7 @@ from typing import Any
 
 from shared import get_logger
 from workers.scheduler.analytics_export import build_analytics_export  # re-export
+from workers.scheduler.close_conversations import close_idle_conversations  # re-export
 from workers.scheduler.integration_health import integration_health_check  # re-export
 from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
@@ -20,6 +21,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "build_analytics_export",
+    "close_idle_conversations",
     "daily_kpi_rollup",
     "followup_no_answer",
     "integration_health_check",
