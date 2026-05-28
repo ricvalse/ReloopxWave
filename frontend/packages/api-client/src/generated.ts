@@ -610,6 +610,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/fine-tuning/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Fine Tune */
+        post: operations["run_fine_tune_fine_tuning_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/fine-tuning/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Ft Models */
+        get: operations["list_ft_models_fine_tuning_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/ghl/oauth/start": {
         parameters: {
             query?: never;
@@ -1199,6 +1233,10 @@ export interface components {
              * @default 2
              */
             max_followups: number;
+            /** First Reminder Text */
+            first_reminder_text?: string | null;
+            /** Second Reminder Text */
+            second_reminder_text?: string | null;
         };
         /** OAuthStartResponse */
         OAuthStartResponse: {
@@ -1325,6 +1363,21 @@ export interface components {
              * @default 3
              */
             max_attempts: number;
+            /** Message */
+            message?: string | null;
+        };
+        /** RunFineTuneIn */
+        RunFineTuneIn: {
+            /**
+             * Since Days
+             * @default 28
+             */
+            since_days: number;
+            /**
+             * Base Model
+             * @default gpt-4.1-mini
+             */
+            base_model: string;
         };
         /** ScheduleConfig */
         ScheduleConfig: {
@@ -1492,6 +1545,8 @@ export interface components {
             weight: number;
             /** Prompt Template Id */
             prompt_template_id?: string | null;
+            /** Prompt Body */
+            prompt_body?: string | null;
         };
         /**
          * WhatsAppOnboardStartIn
@@ -2798,6 +2853,76 @@ export interface operations {
             };
         };
     };
+    run_fine_tune_fine_tuning_run_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunFineTuneIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_ft_models_fine_tuning_models_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ghl_oauth_start_integrations_ghl_oauth_start_post: {
         parameters: {
             query?: never;
@@ -3102,6 +3227,8 @@ export enum ApiPaths {
     experiment_metrics_ab_test__experiment_id__metrics_get = "/ab-test/{experiment_id}/metrics",
     objection_report_reports_objections_get = "/reports/objections",
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",
+    run_fine_tune_fine_tuning_run_post = "/fine-tuning/run",
+    list_ft_models_fine_tuning_models_get = "/fine-tuning/models",
     ghl_oauth_start_integrations_ghl_oauth_start_post = "/integrations/ghl/oauth/start",
     ghl_oauth_callback_integrations_ghl_oauth_callback_get = "/integrations/ghl/oauth/callback",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
