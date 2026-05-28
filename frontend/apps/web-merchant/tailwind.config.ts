@@ -3,7 +3,11 @@ import preset from '@reloop/ui/tailwind';
 
 const config: Config = {
   presets: [preset],
-  content: ['./src/**/*.{ts,tsx}', '../../packages/ui/src/**/*.{ts,tsx}'],
+  content: [
+    './src/**/*.{ts,tsx}',
+    '../../packages/ui/src/**/*.{ts,tsx}',
+    '../../packages/conversations/src/**/*.{ts,tsx}',
+  ],
 };
 
 export default config;
