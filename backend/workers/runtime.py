@@ -11,6 +11,7 @@ from ai_core import (
     ActionDispatcher,
     ConversationOrchestrator,
     ConversationService,
+    FtModelResolver,
     ModelRouter,
     ReplySender,
     SentimentAnalyzer,
@@ -64,7 +65,9 @@ class Runtime:
 
 
 def build_runtime(settings: Settings) -> Runtime:
-    router = ModelRouter(settings)
+    # UC-09 FT rollout — route to a tenant's deployed FT model (gated to the
+    # "ft" A/B arm while a rollout experiment is running).
+    router = ModelRouter(settings, ft_model_provider=FtModelResolver())
     orchestrator = ConversationOrchestrator(router)
     dispatcher = ActionDispatcher()
     sender: ReplySender = WhatsAppReplySender()

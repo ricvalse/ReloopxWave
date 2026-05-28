@@ -69,6 +69,7 @@ class ConversationOrchestrator:
             lead_score=ctx.lead_score,
             hot_threshold=ctx.hot_threshold,
             escalate_keywords_matched=_has_critical_objection(user_message),
+            variant_id=ctx.variant_id,
         )
         client: LLMClient = await self._router.select(req)
 

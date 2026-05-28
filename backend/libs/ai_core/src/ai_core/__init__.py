@@ -6,6 +6,7 @@ from ai_core.conversation_service import (
     ReplySender,
     TurnContext,
 )
+from ai_core.ft_routing import FtModelResolver, should_use_ft
 from ai_core.llm import AnthropicClient, ChatMessage, LLMClient, OpenAIClient
 from ai_core.objections import (
     ClassifiedObjection,
@@ -39,6 +40,7 @@ __all__ = [
     "ConversationOrchestrator",
     "ConversationService",
     "Embedder",
+    "FtModelResolver",
     "InboundResult",
     "LLMClient",
     "LeadScore",
@@ -60,4 +62,5 @@ __all__ = [
     "classify_objections",
     "derive_conversation_signals",
     "score_lead",
+    "should_use_ft",
 ]

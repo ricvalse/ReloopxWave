@@ -24,9 +24,15 @@ EscalationTrigger = Literal[
 
 
 class FtModelProvider(Protocol):
-    """Resolves the fine-tuned model id for a tenant/merchant, if any."""
+    """Resolves the fine-tuned model id for a tenant/merchant, if any.
 
-    async def get(self, tenant_id: UUID, merchant_id: UUID) -> str | None: ...
+    `variant_id` lets the provider gate the FT model to the "ft" arm of an A/B
+    rollout (spec 6.7 — FT replaces the default via A/B, not a flag flip).
+    """
+
+    async def get(
+        self, tenant_id: UUID, merchant_id: UUID, variant_id: str | None
+    ) -> str | None: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -40,6 +46,7 @@ class RoutingRequest:
     escalate_keywords_matched: bool
     purpose: Literal["chat", "sentiment", "classification", "escalation"] = "chat"
     force_model: str | None = None
+    variant_id: str | None = None
 
 
 class ModelRouter:
@@ -66,7 +73,9 @@ class ModelRouter:
 
         # Check per-tenant FT override before defaulting to gpt-5-mini.
         if self._ft_model_provider is not None:
-            ft_model_id = await self._ft_model_provider.get(req.tenant_id, req.merchant_id)
+            ft_model_id = await self._ft_model_provider.get(
+                req.tenant_id, req.merchant_id, req.variant_id
+            )
             if ft_model_id is not None:
                 return OpenAIClient(api_key=self._settings.openai_api_key, model=ft_model_id)
 

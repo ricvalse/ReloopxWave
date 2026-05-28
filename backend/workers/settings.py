@@ -24,6 +24,7 @@ from workers.conversation.handlers import (
 from workers.fine_tuning.handlers import (
     fine_tune_deploy,
     fine_tune_evaluate,
+    fine_tune_run,
     fine_tune_train,
 )
 from workers.runtime import build_runtime
@@ -74,6 +75,7 @@ class WorkerSettings:
         integration_health_check,
         build_analytics_export,
         # queue: ft:pipeline
+        fine_tune_run,
         fine_tune_train,
         fine_tune_evaluate,
         fine_tune_deploy,

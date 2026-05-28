@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from ai_core.ft import anonymize_text
+from ai_core.ft import anonymize_text, build_presidio_transform
 from integrations import SupabaseStorage
 from shared import Settings, get_logger
 from workers.fine_tuning.collect import TrainingPair
@@ -44,11 +44,19 @@ async def export_training_pairs(
     run_id = uuid4().hex
     path = f"{tenant_id}/{run_id}/train.jsonl"
 
+    # Art. 5.2 double layer: regex (in anonymize_text) + presidio NER (here).
+    # Presidio degrades to None outside production (no spaCy model) — we log so
+    # the audit trail records whether the NER layer actually ran.
+    presidio = build_presidio_transform(language="it")
+    transforms = [presidio] if presidio is not None else None
+    if presidio is None:
+        logger.warning("ft.export.presidio_skipped", tenant_id=str(tenant_id))
+
     lines: list[str] = []
     totals: dict[str, int] = {}
     for pair in pairs:
-        user_report = anonymize_text(pair.user)
-        assistant_report = anonymize_text(pair.assistant)
+        user_report = anonymize_text(pair.user, additional_transforms=transforms)
+        assistant_report = anonymize_text(pair.assistant, additional_transforms=transforms)
         _merge_counts(totals, user_report.counts)
         _merge_counts(totals, assistant_report.counts)
 
@@ -75,6 +83,7 @@ async def export_training_pairs(
         run_id=run_id,
         pairs=len(pairs),
         redactions=totals,
+        ner_applied=presidio is not None,
         uploaded_at=datetime.now(tz=UTC).isoformat(),
     )
     return ExportResult(

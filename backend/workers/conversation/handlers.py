@@ -219,7 +219,7 @@ async def send_outbound_whatsapp(ctx: dict, message_id: str) -> dict:
             status=getattr(exc, "status", None),
         )
         return {"sent": False, "reason": "send_failed", "error_code": exc.error_code}
-    except Exception as exc:  # noqa: BLE001 — unknown errors are still terminal
+    except Exception as exc:
         async with session_scope() as session:
             await _mark_failed(
                 session,

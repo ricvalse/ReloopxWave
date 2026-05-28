@@ -22,8 +22,16 @@ from sqlalchemy import select, update
 from db import session_scope
 from db.models import FTModel
 from shared import IntegrationError, get_logger, get_settings
+from workers.fine_tuning.run import fine_tune_run  # re-export for ARQ registration
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "fine_tune_deploy",
+    "fine_tune_evaluate",
+    "fine_tune_run",
+    "fine_tune_train",
+]
 
 POLL_INTERVAL_SECONDS = 30
 POLL_MAX_ATTEMPTS = 240  # 2 hours at 30s cadence — OpenAI FT rarely exceeds this.
@@ -124,6 +132,17 @@ async def fine_tune_train(
             status=final_status,
             provider_model_id=provider_model_id,
         )
+
+        # Chain: on success, kick off held-out evaluation.
+        if final_status == "ready":
+            redis = ctx.get("redis")
+            if redis is not None:
+                await redis.enqueue_job(
+                    "fine_tune_evaluate",
+                    str(ft_model_id),
+                    _job_id=f"ft:eval:{ft_model_id}",
+                )
+
         return {
             "ft_model_id": str(ft_model_id),
             "job_id": job.id,
@@ -140,29 +159,10 @@ async def fine_tune_evaluate(
     *,
     test_set_path: str | None = None,
 ) -> dict[str, Any]:
-    """V1: record whatever evaluation signal we have and mark the row as
-    evaluated. A meaningful held-out comparison lives in the follow-up runbook.
-    """
-    del test_set_path  # placeholder — see Phase 5.2 follow-up notes
+    """Held-out evaluation of the FT model vs baseline (real impl in evaluate.py)."""
+    from workers.fine_tuning.evaluate import evaluate_model
 
-    async with session_scope() as session:
-        row = await session.get(FTModel, UUID(ft_model_row_id))
-        if row is None or row.status != "ready":
-            raise IntegrationError(
-                "FT model not ready for evaluation",
-                error_code="ft_not_ready",
-                ft_model_row_id=ft_model_row_id,
-            )
-        row.evaluation = {
-            **(row.evaluation or {}),
-            "evaluated_at": datetime.now(tz=UTC).isoformat(),
-            "method": "placeholder_v1",
-            "pass": True,
-        }
-        row.status = "evaluated"
-
-    logger.info("ft.evaluate.done", ft_model_row_id=ft_model_row_id)
-    return {"ft_model_row_id": ft_model_row_id, "status": "evaluated"}
+    return await evaluate_model(ctx, ft_model_row_id, test_set_path=test_set_path)
 
 
 async def fine_tune_deploy(
@@ -194,12 +194,38 @@ async def fine_tune_deploy(
         )
         row.is_default = True
         row.status = "deployed"
+        merchant_id = row.merchant_id
         deploy_payload = {
             "tenant_id": str(row.tenant_id),
             "ft_model_row_id": ft_model_row_id,
             "provider_model_id": row.provider_model_id,
         }
 
+        # Rollout via A/B, not a flag flip (spec 6.7). When the FT model targets a
+        # specific merchant, open a running baseline-vs-ft experiment; the
+        # FtModelResolver then routes only the "ft" arm to the FT model until the
+        # experiment is stopped. Tenant-wide FT (no merchant) just becomes the
+        # default for all conversations (no gating experiment).
+        experiment_id: str | None = None
+        if merchant_id is not None:
+            from db import ABRepository
+
+            ab = ABRepository(session)
+            exp = await ab.create(
+                merchant_id=merchant_id,
+                name=f"FT rollout v{row.version}",
+                description="Auto-created baseline vs fine-tuned model comparison.",
+                variants=[
+                    {"id": "baseline", "weight": 50},
+                    {"id": "ft", "weight": 50},
+                ],
+                primary_metric="booking.created",
+                min_sample_size=100,
+            )
+            await ab.set_status(exp.id, status="running", started_at=datetime.now(tz=UTC))
+            experiment_id = str(exp.id)
+
+    deploy_payload["ab_experiment_id"] = experiment_id
     logger.info("ft.deploy.done", **deploy_payload)
     return deploy_payload
 

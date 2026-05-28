@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ai_core import (
     ConversationOrchestrator,
     Embedder,
+    FtModelResolver,
     ModelRouter,
     PlaygroundRunner,
 )
@@ -23,6 +24,7 @@ from api.routers import (
     auth,
     bot_config,
     conversations,
+    fine_tuning,
     integrations,
     internal,
     knowledge_base,
@@ -50,7 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
 
     # AI wiring for synchronous paths (UC-08 playground).
-    router = ModelRouter(settings)
+    router = ModelRouter(settings, ft_model_provider=FtModelResolver())
     orchestrator = ConversationOrchestrator(router)
     embedder = Embedder(api_key=settings.openai_api_key) if settings.openai_api_key else None
     app.state.playground = PlaygroundRunner(orchestrator=orchestrator, embedder=embedder)
@@ -102,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(playground.router, prefix="/playground", tags=["playground"])
     app.include_router(ab_test.router, prefix="/ab-test", tags=["ab-test"])
     app.include_router(reports.router, prefix="/reports", tags=["reports"])
+    app.include_router(fine_tuning.router, prefix="/fine-tuning", tags=["fine-tuning"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
 
     # Public webhooks (signature-validated, no JWT).

@@ -152,7 +152,7 @@ async def send_message(
             _job_id=f"wa:out:{msg.id}",
             _queue_name="wa:outbound",
         )
-    except Exception:  # noqa: BLE001 — worker enqueue is best-effort
+    except Exception:
         logger.exception(
             "conversations.send.enqueue_failed",
             message_id=str(msg.id),

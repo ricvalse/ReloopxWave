@@ -12,6 +12,10 @@ dependencies = [
     "pypdf>=5.1.0",
     "python-docx>=1.1.2",
     "beautifulsoup4>=4.12.3",
+    # Art. 5.2 — NER anonymization layer for FT datasets (names/locations/orgs
+    # that regex can't reach). Requires a spaCy model at deploy time (see
+    # ai_core/ft/presidio.py); the code degrades to regex-only if unavailable.
+    "presidio-analyzer>=2.2.355",
     "shared",
     "config_resolver",
     "db",

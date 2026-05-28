@@ -14,10 +14,10 @@ from ai_core.prompt_manager import PromptManager
 class _FakeRepo:
     """Stands in for PromptRepository: only 'treatment' has a saved template."""
 
-    def __init__(self, session) -> None:  # noqa: ANN001 - test stub
+    def __init__(self, session) -> None:
         self._session = session
 
-    async def get_active_body(self, *, merchant_id, kind, variant_id):  # noqa: ANN001
+    async def get_active_body(self, *, merchant_id, kind, variant_id):
         assert kind == "system"
         return {"treatment": "VARIANT PROMPT"}.get(variant_id)
 
