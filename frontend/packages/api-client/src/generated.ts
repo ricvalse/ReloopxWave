@@ -143,7 +143,13 @@ export interface paths {
         get: operations["get_merchant_merchants__merchant_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Merchant
+         * @description Hard-delete a merchant. FK cascades wipe all dependent rows
+         *     (leads, conversations, KB, bot config, integrations, analytics).
+         *     Destructive — UI must require explicit confirmation.
+         */
+        delete: operations["delete_merchant_merchants__merchant_id__delete"];
         options?: never;
         head?: never;
         /** Update Merchant */
@@ -1849,6 +1855,37 @@ export interface operations {
             };
         };
     };
+    delete_merchant_merchants__merchant_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_merchant_merchants__merchant_id__patch: {
         parameters: {
             query?: never;
@@ -3199,6 +3236,7 @@ export enum ApiPaths {
     create_merchant_merchants__post = "/merchants/",
     get_merchant_merchants__merchant_id__get = "/merchants/{merchant_id}",
     update_merchant_merchants__merchant_id__patch = "/merchants/{merchant_id}",
+    delete_merchant_merchants__merchant_id__delete = "/merchants/{merchant_id}",
     suspend_merchant_merchants__merchant_id__suspend_post = "/merchants/{merchant_id}/suspend",
     resume_merchant_merchants__merchant_id__resume_post = "/merchants/{merchant_id}/resume",
     list_users_users__get = "/users/",

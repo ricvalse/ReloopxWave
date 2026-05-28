@@ -22,7 +22,9 @@ from sqlalchemy.exc import IntegrityError
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from db import MerchantRepository
-from shared import ConflictError, NotFoundError, PermissionDeniedError
+from shared import ConflictError, NotFoundError, PermissionDeniedError, get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -137,6 +139,33 @@ async def resume_merchant(
     merchant_id: UUID, ctx: CurrentContext, session: DBSession
 ) -> MerchantOut:
     return await _set_status(merchant_id, ctx, session, "active")
+
+
+@router.delete(
+    "/{merchant_id}",
+    status_code=204,
+    dependencies=[Depends(require_role("agency_admin"))],
+)
+async def delete_merchant(
+    merchant_id: UUID, ctx: CurrentContext, session: DBSession
+) -> None:
+    """Hard-delete a merchant. FK cascades wipe all dependent rows
+    (leads, conversations, KB, bot config, integrations, analytics).
+    Destructive — UI must require explicit confirmation.
+    """
+    repo = MerchantRepository(session)
+    existing = await repo.get(merchant_id)
+    if existing is None:
+        raise NotFoundError("Merchant not found", merchant_id=str(merchant_id))
+    _assert_merchant_scope(ctx, existing)
+    await repo.delete(merchant_id)
+    logger.info(
+        "merchant.deleted",
+        actor_id=str(ctx.actor_id),
+        tenant_id=str(ctx.tenant_id),
+        merchant_id=str(merchant_id),
+        merchant_slug=existing.slug,
+    )
 
 
 async def _set_status(

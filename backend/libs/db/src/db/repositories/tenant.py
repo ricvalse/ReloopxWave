@@ -117,6 +117,14 @@ class MerchantRepository:
         await self._session.flush()
         return merchant
 
+    async def delete(self, merchant_id: UUID) -> bool:
+        merchant = await self._session.get(Merchant, merchant_id)
+        if merchant is None:
+            return False
+        await self._session.delete(merchant)
+        await self._session.flush()
+        return True
+
 
 class UserRepository:
     def __init__(self, session: AsyncSession) -> None:

@@ -26,6 +26,7 @@ class MerchantKpis:
 @dataclass(slots=True, frozen=True)
 class MerchantRanking:
     merchant_id: UUID
+    merchant_name: str
     leads_total: int
     bookings_created: int
     conversion_rate: float
@@ -177,11 +178,12 @@ class AnalyticsRepository:
         totals_stmt = (
             select(
                 Lead.merchant_id.label("merchant_id"),
+                Merchant.name.label("merchant_name"),
                 func.count(Lead.id).label("leads_total"),
             )
             .join(Merchant, Merchant.id == Lead.merchant_id)
             .where(Merchant.tenant_id == tenant_id)
-            .group_by(Lead.merchant_id)
+            .group_by(Lead.merchant_id, Merchant.name)
             .subquery()
         )
 
@@ -201,6 +203,7 @@ class AnalyticsRepository:
 
         stmt = select(
             totals_stmt.c.merchant_id,
+            totals_stmt.c.merchant_name,
             totals_stmt.c.leads_total,
             func.coalesce(bookings_stmt.c.bookings, 0).label("bookings"),
         ).outerjoin(bookings_stmt, bookings_stmt.c.merchant_id == totals_stmt.c.merchant_id)
@@ -209,9 +212,10 @@ class AnalyticsRepository:
         return [
             MerchantRanking(
                 merchant_id=merchant_id,
+                merchant_name=merchant_name,
                 leads_total=int(leads_total),
                 bookings_created=int(bookings),
                 conversion_rate=(int(bookings) / int(leads_total)) if leads_total else 0.0,
             )
-            for merchant_id, leads_total, bookings in rows
+            for merchant_id, merchant_name, leads_total, bookings in rows
         ]

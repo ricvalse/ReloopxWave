@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle, KPICard } from '@reloop/ui';
@@ -13,8 +14,10 @@ type Kpis = components['schemas']['MerchantKpisOut'];
 
 export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ['merchants', merchantId],
@@ -59,6 +62,22 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
     onError: (err) => setMutationError(err instanceof Error ? err.message : 'Errore riattivazione'),
   });
 
+  const remove = useMutation({
+    mutationFn: async () => {
+      const api = getApiClient();
+      const { error } = await api.DELETE('/merchants/{merchant_id}' as never, {
+        params: { path: { merchant_id: merchantId } },
+      } as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['merchants', 'list'] });
+      queryClient.removeQueries({ queryKey: ['merchants', merchantId] });
+      router.push('/merchants');
+    },
+    onError: (err) => setMutationError(err instanceof Error ? err.message : 'Errore eliminazione'),
+  });
+
   const saveName = useMutation({
     mutationFn: async (name: string) => {
       const api = getApiClient();
@@ -91,7 +110,8 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
 
   const m = query.data;
   const isSuspended = m.status === 'suspended';
-  const pending = suspend.isPending || resume.isPending || saveName.isPending;
+  const pending =
+    suspend.isPending || resume.isPending || saveName.isPending || remove.isPending;
 
   return (
     <div className="space-y-4 p-6">
@@ -155,13 +175,24 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
             ) : (
               <Button
                 size="sm"
-                variant="destructive"
+                variant="outline"
                 onClick={() => suspend.mutate()}
                 disabled={pending}
               >
                 Sospendi
               </Button>
             )}
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                setMutationError(null);
+                setDeleteConfirm('');
+              }}
+              disabled={pending || deleteConfirm !== null}
+            >
+              Elimina
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -185,6 +216,57 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
           </dl>
           {mutationError ? (
             <p className="mt-4 text-sm text-destructive">{mutationError}</p>
+          ) : null}
+          {deleteConfirm !== null ? (
+            <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/5 p-4">
+              <p className="text-sm font-medium text-destructive">
+                Eliminazione definitiva
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Tutti i dati del merchant verranno rimossi in cascata: lead,
+                conversazioni, knowledge base, configurazione bot, integrazioni e
+                analytics. L&apos;azione non è reversibile.
+              </p>
+              <p className="mt-3 text-sm">
+                Per confermare, digita lo slug{' '}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+                  {m.slug}
+                </code>
+                .
+              </p>
+              <form
+                className="mt-3 flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (deleteConfirm === m.slug) remove.mutate();
+                }}
+              >
+                <input
+                  autoFocus
+                  className="h-9 w-64 rounded-md border border-input bg-background px-3 font-mono text-sm"
+                  value={deleteConfirm}
+                  onChange={(e) => setDeleteConfirm(e.target.value)}
+                  placeholder={m.slug}
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="destructive"
+                  disabled={pending || deleteConfirm !== m.slug}
+                >
+                  Elimina definitivamente
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDeleteConfirm(null)}
+                  disabled={pending}
+                >
+                  Annulla
+                </Button>
+              </form>
+            </div>
           ) : null}
         </CardContent>
       </Card>

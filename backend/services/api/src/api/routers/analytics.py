@@ -121,6 +121,7 @@ async def agency_kpis(
         merchants_ranking=[
             {
                 "merchant_id": str(r.merchant_id),
+                "merchant_name": r.merchant_name,
                 "leads_total": r.leads_total,
                 "bookings_created": r.bookings_created,
                 "conversion_rate": r.conversion_rate,

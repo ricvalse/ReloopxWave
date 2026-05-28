@@ -14,6 +14,7 @@ type AgencyKpis = {
   reminders_sent: number;
   merchants_ranking: {
     merchant_id: string;
+    merchant_name?: string | null;
     leads_total: number;
     bookings_created: number;
     conversion_rate: number;
@@ -90,7 +91,15 @@ export function AgencyDashboard() {
               <tbody>
                 {k.merchants_ranking.map((m) => (
                   <tr key={m.merchant_id} className="border-t">
-                    <td className="py-2 font-mono text-xs">{m.merchant_id.slice(0, 8)}…</td>
+                    <td className="py-2">
+                      {m.merchant_name?.trim() ? (
+                        m.merchant_name
+                      ) : (
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {m.merchant_id.slice(0, 8)}…
+                        </span>
+                      )}
+                    </td>
                     <td className="text-right">{m.leads_total}</td>
                     <td className="text-right">{m.bookings_created}</td>
                     <td className="text-right">{pct(m.conversion_rate)}</td>
