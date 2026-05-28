@@ -12,6 +12,7 @@ the comparison is against the live baseline so a regression blocks deploy. A
 richer metric (objection handling, booking rate) is a future refinement; the
 harness here is real and the pass/fail gate is enforced by the orchestration.
 """
+
 from __future__ import annotations
 
 import json
@@ -98,9 +99,7 @@ async def evaluate_model(
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.openai_api_key:
-        raise IntegrationError(
-            "OPENAI_API_KEY not configured", error_code="openai_not_configured"
-        )
+        raise IntegrationError("OPENAI_API_KEY not configured", error_code="openai_not_configured")
 
     async with session_scope() as session:
         row = await session.get(FTModel, UUID(ft_model_row_id))
@@ -170,7 +169,10 @@ async def evaluate_model(
                 _job_id=f"ft:deploy:{ft_model_row_id}",
             )
 
-    logger.info("ft.evaluate.done", ft_model_row_id=ft_model_row_id, passed=passed, **{
-        k: metrics[k] for k in ("baseline_score", "ft_score") if k in metrics
-    })
+    logger.info(
+        "ft.evaluate.done",
+        ft_model_row_id=ft_model_row_id,
+        passed=passed,
+        **{k: metrics[k] for k in ("baseline_score", "ft_score") if k in metrics},
+    )
     return {"ft_model_row_id": ft_model_row_id, "status": "evaluated", **metrics}

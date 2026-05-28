@@ -130,7 +130,7 @@ async def send_outbound_whatsapp(ctx: dict, message_id: str) -> dict:
     Failure modes:
       - Conversation/message gone: log + return; no row to update.
       - Integration missing: row -> 'failed' with `error.code='no_integration'`.
-      - D360 raises (already retried 3× by the client): row -> 'failed' with
+      - D360 raises (already retried 3x by the client): row -> 'failed' with
         the underlying error_code and status. Never leave a row 'pending'.
     """
     settings = get_settings()

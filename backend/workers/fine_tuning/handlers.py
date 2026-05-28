@@ -195,7 +195,7 @@ async def fine_tune_deploy(
         row.is_default = True
         row.status = "deployed"
         merchant_id = row.merchant_id
-        deploy_payload = {
+        deploy_payload: dict[str, str | None] = {
             "tenant_id": str(row.tenant_id),
             "ft_model_row_id": ft_model_row_id,
             "provider_model_id": row.provider_model_id,

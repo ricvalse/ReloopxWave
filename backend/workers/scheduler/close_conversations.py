@@ -9,6 +9,7 @@ previously the extractor only ran when a human hit the manual API endpoint.
 The threshold sits well after the UC-03 follow-up window (default 2nd reminder
 at 1440 min) so closing never cuts off a pending reminder sequence.
 """
+
 from __future__ import annotations
 
 from typing import Any

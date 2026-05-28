@@ -9,6 +9,7 @@ URL-based docs don't need Storage at all — just the URL.
 """
 from __future__ import annotations
 
+import time
 from typing import Literal
 from uuid import UUID
 
@@ -77,8 +78,10 @@ async def reindex(
 ) -> dict:
     _assert_merchant_scope(ctx, merchant_id)
     arq = request.app.state.arq
+    # Distinct job id per manual reindex so re-triggers aren't deduped away by
+    # ARQ (the previous request.state.ts was never set → always collided on :0).
     await arq.enqueue_job(
-        "kb_reindex", str(doc_id), _job_id=f"kb:reindex:{doc_id}:{int(request.state.ts) if hasattr(request.state, 'ts') else 0}"
+        "kb_reindex", str(doc_id), _job_id=f"kb:reindex:{doc_id}:{int(time.time())}"
     )
     return {"enqueued": True, "doc_id": str(doc_id)}
 

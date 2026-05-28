@@ -10,6 +10,7 @@ Implements the router's `FtModelProvider` protocol. Two behaviours (spec 6.7):
 The decision is a pure function (`should_use_ft`) so it's unit-testable without
 a database; the resolver just supplies the three booleans from Postgres.
 """
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -39,9 +40,7 @@ def should_use_ft(
 class FtModelResolver:
     """Concrete FtModelProvider backed by the ft_models + ab_experiments tables."""
 
-    async def get(
-        self, tenant_id: UUID, merchant_id: UUID, variant_id: str | None
-    ) -> str | None:
+    async def get(self, tenant_id: UUID, merchant_id: UUID, variant_id: str | None) -> str | None:
         async with session_scope() as session:
             provider_model_id = (
                 await session.execute(

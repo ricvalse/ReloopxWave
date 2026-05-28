@@ -3,6 +3,7 @@
 This is the behavior that makes A/B real: before this, both arms ran the
 identical config-cascade prompt and an experiment could not differentiate.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4

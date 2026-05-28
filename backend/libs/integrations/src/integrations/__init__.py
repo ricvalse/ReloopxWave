@@ -28,6 +28,7 @@ from integrations.whatsapp.webhook import (
 )
 
 __all__ = [
+    "SIGNATURE_HEADER",
     "D360WhatsAppClient",
     "ExchangedTokens",
     "GHLClient",
@@ -35,7 +36,6 @@ __all__ = [
     "InvitedUser",
     "OnboardStartResult",
     "RouterClient",
-    "SIGNATURE_HEADER",
     "SupabaseAdminClient",
     "SupabaseStorage",
     "VerifiedState",

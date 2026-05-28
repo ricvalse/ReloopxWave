@@ -1,4 +1,5 @@
 """Sentiment analyzer — label parsing tolerance and safe fallback (spec 6.6)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

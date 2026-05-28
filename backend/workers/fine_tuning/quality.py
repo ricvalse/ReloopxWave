@@ -9,6 +9,7 @@ that would teach the model bad habits:
 
 Returns the kept pairs plus a per-reason drop report for the FT audit trail.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

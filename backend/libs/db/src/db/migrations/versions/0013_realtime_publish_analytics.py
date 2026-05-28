@@ -17,6 +17,7 @@ RLS on `analytics_events` (0001_initial + 0004_advisor_fixes) already
 restricts subscribers to their own tenant/merchant, so the realtime stream
 inherits the same isolation as direct reads.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

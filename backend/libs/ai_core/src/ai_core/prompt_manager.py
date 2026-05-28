@@ -13,6 +13,7 @@ differently (UC-09). Lookup order:
 Editing a prompt is modeled as inserting a new `version` row; the repository
 returns the highest active version, keeping prior versions for audit/rollback.
 """
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

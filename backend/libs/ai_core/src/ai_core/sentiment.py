@@ -6,6 +6,7 @@ and fed into lead scoring (UC-05, `positive_sentiment` signal) and pipeline
 notes (UC-04). Degrades to "neutral" on any failure — sentiment must never
 block a reply.
 """
+
 from __future__ import annotations
 
 from uuid import UUID

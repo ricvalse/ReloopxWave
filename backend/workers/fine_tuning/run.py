@@ -13,6 +13,7 @@ to the long-running train job via the queue. The train/evaluate/deploy steps
 chain themselves (each enqueues the next) so the whole pipeline runs from one
 trigger.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -47,9 +48,7 @@ async def fine_tune_run(
     since = until - timedelta(days=since_days)
 
     async with session_scope() as session:
-        pairs = await collect_training_pairs(
-            session, tenant_id=tid, since=since, until=until
-        )
+        pairs = await collect_training_pairs(session, tenant_id=tid, since=since, until=until)
 
     quality = filter_pairs(pairs)
     logger.info(

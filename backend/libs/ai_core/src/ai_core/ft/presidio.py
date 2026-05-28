@@ -15,6 +15,7 @@ Operational notes:
   (CI, local dev) working without the heavy model download, while production —
   where the model is installed — gets the full double layer.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

@@ -1,4 +1,5 @@
 """UC-05 — cumulative signal derivation and update_score action injection."""
+
 from __future__ import annotations
 
 from ai_core.conversation_service import _with_score_action

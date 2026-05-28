@@ -44,7 +44,7 @@ class WhatsAppStatusEvent:
       delivered  — landed on the recipient device
       read       — recipient opened the chat (only when read receipts enabled)
       failed     — terminal failure (we record the error but don't retry —
-                   the D360 client already retried 3× before raising)
+                   the D360 client already retried 3x before raising)
     """
 
     phone_number_id: str
