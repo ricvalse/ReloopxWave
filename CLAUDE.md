@@ -8,7 +8,7 @@ This is an **implemented two-toolchain monorepo**, not a design doc anymore. Fro
 
 `cd frontend` or `cd backend` to enter the right world — each has its own package manager, lockfile, and lint/test commands. A cross-cutting change (new FastAPI endpoint + UI that consumes it) ships as a single PR.
 
-**Current coverage:** 9 of 13 use cases (UC-01,02,03,06,07,08,10 + dashboard KPIs) work end-to-end; UC-04/05/09/11/12/13 are partial; the fine-tuning pipeline (weeks 9–10) is incomplete. The full gap analysis and the sequenced plan to reach 100% live in **`docs/completion-plan.md`** — read it before starting feature work, and update it as items land.
+**Current coverage:** all 13 use cases are implemented end-to-end on branch `feat/complete-use-cases` (the prior gaps in UC-04/05/09/11/12/13 and the fine-tuning pipeline were closed there). `docs/completion-plan.md` has the per-task status table and the verification notes — read it before starting feature work, and update it as items land. The caveats in "Deviations from the spec" below are the remaining sharp edges.
 
 ## Product shape (one paragraph)
 
@@ -56,10 +56,10 @@ The **UC → component map is `reloop-ai-architettura.md` section 10** (lines ~6
 ## Deviations from the spec (know these before editing)
 
 - **WhatsApp uses 360dialog, not Meta Cloud API direct.** `integrations/whatsapp/d360_client.py` + `factory.py` + a `integrations/router/` BSP layer, with 360dialog Coexistence (mirrors phone-app messages). The spec still says "Meta BSP diretto" — treat 360dialog as the production reality.
-- **Prompt Manager is missing.** `prompt_templates` table exists but is never read; the orchestrator ignores `variant_id`. As a result **A/B variants currently run the identical prompt** (UC-09 measures but can't differentiate). Highest-leverage fix (completion plan 1.1).
-- **No Sentiment Analyzer** despite `lead.sentiment` column and a dead `purpose="sentiment"` router branch (UC-04, plan 1.3).
-- **Dashboard Realtime is dead**: `analytics_events` is not in the `supabase_realtime` publication (only `messages`/`conversations`/notes are), so the dashboard subscriptions receive nothing (plan 1.5).
-- **PostHog is wired** (`main.py:46`); Sentry and log aggregation (Logtail/Grafana) from spec 13.5 are not yet.
+- **Sentry + PostHog are both wired** in `shared.observability` (`init_sentry`/`init_posthog`, called from `main.py` and the worker startup). Log aggregation is structlog → Railway logs.
+- The 13-UC completion work landed on branch `feat/complete-use-cases` (see `docs/completion-plan.md` for the per-task status table). Net effect on what used to be gaps: A/B variants now run distinct prompts via `PromptManager` + `prompt_templates`; `SentimentAnalyzer` populates `lead.sentiment`; scoring is always-on/cumulative; `analytics_events` is published to Realtime (migration 0013); objection extraction auto-fires via the `close_idle_conversations` cron; the fine-tuning pipeline is chained end-to-end (`fine_tune_run`) with presidio NER + a real evaluator + FT routing via `FtModelResolver`.
+- **Still partial:** unit coverage for DB-bound UCs (04/06/08/10/11/12/13) leans on the CI integration tests; the admin **templates** editor (UC-10) is still a JSON textarea (the merchant `bot-config-panel.tsx` has the full Inherited/Customized/Locked UI); FT pipeline + presidio + live conversation flow are only partially verifiable without external services (OpenAI FT, spaCy model, Supabase/Redis/360dialog).
+- **Pre-existing CI debt (not from this work):** `ruff format --check .` and `mypy .` are red on `main` from older files; new code on the branch is `ruff check`-clean, formatted, and mypy-clean in production modules. Don't mass-reformat the 75 legacy files as a side effect of an unrelated change.
 
 ## Security invariants (don't regress these)
 

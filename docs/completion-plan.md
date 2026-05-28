@@ -7,6 +7,33 @@
 
 ---
 
+## Stato di implementazione — branch `feat/complete-use-cases` (2026-05-28)
+
+Tutto il piano è stato implementato su questo branch. Riepilogo:
+
+| Task | Stato | Note |
+|------|-------|------|
+| 1.1 Prompt Manager + variant-aware | ✅ | `PromptManager`/`PromptRepository`; A/B autora i prompt per variante |
+| 1.2 Action-steering prompt | ✅ | schema hint con regole + payload per ogni azione |
+| 1.3 Sentiment Analyzer | ✅ | `SentimentAnalyzer` (gpt-5-nano), persiste `lead.sentiment` |
+| 1.4 Scoring always-on cumulativo | ✅ | `derive_conversation_signals` + iniezione `update_score` |
+| 1.5 Realtime dashboard | ✅ | migr. 0013 pubblica `analytics_events` + refetch 30s |
+| 1.6 Auto-trigger obiezioni + heatmap | ✅ | cron `close_idle_conversations` + `ObjectionHeatmap` |
+| 2.1 Orchestrazione FT | ✅ | `fine_tune_run` concatena la catena; router `/fine-tuning` + UI admin |
+| 2.2 presidio NER | ✅ | dipendenza + transform con degradazione regex-only |
+| 2.3 quality_filter | ✅ | `workers/fine_tuning/quality.py` |
+| 2.4 evaluator reale | ✅ | held-out vs baseline con gate pass-margin |
+| 2.5 FT routing + A/B rollout | ✅ | `FtModelResolver` variant-aware; deploy crea esperimento |
+| 3.1 test + CI | ✅ (parziale) | +26 unit test; isolation RLS già in CI; OpenAPI types rigenerati |
+| 3.2 testi config + media | ✅ | override testi reminder/riattivazione; placeholder media |
+| 3.3 UI config tre stati | ✅ (già presente) | `bot-config-panel.tsx` già implementa Inherited/Customized/Locked |
+| 3.4 observability | ✅ (già presente) | Sentry+PostHog già in `shared.observability`; structlog→Railway |
+| 3.5 pulizia | ✅ | route morte rimosse, job-id reindex, lint `ruff check` verde |
+
+**Verifica:** 100 unit test verdi, `ruff check .` pulito, frontend typecheck+lint verdi, app/worker importano (17 job, 5 cron). **Non verificabile localmente** (richiede servizi esterni): chiamate OpenAI FT, modello spaCy presidio, flusso conversazione live su Supabase/Redis/360dialog. **Residuo 3.1:** test per UC DB-bound (04/06/08/10/11/12/13) demandati ai test di integrazione (l'infra CI con Postgres c'è già).
+
+---
+
 ## Stato attuale (sintesi audit)
 
 | UC | Nome | Stato | Gap principale |
