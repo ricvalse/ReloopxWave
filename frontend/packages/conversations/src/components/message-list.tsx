@@ -104,7 +104,10 @@ export function MessageList({ messages, isLoading, onRetry }: MessageListProps) 
       ref={scrollRef}
       className={cn('h-full overflow-y-auto pb-4', CHAT_SURFACE_BG)}
     >
-      <div className="mx-auto max-w-3xl py-2">
+      {/* No outer max-width: let messages span the chat panel like WhatsApp Web.
+          Bubbles cap their own width (see message-bubble.tsx) so lines stay
+          readable even on very wide screens. */}
+      <div className="py-2">
         {items.map((item) =>
           item.kind === 'separator' ? (
             <DaySeparator key={item.key} iso={item.iso} />

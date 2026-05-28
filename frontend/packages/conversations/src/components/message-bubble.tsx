@@ -41,7 +41,11 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
     >
       <div
         className={cn(
-          'relative max-w-[85%] rounded-2xl px-2.5 pb-1.5 pt-1.5 text-sm shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] sm:max-w-[68%]',
+          // Width caps:
+          //  - mobile: up to 85% of the row width
+          //  - ≥sm: 72% of row width, hard-capped at 560px so long messages stay
+          //    readable when the chat panel is very wide.
+          'relative max-w-[85%] rounded-2xl px-2.5 pb-1.5 pt-1.5 text-sm shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] sm:max-w-[min(72%,560px)]',
           isOut
             ? cn(
                 // Outbound: WhatsApp green, white text. Tail only on group leader.
