@@ -17,11 +17,14 @@ class ConfigKey(StrEnum):
     NO_ANSWER_FIRST_REMINDER_MIN = "no_answer.first_reminder_min"
     NO_ANSWER_SECOND_REMINDER_MIN = "no_answer.second_reminder_min"
     NO_ANSWER_MAX_FOLLOWUPS = "no_answer.max_followups"
+    NO_ANSWER_FIRST_REMINDER_TEXT = "no_answer.first_reminder_text"
+    NO_ANSWER_SECOND_REMINDER_TEXT = "no_answer.second_reminder_text"
 
     # UC-06 Reactivation
     REACTIVATION_DORMANT_DAYS = "reactivation.dormant_days"
     REACTIVATION_INTERVAL_DAYS = "reactivation.interval_days"
     REACTIVATION_MAX_ATTEMPTS = "reactivation.max_attempts"
+    REACTIVATION_MESSAGE = "reactivation.message"
 
     # UC-04 Pipeline
     PIPELINE_ADVANCE_THRESHOLD = "pipeline.advance_threshold"
@@ -89,9 +92,12 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
     ConfigKey.NO_ANSWER_SECOND_REMINDER_MIN: 1440,
     ConfigKey.NO_ANSWER_MAX_FOLLOWUPS: 2,
+    ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT: None,
+    ConfigKey.NO_ANSWER_SECOND_REMINDER_TEXT: None,
     ConfigKey.REACTIVATION_DORMANT_DAYS: 90,
     ConfigKey.REACTIVATION_INTERVAL_DAYS: 7,
     ConfigKey.REACTIVATION_MAX_ATTEMPTS: 3,
+    ConfigKey.REACTIVATION_MESSAGE: None,
     ConfigKey.PIPELINE_ADVANCE_THRESHOLD: 60,
     ConfigKey.PIPELINE_DEFAULT_PIPELINE_ID: None,
     ConfigKey.PIPELINE_NEW_STAGE_ID: None,
@@ -147,12 +153,18 @@ class NoAnswerConfig(BaseModel):
     first_reminder_min: int = Field(120, ge=30, le=480)
     second_reminder_min: int = Field(1440, ge=720, le=2880)
     max_followups: int = Field(2, ge=1, le=4)
+    # Optional text overrides; None falls back to the worker's built-in copy.
+    first_reminder_text: str | None = Field(default=None, max_length=1000)
+    second_reminder_text: str | None = Field(default=None, max_length=1000)
 
 
 class ReactivationConfig(BaseModel):
     dormant_days: int = Field(90, ge=30, le=180)
     interval_days: int = Field(7, ge=3, le=30)
     max_attempts: int = Field(3, ge=1, le=5)
+    # Single message used for every reactivation attempt when set; None falls
+    # back to the worker's built-in per-attempt copy.
+    message: str | None = Field(default=None, max_length=1000)
 
 
 class PipelineConfig(BaseModel):

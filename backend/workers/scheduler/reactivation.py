@@ -129,7 +129,14 @@ async def _maybe_send(
             )
             return False
 
-        text = REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
+        override = await config.resolve(
+            ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id
+        )
+        text = (
+            override
+            if isinstance(override, str) and override.strip()
+            else REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
+        )
 
         client = build_whatsapp_sender(
             phone_number_id=wa.phone_number_id,

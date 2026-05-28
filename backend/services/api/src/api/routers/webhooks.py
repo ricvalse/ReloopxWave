@@ -34,6 +34,20 @@ from shared import get_logger, get_settings
 router = APIRouter()
 logger = get_logger(__name__)
 
+# Non-text inbound: instead of dropping it silently (the customer would get no
+# reply at all), synthesize a short placeholder so the bot can respond
+# gracefully ("ricevo solo messaggi di testo, puoi descrivermi…"). V1 does not
+# transcribe/OCR media — this just avoids a dead end.
+_MEDIA_PLACEHOLDER = {
+    "image": "[Il cliente ha inviato un'immagine]",
+    "audio": "[Il cliente ha inviato un messaggio vocale]",
+    "video": "[Il cliente ha inviato un video]",
+    "document": "[Il cliente ha inviato un documento]",
+    "location": "[Il cliente ha condiviso una posizione]",
+    "sticker": "[Il cliente ha inviato uno sticker]",
+    "contacts": "[Il cliente ha inviato un contatto]",
+}
+
 
 @router.post("/whatsapp")
 async def whatsapp_inbound(
@@ -76,13 +90,18 @@ async def whatsapp_inbound(
     events = parse_inbound_payload(payload)
     enqueued_msgs = 0
     for ev in events:
-        if ev.text is None or not ev.phone_number_id:
+        if not ev.phone_number_id or not ev.message_id:
             continue
+        # Text-bearing turns go straight to the orchestrator; media turns get a
+        # synthesized placeholder so the customer still gets a graceful reply.
+        text = ev.text if ev.text is not None else _MEDIA_PLACEHOLDER.get(ev.kind)
+        if text is None:
+            continue  # unknown/empty event with no text and no known media kind
         await arq.enqueue_job(
             "handle_inbound_message",
             ev.phone_number_id,
             ev.from_phone,
-            ev.text,
+            text,
             ev.message_id,
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )

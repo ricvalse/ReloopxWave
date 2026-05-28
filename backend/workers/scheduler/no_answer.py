@@ -110,7 +110,17 @@ async def _maybe_send_reminder(
             logger.info("uc03.no_wa_integration", conversation_id=str(cand.conversation_id))
             return False
 
-        text = REMINDER_TEXTS.get(next_attempt, REMINDER_TEXTS[max(REMINDER_TEXTS)])
+        text_key = (
+            ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT
+            if next_attempt == 1
+            else ConfigKey.NO_ANSWER_SECOND_REMINDER_TEXT
+        )
+        override = await config.resolve(text_key, merchant_id=cand.merchant_id)
+        text = (
+            override
+            if isinstance(override, str) and override.strip()
+            else REMINDER_TEXTS.get(next_attempt, REMINDER_TEXTS[max(REMINDER_TEXTS)])
+        )
 
         # Send first, then persist — if the provider fails, we'd rather retry
         # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
