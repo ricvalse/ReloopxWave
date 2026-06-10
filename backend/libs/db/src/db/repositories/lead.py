@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, cast, func, select, text
+from sqlalchemy import DateTime, Integer, String, cast, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +64,47 @@ class LeadRepository:
             return
         lead.sentiment = sentiment
 
+    async def anonymize_stale(
+        self, *, merchant_id: UUID, cutoff: datetime, limit: int = 2000
+    ) -> int:
+        """GDPR retention at the lead level: strip PII from leads past the
+        retention cutoff that have NO remaining conversations (their conversation
+        content was already purged by the retention sweep, or they never
+        engaged). Leads with a surviving — i.e. recent, kept — conversation are
+        left untouched. Already-erased leads are skipped (idempotent).
+
+        `phone` is NOT NULL + uniquely constrained per merchant, so it's set to a
+        per-id tombstone rather than nulled; name/email/CRM id/sentiment are
+        cleared and status flips to `erased`. Returns the number anonymized.
+        """
+        has_conversation = select(Conversation.id).where(Conversation.lead_id == Lead.id).exists()
+        sub = (
+            select(Lead.id)
+            .where(
+                Lead.merchant_id == merchant_id,
+                Lead.created_at < cutoff,
+                Lead.status != "erased",
+                ~has_conversation,
+            )
+            .limit(limit)
+        )
+        ids = list((await self._session.execute(sub)).scalars().all())
+        if not ids:
+            return 0
+        await self._session.execute(
+            update(Lead)
+            .where(Lead.id.in_(ids))
+            .values(
+                name=None,
+                email=None,
+                ghl_contact_id=None,
+                sentiment=None,
+                status="erased",
+                phone=func.concat("erased:", cast(Lead.id, String)),
+            )
+        )
+        return len(ids)
+
     async def list_reactivation_candidates(
         self,
         *,
@@ -89,12 +130,12 @@ class LeadRepository:
             .subquery()
         )
 
-        attempts_expr = cast(
-            func.coalesce(Lead.meta["reactivation_attempts"].astext, "0"), Integer
-        )
+        attempts_expr = cast(func.coalesce(Lead.meta["reactivation_attempts"].astext, "0"), Integer)
         last_attempt_raw = Lead.meta["last_reactivation_at"].astext
 
-        last_attempt_ts = cast(last_attempt_raw, DateTime(timezone=True)).label("last_reactivation_at")
+        last_attempt_ts = cast(last_attempt_raw, DateTime(timezone=True)).label(
+            "last_reactivation_at"
+        )
 
         stmt = (
             select(

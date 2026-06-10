@@ -31,12 +31,12 @@ export function ConversationsRoute({ selectedId }: ConversationsRouteProps) {
         '/bot-config/{merchant_id}/resolved' as never,
         { params: { path: { merchant_id: merchantId } } } as never,
       );
-      if (error) return true; // fail-open: assume enabled if we can't read
+      if (error) return false; // fail-closed: assume disabled if we can't read
       const resolved = data as { bot?: { auto_reply_enabled?: boolean } };
-      return resolved.bot?.auto_reply_enabled ?? true;
+      return resolved.bot?.auto_reply_enabled ?? false;
     },
   });
-  const merchantAutoReplyEnabled = botConfig.data ?? true;
+  const merchantAutoReplyEnabled = botConfig.data ?? false;
 
   const handleSelect = (id: string | null) => {
     if (id) {

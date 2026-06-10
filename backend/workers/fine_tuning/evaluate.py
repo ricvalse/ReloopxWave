@@ -27,7 +27,6 @@ from shared import IntegrationError, get_logger, get_settings
 
 logger = get_logger(__name__)
 
-BASELINE_MODEL = "gpt-5-mini"
 MAX_SAMPLES = 50
 DEFAULT_PASS_MARGIN = 0.05  # FT may trail baseline by at most this and still pass.
 
@@ -135,7 +134,7 @@ async def evaluate_model(
         }
         passed = False
     else:
-        baseline = OpenAIClient(api_key=settings.openai_api_key, model=BASELINE_MODEL)
+        baseline = OpenAIClient(api_key=settings.openai_api_key, model=settings.llm_model_default)
         ft = OpenAIClient(api_key=settings.openai_api_key, model=provider_model_id)
         baseline_score = await score_model(baseline, prompts)
         ft_score = await score_model(ft, prompts)
@@ -143,7 +142,7 @@ async def evaluate_model(
         metrics = {
             "method": "heldout_v1",
             "samples": len(prompts),
-            "baseline_model": BASELINE_MODEL,
+            "baseline_model": settings.llm_model_default,
             "baseline_score": round(baseline_score, 4),
             "ft_score": round(ft_score, 4),
             "pass_margin": pass_margin,

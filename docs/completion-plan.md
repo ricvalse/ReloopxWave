@@ -34,6 +34,59 @@ Tutto il piano è stato implementato su questo branch. Riepilogo:
 
 ---
 
+## Addendum — hardening agente + booking (2026-06-08)
+
+Chiusura dei tool dell'AI agent e robustezza del booking via messaggio. Tutto verificato a unit (**108 test verdi**, da 100), `ruff check` pulito sui file toccati, frontend typecheck verde, smoke-import worker+API OK.
+
+| Item | Stato | Dettaglio |
+|------|-------|-----------|
+| Tool `escalate_human` | ✅ | Era definito in `orchestrator.py` ma **senza handler** (no-op). Aggiunto `actions/escalate.py` (`EscalateHumanHandler`): rispetta `escalation.enabled`, fa takeover umano (`conversation.auto_reply=False` via `ConversationRepository.mark_escalated`), stampa `meta.escalated`/reason ed emette `conversation.escalated`. Registrato in `workers/runtime.py`. → l'agente ha ora **tutti** i 5 tool funzionanti. |
+| `move_pipeline` standalone | ✅ | Prima falliva (`opportunity_required`) se non c'era stato un `book_slot`. Ora `actions/pipeline.py` **crea l'opportunity nello stage target** quando manca (pipeline+location dai config). |
+| Persistenza refresh token GHL | ✅ | `GHLClient._refresh_token` aggiornava i token solo in memoria → dopo la rotazione del refresh token il booking si rompeva. Aggiunto callback `on_token_refresh`; booking/pipeline lo agganciano a `IntegrationRepository.upsert_ghl`. Corretto anche il calcolo `expires_at` (da `expires_in`). |
+| Timezone booking | ✅ | `_parse_iso` interpretava gli orari naïve dell'LLM come **UTC**; ora usa `schedule.timezone` del merchant (default Europe/Rome) → il lead prenota all'ora locale corretta. |
+| Endpoint conversations | ✅ | `routers/conversations.py` `list_conversations`/`get_conversation` lanciavano `NotImplementedError` (500 latente). Implementati come read RLS-protette mantenendo le firme → nessun drift OpenAPI. |
+| Default auto-reply OFF | ✅ | Kill-switch `bot.auto_reply_enabled` ora parte spento (scelta di prodotto, toggle in `bot-config-panel.tsx`). Allineati i 2 unit test UC-01 che assumevano il default ON. |
+
+**Nuovi test:** `test_escalate.py` (2), `test_uc04_pipeline.py` (3), `test_ghl_client.py` (2), `test_uc02_booking.py` +1 (timezone).
+
+### Go-live audit — blocker confermati e risolti (2026-06-08)
+
+Audit multi-agente di production-readiness (12 dimensioni, verifica avversariale di ogni blocker). 15 blocker grezzi → **2 confermati** (entrambi bug di codice sul percorso core, ora risolti) + 13 declassati (ops/config). **112 unit test verdi**, `ruff check`/`ruff format` puliti sui file toccati, frontend typecheck verde, OpenAPI client rigenerato (offline mode).
+
+| Blocker confermato | Fix |
+|--------------------|-----|
+| GHL `upsert_contact` chiamava `POST /contacts/` (create) **senza `locationId`** → ogni contatto/booking/pipeline-move 400 | `client.py`: ora `POST /contacts/upsert` con `locationId` iniettato dal token bundle. Corretti anche `create_booking` (aggiunge `locationId`) e `get_free_slots` (param **epoch-ms** invece di ISO + parsing della response per-data). |
+| Callback OAuth GHL usava `DBSession` tenant-scoped → JWT forzato su un redirect browser senza auth → **403 per ogni merchant** che collega il CRM | `integrations.py`: callback ora su `session_scope()` service-role (identità dal `state` firmato, non da RLS). Lo schema OpenAPI rigenerato conferma la rimozione del param `Authorization`. |
+
+**Nuovi test:** `test_ghl_client.py` +3 (upsert endpoint+locationId, booking locationId, free-slots epoch-ms+flatten), `test_integrations_oauth.py` (1, callback senza JWT). Restano i 13 declassati (vedi risposta go-live: hook Supabase da abilitare, segreti prod, app GHL/360dialog, job retention, DSAR, modello spaCy nel worker image, debito CI format/mypy).
+
+### Block B — hardening produzione + review avversariale (2026-06-10)
+
+Chiusi i 6 item di codice "block B" del go-live, poi un workflow di review avversariale (4 dimensioni) ha trovato **1 blocker** (subito risolto) + warning (chiusi). **131 unit test verdi**, ruff/format puliti, mypy nuovo-codice clean, frontend typecheck verde, client OpenAPI rigenerato (DSAR + default auto_reply).
+
+| Item | Stato | Dettaglio |
+|------|-------|-----------|
+| Model-id via env | ✅ | `settings.llm_model_{default,escalation,sentiment,fallback,embedding}` usati in `router.py`/`runtime.py`/`main.py` + i due call-site residui (`objections.py`, `evaluate.py`) — niente più ID hardcoded. |
+| Fail-fast settings | ✅ | `Settings.ensure_production_ready()` (segreti core + db/redis non-localhost) chiamato allo startup API e worker; warning per integrazioni opzionali. |
+| spaCy + presidio require | ✅ | `worker.Dockerfile` scarica `it_core_news_lg`; `build_presidio_transform(require=…)` → in produzione l'export FT fallisce se manca la NER invece di degradare. |
+| Retention GDPR | ✅ | `workers/scheduler/retention.py` (cron 03:30) + `ConversationRepository.delete_older_than`/`merchants_with_conversations_before`; floor di sicurezza sui mesi, drain a batch con commit, budget per-run. |
+| Rate-limit + TrustedHost | ✅ | `RateLimitMiddleware` (Redis fixed-window, fail-open) solo sul callback OAuth (no webhook da IP BSP condiviso); `TrustedHostMiddleware` opt-in via `ALLOWED_HOSTS`. |
+| DSAR | ✅ | `routers/dsar.py` export + erase (hard-delete conversazioni, strip PII), ristretto ai ruoli `agency_admin`/`merchant_admin`. |
+| **Blocker review** | ✅ | Rotazione refresh-token GHL: `_persist_tokens` scriveva nella transazione dell'handler (rollback su errore successivo → token perso). Ora persiste in una `session_scope()` propria e committata. |
+
+**Nuovi test (block B):** `test_settings_validation.py`, `test_presidio_require.py`, `test_ratelimit.py`, `test_retention.py` (incl. floor-clamp + drain multi-batch), `test_dsar.py`.
+
+### Block B — follow-up di codice (2026-06-10)
+
+Chiusi i due follow-up rimasti. **132 unit test verdi**, ruff/format puliti, mypy nuovo-codice clean.
+
+- **Retention a livello lead:** `LeadRepository.anonymize_stale` (strip PII dei lead oltre il cutoff **senza conversazioni residue**; phone→tombstone, status `erased`, idempotente) integrato nel cron `enforce_retention` dopo il purge conversazioni. Il return/analytics ora riportano `leads_anonymized`.
+- **`delete_merchant` ordering:** ora DELETE+commit del DB **prima**, poi rimozione auth Supabase **best-effort** (niente più 500 a metà loop con merchant mezzo-cancellato; i fallimenti si loggano per riconciliazione, conteggiati in `auth_user_failures`).
+
+**Restano (non-codice o decisione):** gate ops di go-live (hook Supabase, segreti prod, app GHL, router 360dialog, provisioning Railway), TrustedHost/`/health` (solo doc), e il debito CI legacy `ruff format`/`mypy` (PR dedicata, no mass-reformat opportunistico).
+
+---
+
 ## Stato attuale (sintesi audit)
 
 | UC | Nome | Stato | Gap principale |

@@ -21,8 +21,16 @@ from sqlalchemy.exc import IntegrityError
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
-from db import MerchantRepository
-from shared import ConflictError, NotFoundError, PermissionDeniedError, get_logger
+from db import MerchantRepository, UserRepository
+from integrations import SupabaseAdminClient
+from shared import (
+    ConflictError,
+    IntegrationError,
+    NotFoundError,
+    PermissionDeniedError,
+    get_logger,
+    get_settings,
+)
 
 logger = get_logger(__name__)
 
@@ -146,11 +154,22 @@ async def resume_merchant(
     status_code=204,
     dependencies=[Depends(require_role("agency_admin"))],
 )
-async def delete_merchant(
-    merchant_id: UUID, ctx: CurrentContext, session: DBSession
-) -> None:
+async def delete_merchant(merchant_id: UUID, ctx: CurrentContext, session: DBSession) -> None:
     """Hard-delete a merchant. FK cascades wipe all dependent rows
     (leads, conversations, KB, bot config, integrations, analytics).
+
+    Also removes the merchant's auth.users entries from Supabase Auth so the
+    credentials stop working — agency_admin accounts (merchant_id=NULL) are
+    left untouched. Read the user list from public.users *before* the DELETE,
+    because the FK CASCADE wipes the mirror in the same transaction.
+
+    Ordering: the DB is the source of truth, so we DELETE + commit first, then
+    best-effort-remove the auth users. A partial auth-cleanup failure therefore
+    can't leave a half-deleted merchant (the old order deleted some auth users
+    then 500'd with the merchant row still present). An orphaned auth.users row
+    is inert — its public.users mirror is gone, so it can no longer resolve a
+    tenant/merchant context — and is logged for reconciliation.
+
     Destructive — UI must require explicit confirmation.
     """
     repo = MerchantRepository(session)
@@ -158,13 +177,60 @@ async def delete_merchant(
     if existing is None:
         raise NotFoundError("Merchant not found", merchant_id=str(merchant_id))
     _assert_merchant_scope(ctx, existing)
+
+    # Capture auth targets BEFORE the delete cascades the public.users mirror.
+    user_repo = UserRepository(session)
+    scoped_users = await user_repo.list_for_scope(tenant_id=ctx.tenant_id, merchant_id=merchant_id)
+    auth_targets = [(u.id, u.email) for u in scoped_users if u.merchant_id == merchant_id]
+
+    # Delete and commit first — make the DB state durable before touching Auth.
     await repo.delete(merchant_id)
+    await session.commit()
+
+    settings = get_settings()
+    admin = SupabaseAdminClient(
+        supabase_url=settings.supabase_url,
+        service_role_key=settings.supabase_service_role_key,
+    )
+    removed = 0
+    failures = 0
+    try:
+        for user_id, email in auth_targets:
+            try:
+                deleted = await admin.delete_user(user_id=user_id)
+            except IntegrationError as e:
+                failures += 1
+                logger.error(
+                    "merchant.delete.auth_user_failed",
+                    actor_id=str(ctx.actor_id),
+                    tenant_id=str(ctx.tenant_id),
+                    merchant_id=str(merchant_id),
+                    user_id=str(user_id),
+                    email=email,
+                    error_code=e.error_code,
+                )
+                continue  # best-effort: merchant is already gone, reconcile later
+            removed += 1
+            logger.info(
+                "merchant.delete.auth_user_removed",
+                actor_id=str(ctx.actor_id),
+                tenant_id=str(ctx.tenant_id),
+                merchant_id=str(merchant_id),
+                user_id=str(user_id),
+                email=email,
+                already_gone=not deleted,
+            )
+    finally:
+        await admin.close()
+
     logger.info(
         "merchant.deleted",
         actor_id=str(ctx.actor_id),
         tenant_id=str(ctx.tenant_id),
         merchant_id=str(merchant_id),
         merchant_slug=existing.slug,
+        auth_users_removed=removed,
+        auth_user_failures=failures,
     )
 
 

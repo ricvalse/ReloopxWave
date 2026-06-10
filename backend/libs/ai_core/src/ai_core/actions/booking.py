@@ -12,11 +12,13 @@ booking intent. This handler:
 Failures here do not block the main reply — the lead has already received a
 text from the orchestrator. Booking confirmation is a separate WhatsApp message.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
@@ -25,6 +27,7 @@ from db import (
     IntegrationRepository,
     LeadRepository,
     TenantContext,
+    session_scope,
     tenant_session,
 )
 from integrations.ghl.client import GHLClient, GHLTokenBundle
@@ -86,11 +89,8 @@ class BookSlotHandler:
                 logger.warning("book_slot.no_ghl", merchant_id=str(turn_ctx.merchant_id))
                 outcome = BookingOutcome(False, None, None, [], "no_ghl_integration")
             else:
-                calendar_id = (
-                    action.payload.get("calendar_id")
-                    or await config.resolve(
-                        ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
-                    )
+                calendar_id = action.payload.get("calendar_id") or await config.resolve(
+                    ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
                 )
                 if not calendar_id:
                     outcome = BookingOutcome(False, None, None, [], "no_calendar_configured")
@@ -111,6 +111,27 @@ class BookSlotHandler:
                         ConfigKey.PIPELINE_NEW_STAGE_ID,
                         merchant_id=turn_ctx.merchant_id,
                     )
+                    tz_name = await config.resolve(
+                        ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
+                    )
+
+                    async def _persist_tokens(bundle: GHLTokenBundle) -> None:
+                        # Persist the rotated bundle in its OWN committed
+                        # transaction. The handler's `session` rolls back if a
+                        # later GHL call raises — but GHL has already invalidated
+                        # the old refresh token, so the new one must survive that
+                        # rollback or the integration breaks permanently.
+                        async with session_scope() as token_session:
+                            await IntegrationRepository(
+                                token_session, kek_base64=self._kek
+                            ).upsert_ghl(
+                                merchant_id=turn_ctx.merchant_id,
+                                access_token=bundle.access_token,
+                                refresh_token=bundle.refresh_token,
+                                expires_at=bundle.expires_at,
+                                location_id=bundle.location_id,
+                            )
+
                     outcome = await self._try_book(
                         ghl=ghl,
                         calendar_id=calendar_id,
@@ -120,6 +141,8 @@ class BookSlotHandler:
                         preferred_start_iso=action.payload.get("preferred_start_iso"),
                         pipeline_id=str(pipeline_id) if pipeline_id else None,
                         new_stage_id=str(new_stage_id) if new_stage_id else None,
+                        tz_name=str(tz_name) if tz_name else "Europe/Rome",
+                        on_token_refresh=_persist_tokens,
                     )
 
             if outcome and outcome.booked and outcome.booking_id:
@@ -166,6 +189,8 @@ class BookSlotHandler:
         preferred_start_iso: str | None,
         pipeline_id: str | None,
         new_stage_id: str | None,
+        tz_name: str = "Europe/Rome",
+        on_token_refresh=None,
     ) -> BookingOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(
@@ -176,6 +201,7 @@ class BookSlotHandler:
             ),
             client_id=self._client_id,
             client_secret=self._client_secret,
+            on_token_refresh=on_token_refresh,
         )
         try:
             contact = await client.upsert_contact(
@@ -199,7 +225,8 @@ class BookSlotHandler:
                 new_stage_id=new_stage_id,
             )
 
-            slot_start = _parse_iso(preferred_start_iso) or _next_business_hour()
+            tz = _resolve_tz(tz_name)
+            slot_start = _parse_iso(preferred_start_iso, tz) or _next_business_hour(tz)
             slot_end = slot_start + timedelta(minutes=duration_min)
 
             try:
@@ -271,11 +298,7 @@ class BookSlotHandler:
                     opp_id = opp.get("id")
                     if isinstance(opp_id, str):
                         return opp_id
-            name = (
-                contact_fields.get("name")
-                or contact_fields.get("first_name")
-                or "Lead WhatsApp"
-            )
+            name = contact_fields.get("name") or contact_fields.get("first_name") or "Lead WhatsApp"
             created = await client.create_opportunity(
                 pipeline_id=pipeline_id,
                 stage_id=new_stage_id,
@@ -319,7 +342,21 @@ class BookSlotHandler:
 
 # ---- helpers --------------------------------------------------------------
 
-def _parse_iso(s: str | None) -> datetime | None:
+
+def _resolve_tz(tz_name: str) -> tzinfo:
+    """Merchant's local timezone, falling back to UTC for an unknown name."""
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return UTC
+
+
+def _parse_iso(s: str | None, tz: tzinfo = UTC) -> datetime | None:
+    """Parse an ISO datetime. A naïve value (no offset — what the LLM usually
+    emits) is interpreted in the merchant's local timezone `tz`, NOT UTC: the
+    lead means "15:00" their time, so booking it as 15:00 UTC would land the
+    appointment hours off. Values that already carry an offset are respected.
+    """
     if not s:
         return None
     try:
@@ -327,13 +364,14 @@ def _parse_iso(s: str | None) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+        dt = dt.replace(tzinfo=tz)
     return dt
 
 
-def _next_business_hour() -> datetime:
-    """Fallback: same-day next full hour during business hours, or 9:00 tomorrow."""
-    now = datetime.now(tz=UTC)
+def _next_business_hour(tz: tzinfo = UTC) -> datetime:
+    """Fallback: same-day next full hour during business hours, or 9:00 tomorrow,
+    all in the merchant's local timezone."""
+    now = datetime.now(tz=tz)
     candidate = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     if candidate.hour < 9:
         candidate = candidate.replace(hour=9)

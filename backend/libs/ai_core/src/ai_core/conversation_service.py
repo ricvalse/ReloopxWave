@@ -229,7 +229,7 @@ class ConversationService:
 
             # Auto-reply gate: AND of merchant master + per-thread takeover.
             merchant_auto_reply = await self._resolve_bool(
-                session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=True
+                session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=False
             )
             auto_reply_on = bool(merchant_auto_reply and conv.auto_reply)
 

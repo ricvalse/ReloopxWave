@@ -16,6 +16,7 @@ Side effects:
   - Persist `lead.pipeline_stage_id`.
   - Emit `pipeline.moved` or `pipeline.failed` analytics.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from db import (
     IntegrationRepository,
     LeadRepository,
     TenantContext,
+    session_scope,
     tenant_session,
 )
 from integrations.ghl.client import GHLClient, GHLTokenBundle
@@ -104,6 +106,23 @@ class MovePipelineHandler:
                             merchant_id=turn_ctx.merchant_id,
                         )
                     )
+
+                    async def _persist_tokens(bundle: GHLTokenBundle) -> None:
+                        # Own committed transaction — see booking.py: a later GHL
+                        # error rolls back the handler session, but the rotated
+                        # refresh token must survive (GHL already invalidated the
+                        # old one).
+                        async with session_scope() as token_session:
+                            await IntegrationRepository(
+                                token_session, kek_base64=self._kek
+                            ).upsert_ghl(
+                                merchant_id=turn_ctx.merchant_id,
+                                access_token=bundle.access_token,
+                                refresh_token=bundle.refresh_token,
+                                expires_at=bundle.expires_at,
+                                location_id=bundle.location_id,
+                            )
+
                     outcome = await self._execute(
                         ghl=ghl,
                         stage_id=str(stage_id),
@@ -113,6 +132,7 @@ class MovePipelineHandler:
                         contact_fields=action.payload.get("contact_fields", {}),
                         value=action.payload.get("value"),
                         currency=action.payload.get("currency", "EUR"),
+                        on_token_refresh=_persist_tokens,
                     )
 
             if outcome.moved and outcome.stage_id:
@@ -122,7 +142,10 @@ class MovePipelineHandler:
                 if lead is not None:
                     lead.pipeline_stage_id = outcome.stage_id
                     if outcome.opportunity_id:
-                        lead.meta = {**(lead.meta or {}), "ghl_opportunity_id": outcome.opportunity_id}
+                        lead.meta = {
+                            **(lead.meta or {}),
+                            "ghl_opportunity_id": outcome.opportunity_id,
+                        }
 
             await analytics.emit(
                 tenant_id=turn_ctx.tenant_id,
@@ -150,6 +173,7 @@ class MovePipelineHandler:
         contact_fields: dict[str, Any],
         value: float | None,
         currency: str,
+        on_token_refresh=None,
     ) -> MoveOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(
@@ -160,6 +184,7 @@ class MovePipelineHandler:
             ),
             client_id=self._client_id,
             client_secret=self._client_secret,
+            on_token_refresh=on_token_refresh,
         )
         try:
             contact = await client.upsert_contact(
@@ -175,13 +200,33 @@ class MovePipelineHandler:
                 return MoveOutcome(False, None, None, "contact_upsert_failed")
 
             if opportunity_id is None:
-                # Without an opportunity id we can't know which pipeline the orchestrator
-                # is targeting — require it from the payload or the config.
-                if pipeline_id is None:
+                # No opportunity yet — the lead never went through book_slot (which
+                # stamps the opportunity on lead.meta). Create one directly in the
+                # target stage: creating it there *is* the move. Needs a pipeline
+                # and a location to anchor it.
+                if pipeline_id is None or not ghl.location_id:
                     return MoveOutcome(False, stage_id, None, "no_opportunity_or_pipeline")
-                return MoveOutcome(
-                    False, stage_id, None, "opportunity_required"
+                name = (
+                    contact_fields.get("name")
+                    or contact_fields.get("first_name")
+                    or "Lead WhatsApp"
                 )
+                try:
+                    created = await client.create_opportunity(
+                        pipeline_id=pipeline_id,
+                        stage_id=stage_id,
+                        contact_id=contact_id,
+                        location_id=ghl.location_id,
+                        name=str(name),
+                        monetary_value=value,
+                    )
+                except IntegrationError as e:
+                    logger.warning("move_pipeline.create_failed", error=str(e))
+                    return MoveOutcome(False, stage_id, None, "opportunity_create_failed")
+                created_id = created.get("id") or created.get("opportunity", {}).get("id")
+                if not isinstance(created_id, str):
+                    return MoveOutcome(False, stage_id, None, "opportunity_create_failed")
+                return MoveOutcome(True, stage_id, created_id, "created_in_stage")
 
             try:
                 await client.move_opportunity(

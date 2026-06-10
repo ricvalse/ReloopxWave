@@ -16,6 +16,7 @@ from workers.scheduler.integration_health import integration_health_check  # re-
 from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
 from workers.scheduler.reactivation import reactivate_dormant_leads  # re-export
+from workers.scheduler.retention import enforce_retention  # re-export
 
 logger = get_logger(__name__)
 
@@ -23,6 +24,7 @@ __all__ = [
     "build_analytics_export",
     "close_idle_conversations",
     "daily_kpi_rollup",
+    "enforce_retention",
     "followup_no_answer",
     "integration_health_check",
     "kb_reindex",

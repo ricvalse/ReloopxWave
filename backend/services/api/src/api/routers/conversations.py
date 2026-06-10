@@ -67,13 +67,56 @@ class ConversationNoteOut(BaseModel):
 
 @router.get("/")
 async def list_conversations(ctx: CurrentContext, session: DBSession) -> list[dict]:
-    """Kept for parity — frontend usually reads conversations directly via Supabase client."""
-    raise NotImplementedError("List conversations (prefer direct Supabase read)")
+    """Backend read fallback for conversation threads.
+
+    The frontend usually reads these directly via the Supabase client (spec
+    4.4), but a real backend path is useful for server-side callers and
+    non-Supabase clients. RLS on the request session already scopes the rows
+    to the caller's merchant (or to the whole tenant for an agency_admin); we
+    only order by recency and cap the page.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(Conversation)
+                .order_by(Conversation.last_message_at.desc().nullslast())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [_conv_to_dict(c) for c in rows]
 
 
 @router.get("/{conversation_id}")
 async def get_conversation(conversation_id: UUID, session: DBSession) -> dict:
-    raise NotImplementedError("Thread with messages")
+    """Return a single conversation with its messages (oldest first).
+
+    RLS scopes the lookup, so a missing row means not-found-or-not-yours and
+    we return 404 either way (never leak the existence of foreign threads).
+    """
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    messages = (
+        (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        **_conv_to_dict(conv),
+        "messages": [_to_out(m).model_dump(mode="json") for m in messages],
+    }
 
 
 @router.post("/{conversation_id}/messages", status_code=201, response_model=MessageOut)
@@ -208,6 +251,23 @@ async def update_note(
         cleared=conv.internal_note is None,
     )
     return ConversationNoteOut(id=conv.id, internal_note=conv.internal_note)
+
+
+def _conv_to_dict(c: Conversation) -> dict[str, Any]:
+    return {
+        "id": str(c.id),
+        "merchant_id": str(c.merchant_id),
+        "lead_id": str(c.lead_id) if c.lead_id else None,
+        "wa_contact_phone": c.wa_contact_phone,
+        "status": c.status,
+        "variant_id": c.variant_id,
+        "auto_reply": c.auto_reply,
+        "internal_note": c.internal_note,
+        "message_count": c.message_count,
+        "started_at": c.started_at.isoformat() if c.started_at else None,
+        "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+        "meta": dict(c.meta) if c.meta else None,
+    }
 
 
 def _to_out(m: Message) -> MessageOut:

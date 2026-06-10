@@ -206,6 +206,30 @@ class SupabaseAdminClient:
             )
         return InvitedUser(id=UUID(str(user_id)), email=email.lower())
 
+    async def delete_user(self, *, user_id: UUID) -> bool:
+        """Hard-delete a user from auth.users. Returns False if the user is
+        already gone (404), True on success. Any other failure raises.
+        """
+        url = f"{self._base}/auth/v1/admin/users/{user_id}"
+        try:
+            resp = await self._http.delete(url, headers=self._headers())
+        except httpx.HTTPError as e:
+            raise IntegrationError(
+                "Supabase delete_user transport failure",
+                error_code="supabase_delete_user_transport",
+                reason=str(e),
+            ) from e
+        if resp.status_code == 404:
+            return False
+        if resp.status_code >= 400:
+            raise IntegrationError(
+                "Supabase rejected user deletion",
+                error_code="supabase_delete_user_rejected",
+                status_code=resp.status_code,
+                body=resp.text[:500],
+            )
+        return True
+
     def _headers(self) -> dict[str, str]:
         return {
             "apikey": self._key,
