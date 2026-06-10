@@ -128,7 +128,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BUSINESS_WEBSITE: None,
     ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS: None,
     ConfigKey.BOT_FIRST_MESSAGE: None,
-    ConfigKey.BOT_AUTO_REPLY_ENABLED: True,
+    ConfigKey.BOT_AUTO_REPLY_ENABLED: False,
 }
 
 
@@ -202,7 +202,7 @@ class BotSurfaceConfig(BaseModel):
     first_message: str | None = Field(default=None, max_length=1000)
     # Master kill switch for auto-reply. AND-ed with `conversations.auto_reply`
     # at the worker. False = bot stays silent, agent must reply via composer.
-    auto_reply_enabled: bool = True
+    auto_reply_enabled: bool = False
 
 
 class BusinessConfig(BaseModel):

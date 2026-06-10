@@ -147,6 +147,12 @@ export interface paths {
          * Delete Merchant
          * @description Hard-delete a merchant. FK cascades wipe all dependent rows
          *     (leads, conversations, KB, bot config, integrations, analytics).
+         *
+         *     Also removes the merchant's auth.users entries from Supabase Auth so the
+         *     credentials stop working — agency_admin accounts (merchant_id=NULL) are
+         *     left untouched. Read the user list from public.users *before* the DELETE,
+         *     because the FK CASCADE wipes the mirror in the same transaction.
+         *
          *     Destructive — UI must require explicit confirmation.
          */
         delete: operations["delete_merchant_merchants__merchant_id__delete"];
@@ -344,7 +350,13 @@ export interface paths {
         };
         /**
          * List Conversations
-         * @description Kept for parity — frontend usually reads conversations directly via Supabase client.
+         * @description Backend read fallback for conversation threads.
+         *
+         *     The frontend usually reads these directly via the Supabase client (spec
+         *     4.4), but a real backend path is useful for server-side callers and
+         *     non-Supabase clients. RLS on the request session already scopes the rows
+         *     to the caller's merchant (or to the whole tenant for an agency_admin); we
+         *     only order by recency and cap the page.
          */
         get: operations["list_conversations_conversations__get"];
         put?: never;
@@ -362,7 +374,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Conversation */
+        /**
+         * Get Conversation
+         * @description Return a single conversation with its messages (oldest first).
+         *
+         *     RLS scopes the lookup, so a missing row means not-found-or-not-yours and
+         *     we return 404 either way (never leak the existence of foreign threads).
+         */
         get: operations["get_conversation_conversations__conversation_id__get"];
         put?: never;
         post?: never;
@@ -676,8 +694,13 @@ export interface paths {
         };
         /**
          * Ghl Oauth Callback
-         * @description Public callback — no JWT. The signed `state` is what ties the round-trip
-         *     back to a merchant, so it must validate before we touch any DB row.
+         * @description Public callback — no JWT. This is a browser redirect from GHL, so it
+         *     carries no Supabase Authorization header; the signed `state` is what ties
+         *     the round-trip back to a merchant. We therefore must NOT use the
+         *     tenant-scoped `DBSession` dependency (it runs JWT verification and would
+         *     403 every merchant). The state validates first, then we persist the
+         *     integration through an unscoped service-role session — the merchant
+         *     identity comes from the verified state, not from RLS.
          */
         get: operations["ghl_oauth_callback_integrations_ghl_oauth_callback_get"];
         put?: never;
@@ -754,6 +777,50 @@ export interface paths {
         get: operations["integration_status_integrations_status_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dsar/leads/{lead_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Lead
+         * @description Right of access — return the lead plus all conversations and messages.
+         */
+        get: operations["export_lead_dsar_leads__lead_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dsar/leads/{lead_id}/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Erase Lead
+         * @description Right to erasure — delete the lead's conversations and strip PII.
+         *
+         *     `leads.phone` is NOT NULL and uniquely constrained per merchant, so it's
+         *     replaced with a per-lead tombstone rather than nulled; name/email/CRM id are
+         *     cleared. Conversations are hard-deleted (messages cascade).
+         */
+        post: operations["erase_lead_dsar_leads__lead_id__erase_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -923,7 +990,7 @@ export interface components {
             first_message?: string | null;
             /**
              * Auto Reply Enabled
-             * @default true
+             * @default false
              */
             auto_reply_enabled: boolean;
         };
@@ -2997,9 +3064,7 @@ export interface operations {
                 code: string;
                 state: string;
             };
-            header?: {
-                authorization?: string | null;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3110,6 +3175,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_lead_dsar_leads__lead_id__export_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lead_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    erase_lead_dsar_leads__lead_id__erase_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                lead_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -3272,6 +3407,8 @@ export enum ApiPaths {
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
+    export_lead_dsar_leads__lead_id__export_get = "/dsar/leads/{lead_id}/export",
+    erase_lead_dsar_leads__lead_id__erase_post = "/dsar/leads/{lead_id}/erase",
     whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",
     ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}",
     whatsapp_connected_internal_whatsapp_connected_post = "/internal/whatsapp-connected"

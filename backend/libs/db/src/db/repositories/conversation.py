@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Integer, cast, func, select, text, update
+from sqlalchemy import Integer, cast, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, Merchant
@@ -135,9 +135,7 @@ class ConversationRepository:
             )
         return results
 
-    async def close_idle_active(
-        self, *, min_idle_minutes: int, limit: int = 500
-    ) -> list[UUID]:
+    async def close_idle_active(self, *, min_idle_minutes: int, limit: int = 500) -> list[UUID]:
         """Close active conversations with no activity for `min_idle_minutes`.
 
         There is no explicit 'conversation closed' event in the WhatsApp flow, so
@@ -164,11 +162,74 @@ class ConversationRepository:
         )
         if ids:
             await self._session.execute(
-                update(Conversation)
-                .where(Conversation.id.in_(ids))
-                .values(status="closed")
+                update(Conversation).where(Conversation.id.in_(ids)).values(status="closed")
             )
         return ids
+
+    async def merchants_with_conversations_before(
+        self, cutoff: datetime
+    ) -> list[tuple[UUID, UUID]]:
+        """Distinct (merchant_id, tenant_id) that have at least one conversation
+        started before `cutoff`. Used by the retention sweep to limit per-merchant
+        config resolution to merchants that actually have purgeable data.
+        """
+        stmt = (
+            select(Conversation.merchant_id, Merchant.tenant_id)
+            .join(Merchant, Merchant.id == Conversation.merchant_id)
+            .where(Conversation.started_at < cutoff)
+            .distinct()
+        )
+        rows = await self._session.execute(stmt)
+        return [(row[0], row[1]) for row in rows.all()]
+
+    async def delete_older_than(
+        self, *, merchant_id: UUID, cutoff: datetime, limit: int = 2000
+    ) -> int:
+        """Hard-delete a merchant's conversations whose last activity predates
+        `cutoff` (GDPR retention). Messages cascade via the FK ondelete. Capped at
+        `limit` rows per call so a daily sweep stays bounded. Returns the count.
+        """
+        last_activity = func.coalesce(Conversation.last_message_at, Conversation.started_at)
+        sub = (
+            select(Conversation.id)
+            .where(Conversation.merchant_id == merchant_id, last_activity < cutoff)
+            .limit(limit)
+        )
+        ids = list((await self._session.execute(sub)).scalars().all())
+        if not ids:
+            return 0
+        await self._session.execute(delete(Conversation).where(Conversation.id.in_(ids)))
+        return len(ids)
+
+    async def mark_escalated(self, conversation_id: UUID, *, reason: str | None = None) -> None:
+        """Human takeover (escalate_human action): silence the bot on this thread
+        and stamp escalation metadata so the merchant inbox can surface it.
+
+        Sets `auto_reply = false` (AND-ed with the merchant master switch in the
+        worker, so the bot stays silent regardless) and records `escalated`,
+        `escalated_at` and the escalation `reason` in `conversation.meta`. The
+        thread stays `active` — it still needs a human, it isn't closed.
+        """
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET auto_reply = false,
+                    meta = jsonb_set(
+                        jsonb_set(
+                            jsonb_set(
+                                coalesce(meta, '{}'::jsonb),
+                                '{escalated}', 'true'::jsonb
+                            ),
+                            '{escalated_at}', to_jsonb(now()::text)
+                        ),
+                        '{escalation_reason}', to_jsonb(:reason::text)
+                    )
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id), "reason": reason},
+        )
 
     async def record_reminder_sent(self, conversation_id: UUID) -> None:
         """Atomically increment reminders_sent and stamp last_reminder_at in conversation.meta.

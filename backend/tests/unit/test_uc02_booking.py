@@ -5,6 +5,7 @@ Stubs GHLClient, DB session, and the reply sender. Verifies that:
   2. Slot taken: integration error → alternatives proposed to the lead.
   3. No GHL integration: we report the reason, do not crash, send a graceful message.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -125,6 +126,7 @@ def _patch_ghl_client(monkeypatch, *, booking_ok: bool):
 
 # ---- tests ---------------------------------------------------------------
 
+
 async def test_book_slot_happy_path(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
 ) -> None:
@@ -182,6 +184,37 @@ async def test_book_slot_taken_proposes_alternatives(
     assert len(sender.calls) == 1
     assert "non è più disponibile" in sender.calls[0]["text"]
     assert sender.calls[0]["text"].count("•") == 3
+
+
+async def test_book_slot_naive_time_interpreted_in_merchant_tz(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """A naïve ISO (no offset — what the LLM usually emits) must be booked in the
+    merchant's local timezone, not UTC. For Europe/Rome in July that is +02:00."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=True)
+    sender = FakeSender()
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+    )
+
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-07-15T15:00:00"},
+        ),
+        turn_ctx,
+    )
+
+    ghl_client.create_booking.assert_awaited_once()
+    kwargs = ghl_client.create_booking.await_args.kwargs
+    assert kwargs["slot_start_iso"] == "2026-07-15T15:00:00+02:00"
+    # 30-min default duration, same offset preserved.
+    assert kwargs["slot_end_iso"] == "2026-07-15T15:30:00+02:00"
 
 
 async def test_book_slot_no_ghl_integration_sends_graceful_fallback(

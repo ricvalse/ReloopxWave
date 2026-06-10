@@ -25,7 +25,7 @@ from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
-from db import IntegrationRepository, MerchantRepository
+from db import IntegrationRepository, MerchantRepository, session_scope
 from integrations import (
     RouterClient,
     build_authorize_url,
@@ -117,9 +117,14 @@ async def ghl_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStart
 
 
 @router.get("/ghl/oauth/callback")
-async def ghl_oauth_callback(code: str, state: str, session: DBSession) -> Response:
-    """Public callback — no JWT. The signed `state` is what ties the round-trip
-    back to a merchant, so it must validate before we touch any DB row.
+async def ghl_oauth_callback(code: str, state: str) -> Response:
+    """Public callback — no JWT. This is a browser redirect from GHL, so it
+    carries no Supabase Authorization header; the signed `state` is what ties
+    the round-trip back to a merchant. We therefore must NOT use the
+    tenant-scoped `DBSession` dependency (it runs JWT verification and would
+    403 every merchant). The state validates first, then we persist the
+    integration through an unscoped service-role session — the merchant
+    identity comes from the verified state, not from RLS.
     """
     settings = get_settings()
     state_secret = settings.ghl_oauth_state_secret or settings.ghl_client_secret
@@ -133,14 +138,15 @@ async def ghl_oauth_callback(code: str, state: str, session: DBSession) -> Respo
         redirect_uri=_ghl_redirect_uri(settings),
     )
 
-    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
-    await repo.upsert_ghl(
-        merchant_id=verified.merchant_id,
-        access_token=tokens.access_token,
-        refresh_token=tokens.refresh_token,
-        expires_at=tokens.expires_at,
-        location_id=tokens.location_id,
-    )
+    async with session_scope() as session:
+        repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+        await repo.upsert_ghl(
+            merchant_id=verified.merchant_id,
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            expires_at=tokens.expires_at,
+            location_id=tokens.location_id,
+        )
 
     logger.info(
         "integrations.ghl.oauth.completed",
@@ -207,9 +213,7 @@ async def whatsapp_onboard_start(
 
 
 @router.post("/whatsapp/disconnect", status_code=204)
-async def whatsapp_disconnect(
-    ctx: CurrentContext, session: DBSession
-) -> Response:
+async def whatsapp_disconnect(ctx: CurrentContext, session: DBSession) -> Response:
     """Wipe the calling merchant's WhatsApp integration row.
 
     Used by the merchant portal's "Sostituisci canale" button: clears local
@@ -222,9 +226,7 @@ async def whatsapp_disconnect(
     """
     merchant_id = _require_merchant_scope(ctx)
     settings = get_settings()
-    repo = IntegrationRepository(
-        session, kek_base64=settings.integrations_kek_base64
-    )
+    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
     removed = await repo.disconnect_whatsapp(merchant_id)
     logger.info(
         "integrations.whatsapp.disconnected",

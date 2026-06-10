@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_fallback_enabled: bool = False
 
+    # LLM model ids — overridable via env so a provider rename or a tier change
+    # doesn't require a code change (the hardcoded gpt-5.x names were the single
+    # biggest "every call 404s" risk at go-live). Defaults match spec 6.7.
+    llm_model_default: str = "gpt-5-mini"
+    llm_model_escalation: str = "gpt-5.2"
+    llm_model_sentiment: str = "gpt-5-nano"
+    llm_model_fallback: str = "claude-sonnet-4-6"
+    llm_model_embedding: str = "text-embedding-3-small"
+
     ghl_client_id: str = ""
     ghl_client_secret: str = ""
     ghl_webhook_secret: str = ""
@@ -73,6 +82,16 @@ class Settings(BaseSettings):
     # because `allow_credentials=True` forbids the wildcard.
     cors_allowed_origins: str = ""
 
+    # Comma-separated Host header allowlist for TrustedHostMiddleware. Empty =
+    # not enforced (a warning is logged in non-local). Use the bare hostnames,
+    # e.g. "api.reloop.example,reloop.up.railway.app".
+    allowed_hosts: str = ""
+
+    # Fixed-window rate limit (requests/minute per client IP) applied to the
+    # public, unauthenticated surface (webhooks, OAuth callback, internal notify).
+    # 0 disables the limiter. Fail-open if Redis is unreachable.
+    rate_limit_public_per_min: int = 120
+
     integrations_kek_base64: str = Field(
         default="", description="AES-256-GCM key-encryption key, base64-encoded"
     )
@@ -80,6 +99,57 @@ class Settings(BaseSettings):
     sentry_dsn_backend: str = ""
     posthog_key: str = ""
     posthog_host: str = "https://eu.posthog.com"
+
+    # Secrets without which the platform cannot function at all. Empty (or, for
+    # the URLs, a localhost default) in production is a hard boot error.
+    _PROD_REQUIRED_SECRETS: ClassVar[tuple[str, ...]] = (
+        "supabase_url",
+        "supabase_anon_key",
+        "supabase_service_role_key",
+        "supabase_jwt_secret",
+        "openai_api_key",
+        "integrations_kek_base64",
+    )
+    # Integration creds the platform boots without, but a tenant can't use the
+    # corresponding feature until they're set — surfaced as a startup warning.
+    _PROD_RECOMMENDED: ClassVar[tuple[str, ...]] = (
+        "ghl_client_id",
+        "ghl_client_secret",
+        "router_base_url",
+        "router_shared_secret",
+        "sentry_dsn_backend",
+    )
+
+    def production_config_errors(self) -> list[str]:
+        """Hard misconfigurations that must block boot in production."""
+        errors: list[str] = []
+        for name in self._PROD_REQUIRED_SECRETS:
+            if not str(getattr(self, name, "") or "").strip():
+                errors.append(f"{name} is empty")
+        for name in ("supabase_db_url", "redis_url"):
+            value = str(getattr(self, name, "") or "")
+            if "localhost" in value or "127.0.0.1" in value:
+                errors.append(f"{name} points at localhost")
+        return errors
+
+    def production_config_warnings(self) -> list[str]:
+        """Soft gaps: boot proceeds, but a feature stays inert until set."""
+        return [
+            f"{name} is empty"
+            for name in self._PROD_RECOMMENDED
+            if not str(getattr(self, name, "") or "").strip()
+        ]
+
+    def ensure_production_ready(self) -> None:
+        """Fail fast at startup if a required secret is missing in production.
+
+        No-op outside `production` so local/test/staging boot with defaults.
+        """
+        if self.environment != "production":
+            return
+        errors = self.production_config_errors()
+        if errors:
+            raise RuntimeError("Invalid production configuration: " + "; ".join(errors))
 
 
 @lru_cache

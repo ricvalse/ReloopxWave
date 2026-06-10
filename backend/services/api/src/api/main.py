@@ -7,6 +7,7 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ai_core import (
     ConversationOrchestrator,
@@ -16,7 +17,7 @@ from ai_core import (
     PlaygroundRunner,
 )
 from api.core.errors import register_exception_handlers
-from api.core.middleware import RequestContextMiddleware
+from api.core.middleware import RateLimitMiddleware, RequestContextMiddleware
 from api.dependencies.session import init_db
 from api.routers import (
     ab_test,
@@ -24,6 +25,7 @@ from api.routers import (
     auth,
     bot_config,
     conversations,
+    dsar,
     fine_tuning,
     integrations,
     internal,
@@ -44,6 +46,12 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(level=settings.log_level, environment=settings.environment)
+    # Fail fast in production if a required secret is missing — better a loud
+    # boot crash than a half-working service that 500s on the first real request.
+    settings.ensure_production_ready()
+    if settings.environment == "production":
+        for warning in settings.production_config_warnings():
+            logger.warning("config.recommended_missing", detail=warning)
     init_sentry(settings, component="api")
     app.state.posthog = init_posthog(settings)
     await init_db(settings.supabase_db_url)
@@ -54,7 +62,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # AI wiring for synchronous paths (UC-08 playground).
     router = ModelRouter(settings, ft_model_provider=FtModelResolver())
     orchestrator = ConversationOrchestrator(router)
-    embedder = Embedder(api_key=settings.openai_api_key) if settings.openai_api_key else None
+    embedder = (
+        Embedder(api_key=settings.openai_api_key, model=settings.llm_model_embedding)
+        if settings.openai_api_key
+        else None
+    )
     app.state.playground = PlaygroundRunner(orchestrator=orchestrator, embedder=embedder)
 
     try:
@@ -86,6 +98,26 @@ def create_app() -> FastAPI:
         expose_headers=["x-trace-id"],
     )
     app.add_middleware(RequestContextMiddleware)
+
+    # Rate-limit the browser-facing public OAuth callback (per-IP is meaningful
+    # there). Webhooks and /internal are deliberately NOT limited: they arrive
+    # from a single trusted BSP/router IP, so a per-IP cap would throttle every
+    # merchant's inbound at once — those paths are guarded by HMAC/signature
+    # instead. Fail-open; disabled when rate_limit_public_per_min <= 0.
+    app.add_middleware(
+        RateLimitMiddleware,
+        limit_per_min=settings.rate_limit_public_per_min,
+        prefixes=("/integrations/ghl/oauth/callback",),
+    )
+
+    # Validate the Host header in non-local environments when an allowlist is set
+    # (defends against Host-header spoofing / cache poisoning). "*" disables it.
+    allowed_hosts = [h.strip() for h in settings.allowed_hosts.split(",") if h.strip()]
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+    elif settings.environment != "local":
+        logger.warning("trustedhost.no_allowlist", hint="set ALLOWED_HOSTS in production")
+
     register_exception_handlers(app)
 
     @app.get("/health", tags=["system"])
@@ -106,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(reports.router, prefix="/reports", tags=["reports"])
     app.include_router(fine_tuning.router, prefix="/fine-tuning", tags=["fine-tuning"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+    app.include_router(dsar.router, prefix="/dsar", tags=["dsar"])
 
     # Public webhooks (signature-validated, no JWT).
     app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])

@@ -3,6 +3,7 @@
 Invoked per-conversation (enqueued from the conversation worker when it sees a
 conversation close, or on a daily sweep of unclassified conversations).
 """
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -60,7 +61,7 @@ async def extract_for_conversation(ctx: dict, *, conversation_id: str) -> dict:
 
         client = OpenAIClient(
             api_key=settings.openai_api_key,
-            model="gpt-5-mini",
+            model=settings.llm_model_default,
         )
         results = await classify_objections(
             client,

@@ -3,6 +3,7 @@
 Initialised once in `workers.settings.startup`, then handlers pull the
 components they need from the ARQ context dict.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,7 +17,12 @@ from ai_core import (
     ReplySender,
     SentimentAnalyzer,
 )
-from ai_core.actions import BookSlotHandler, MovePipelineHandler, UpdateScoreHandler
+from ai_core.actions import (
+    BookSlotHandler,
+    EscalateHumanHandler,
+    MovePipelineHandler,
+    UpdateScoreHandler,
+)
 from ai_core.rag import Embedder
 from integrations import build_whatsapp_sender
 from shared import Settings, get_logger
@@ -50,9 +56,7 @@ class WhatsAppReplySender:
         )
         try:
             resp = await sender.send_text(to_phone=to_phone, text=text)
-            return str(
-                (resp.get("messages") or [{}])[0].get("id", "")
-            )
+            return str((resp.get("messages") or [{}])[0].get("id", ""))
         finally:
             await sender.close()
 
@@ -95,9 +99,15 @@ def build_runtime(settings: Settings) -> Runtime:
     update_score = UpdateScoreHandler()
     dispatcher.register(update_score.kind, update_score)
 
+    # Escalation — human takeover when the lead is angry / asks for a person.
+    escalate = EscalateHumanHandler()
+    dispatcher.register(escalate.kind, escalate)
+
     # UC-07 — embedder shared across conversation turns and the indexer job.
     embedder = (
-        Embedder(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        Embedder(api_key=settings.openai_api_key, model=settings.llm_model_embedding)
+        if settings.openai_api_key
+        else None
     )
 
     service = ConversationService(

@@ -28,6 +28,12 @@ COPY backend/workers ./workers
 # never lands in /app/.venv/bin.
 RUN uv sync --frozen --no-dev --all-packages
 
+# Italian spaCy model for presidio NER — the second layer of the Art. 5.2
+# anonymizer. NOT a pip-pinnable dependency, so it's downloaded explicitly here;
+# without it the FT export degrades to regex-only (and hard-fails in production,
+# see ai_core/ft/presidio.py). Worker-only: the API image never runs FT export.
+RUN uv run --no-dev python -m spacy download it_core_news_lg
+
 COPY infra/docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
 RUN chmod +x /usr/local/bin/worker-entrypoint.sh
 

@@ -47,7 +47,10 @@ async def export_training_pairs(
     # Art. 5.2 double layer: regex (in anonymize_text) + presidio NER (here).
     # Presidio degrades to None outside production (no spaCy model) — we log so
     # the audit trail records whether the NER layer actually ran.
-    presidio = build_presidio_transform(language="it")
+    # In production the NER layer is mandatory (require=True → raises if the
+    # spaCy model is missing, so we never ship un-NER'd PII). Elsewhere it
+    # degrades to regex-only with a logged warning.
+    presidio = build_presidio_transform(language="it", require=settings.environment == "production")
     transforms = [presidio] if presidio is not None else None
     if presidio is None:
         logger.warning("ft.export.presidio_skipped", tenant_id=str(tenant_id))

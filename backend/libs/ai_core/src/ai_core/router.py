@@ -7,6 +7,7 @@ Strategy (V1, section 6.7):
 - fine-tuned gpt-4.1-mini per tenant when available (replaces default)
 - claude-sonnet-4-6 fallback via feature flag
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -64,14 +65,20 @@ class ModelRouter:
             return OpenAIClient(api_key=self._settings.openai_api_key, model=req.force_model)
 
         if req.purpose == "sentiment":
-            return OpenAIClient(api_key=self._settings.openai_api_key, model="gpt-5-nano")
+            return OpenAIClient(
+                api_key=self._settings.openai_api_key, model=self._settings.llm_model_sentiment
+            )
 
         triggers = self._escalation_triggers(req)
         if triggers:
-            logger.info("routing.escalate", triggers=list(triggers), merchant_id=str(req.merchant_id))
-            return OpenAIClient(api_key=self._settings.openai_api_key, model="gpt-5.2")
+            logger.info(
+                "routing.escalate", triggers=list(triggers), merchant_id=str(req.merchant_id)
+            )
+            return OpenAIClient(
+                api_key=self._settings.openai_api_key, model=self._settings.llm_model_escalation
+            )
 
-        # Check per-tenant FT override before defaulting to gpt-5-mini.
+        # Check per-tenant FT override before defaulting to the base chat model.
         if self._ft_model_provider is not None:
             ft_model_id = await self._ft_model_provider.get(
                 req.tenant_id, req.merchant_id, req.variant_id
@@ -79,12 +86,16 @@ class ModelRouter:
             if ft_model_id is not None:
                 return OpenAIClient(api_key=self._settings.openai_api_key, model=ft_model_id)
 
-        return OpenAIClient(api_key=self._settings.openai_api_key, model="gpt-5-mini")
+        return OpenAIClient(
+            api_key=self._settings.openai_api_key, model=self._settings.llm_model_default
+        )
 
     async def fallback(self) -> LLMClient | None:
         if not self._settings.anthropic_fallback_enabled or not self._settings.anthropic_api_key:
             return None
-        return AnthropicClient(api_key=self._settings.anthropic_api_key)
+        return AnthropicClient(
+            api_key=self._settings.anthropic_api_key, model=self._settings.llm_model_fallback
+        )
 
     def _escalation_triggers(self, req: RoutingRequest) -> set[EscalationTrigger]:
         triggers: set[EscalationTrigger] = set()
@@ -99,5 +110,3 @@ class ModelRouter:
         if req.turn_count >= 15:
             triggers.add("many_turns")
         return triggers
-
-

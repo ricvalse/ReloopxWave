@@ -32,6 +32,7 @@ from workers.scheduler.handlers import (
     build_analytics_export,
     close_idle_conversations,
     daily_kpi_rollup,
+    enforce_retention,
     followup_no_answer,
     integration_health_check,
     kb_reindex,
@@ -43,6 +44,7 @@ from workers.scheduler.handlers import (
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(level=settings.log_level, environment=settings.environment)
+    settings.ensure_production_ready()  # fail fast on missing prod secrets
     init_sentry(settings, component="worker")
     get_engine(settings.supabase_db_url)  # initialise session factory
     ctx["settings"] = settings
@@ -74,6 +76,7 @@ class WorkerSettings:
         kb_reindex,
         integration_health_check,
         build_analytics_export,
+        enforce_retention,
         # queue: ft:pipeline
         fine_tune_run,
         fine_tune_train,
@@ -107,4 +110,7 @@ class WorkerSettings:
         # objection extraction for each — the automatic post-conversation
         # trigger the spec calls for (previously extraction was manual-only).
         cron(close_idle_conversations, minute=20, timeout=300, max_tries=1),
+        # GDPR retention: nightly purge of conversation data past each merchant's
+        # privacy.retention_months window. 03:30 UTC — off-peak.
+        cron(enforce_retention, hour=3, minute=30, timeout=600, max_tries=1),
     ]

@@ -4,6 +4,7 @@ We stub every external collaborator (DB session, repositories, orchestrator,
 WhatsApp sender) to exercise the orchestration logic in isolation. Real-DB
 integration tests live under tests/integration/ and are skipped in unit runs.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -24,6 +25,7 @@ from ai_core.orchestrator import OrchestratorAction, OrchestratorResponse
 from db import ResolvedWhatsAppIntegration
 
 # ---- Fake collaborators ---------------------------------------------------
+
 
 @dataclass
 class FakeLead:
@@ -74,6 +76,7 @@ class FakeSender(ReplySender):
 
 # ---- Test wiring ----------------------------------------------------------
 
+
 @pytest.fixture
 def resolved_integration() -> ResolvedWhatsAppIntegration:
     return ResolvedWhatsAppIntegration(
@@ -118,6 +121,13 @@ def service(
 
     monkeypatch.setattr(cs.ConversationService, "_resolve_int", fake_resolve_int)
 
+    # Auto-reply now defaults OFF (master kill switch). These tests exercise the
+    # reply path, so explicitly turn it on at the merchant level.
+    async def fake_resolve_bool(self, session, merchant_id, key, *, default):
+        return True
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", fake_resolve_bool)
+
     # Stub the orchestrator.
     orch = AsyncMock()
     orch.run = AsyncMock(return_value=orchestrator_response)
@@ -145,8 +155,10 @@ def service(
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return None
+
         async def create(self, **kw):
             return conv
+
         async def touch_last_message(self, conversation_id):
             return None
 
@@ -154,18 +166,23 @@ def service(
         def __init__(self, session):
             self.user_calls: list = []
             self.assistant_calls: list = []
+
         async def find_by_wa_message_id(self, wa_message_id):
             return None
+
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
         async def persist_user_message(self, **kw):
             self.user_calls.append(kw)
+
         async def persist_assistant_message(self, **kw):
             self.assistant_calls.append(kw)
 
     class FakeAnalyticsRepo:
         def __init__(self, session):
             self.events: list = []
+
         async def emit(self, **kw):
             self.events.append(kw)
 
@@ -186,6 +203,7 @@ def service(
 
 
 # ---- Tests ----------------------------------------------------------------
+
 
 async def test_handle_inbound_sends_reply_and_returns_conversation(
     service,
@@ -328,6 +346,7 @@ async def test_inbound_persisted_even_when_reply_fails(
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return conv
+
         async def touch_last_message(self, conversation_id):
             return None
 
@@ -335,10 +354,13 @@ async def test_inbound_persisted_even_when_reply_fails(
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
             return None
+
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
         async def persist_user_message(self, **kw):
             user_calls.append(kw)
+
         async def persist_assistant_message(self, **kw):
             assistant_calls.append(kw)
 
@@ -422,6 +444,7 @@ async def test_inbound_idempotent_on_redelivery(
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return conv
+
         async def touch_last_message(self, conversation_id):
             return None
 
@@ -429,10 +452,13 @@ async def test_inbound_idempotent_on_redelivery(
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
             return object()  # already stored
+
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
         async def persist_user_message(self, **kw):
             user_calls.append(kw)
+
         async def persist_assistant_message(self, **kw):
             return None
 
