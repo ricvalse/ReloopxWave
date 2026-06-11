@@ -104,15 +104,11 @@ async def whatsapp_connected(
     try:
         merchant_id = UUID(payload.customer_id)
     except ValueError as exc:
-        logger.warning(
-            "router.notify.bad_customer_id", customer_id=payload.customer_id
-        )
+        logger.warning("router.notify.bad_customer_id", customer_id=payload.customer_id)
         raise HTTPException(status_code=400, detail="invalid customer_id") from exc
 
     async with session_scope() as session:
-        repo = IntegrationRepository(
-            session, kek_base64=settings.integrations_kek_base64
-        )
+        repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
         for ch in payload.channels:
             await repo.upsert_whatsapp(
                 merchant_id=merchant_id,

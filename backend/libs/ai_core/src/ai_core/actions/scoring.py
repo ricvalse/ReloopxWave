@@ -13,9 +13,10 @@ Because the signals reflect accumulated state rather than only the current
 message, the score is stable across turns — a single late negative turn no
 longer craters an otherwise-hot lead.
 """
+
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_core.orchestrator import OrchestratorAction
 from ai_core.scoring import SIGNAL_WEIGHTS, score_lead
@@ -27,6 +28,9 @@ from db import (
     tenant_session,
 )
 from shared import get_logger
+
+if TYPE_CHECKING:
+    from ai_core.conversation_service import TurnContext
 
 logger = get_logger(__name__)
 
@@ -44,7 +48,7 @@ def derive_signals_from_llm_payload(payload: dict[str, Any]) -> dict[str, bool]:
 class UpdateScoreHandler:
     kind = "update_score"
 
-    async def __call__(self, action: OrchestratorAction, turn_ctx) -> None:
+    async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
             tenant_id=turn_ctx.tenant_id,
             merchant_id=turn_ctx.merchant_id,

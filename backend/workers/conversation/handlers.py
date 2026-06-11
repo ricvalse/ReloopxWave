@@ -34,12 +34,12 @@ logger = get_logger(__name__)
 
 
 async def handle_inbound_message(
-    ctx: dict,
+    ctx: dict[str, Any],
     phone_number_id: str,
     from_phone: str,
     text: str,
     wa_message_id: str,
-) -> dict:
+) -> dict[str, Any]:
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
 
@@ -65,12 +65,12 @@ async def handle_inbound_message(
 
 
 async def handle_phone_app_echo(
-    ctx: dict,
+    ctx: dict[str, Any],
     phone_number_id: str,
     customer_phone: str,
     text: str,
     wa_message_id: str,
-) -> dict:
+) -> dict[str, Any]:
     """Mirror a phone-app-typed message into the conversations DB.
 
     Only emitted by 360dialog Coexistence channels. The orchestrator is
@@ -101,11 +101,11 @@ async def handle_phone_app_echo(
 
 
 async def handle_ghl_event(
-    ctx: dict,
+    ctx: dict[str, Any],
     merchant_id: str,
     event_type: str,
     payload: dict[str, Any],
-) -> dict:
+) -> dict[str, Any]:
     """Fan-out for GHL inbound webhooks (opportunity updates, bookings, contact
     changes). V1 logs + records; richer event routing (e.g. `OpportunityStatusUpdate`
     → analytics event) lands alongside UC-02/UC-04 completion.
@@ -119,7 +119,7 @@ async def handle_ghl_event(
     return {"merchant_id": merchant_id, "event_type": event_type}
 
 
-async def send_outbound_whatsapp(ctx: dict, message_id: str) -> dict:
+async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[str, Any]:
     """Dispatch a queued composer message to 360dialog.
 
     Service-role session: the lookup needs message + conversation + integration
@@ -252,12 +252,12 @@ async def send_outbound_whatsapp(ctx: dict, message_id: str) -> dict:
 
 
 async def update_outbound_status(
-    ctx: dict,
+    ctx: dict[str, Any],
     wa_message_id: str,
     new_status: str,
     timestamp_unix: int | None,
     raw: dict[str, Any],
-) -> dict:
+) -> dict[str, Any]:
     """Apply a Meta/D360 status callback to the outbound row.
 
     Status state machine (monotonic — never go backwards):
@@ -276,17 +276,11 @@ async def update_outbound_status(
         logger.info("wa.status.unknown", status=new_status, wa_message_id=wa_message_id)
         return {"updated": False, "reason": "unknown_status"}
 
-    when = (
-        datetime.fromtimestamp(timestamp_unix, tz=UTC)
-        if timestamp_unix
-        else datetime.now(UTC)
-    )
+    when = datetime.fromtimestamp(timestamp_unix, tz=UTC) if timestamp_unix else datetime.now(UTC)
 
     async with session_scope() as session:
         msg = (
-            await session.execute(
-                select(Message).where(Message.wa_message_id == wa_message_id)
-            )
+            await session.execute(select(Message).where(Message.wa_message_id == wa_message_id))
         ).scalar_one_or_none()
         if msg is None:
             logger.info("wa.status.row_missing", wa_message_id=wa_message_id)
@@ -318,9 +312,7 @@ async def update_outbound_status(
                     "raw": errors[0],
                 }
 
-        await session.execute(
-            update(Message).where(Message.id == msg.id).values(**values)
-        )
+        await session.execute(update(Message).where(Message.id == msg.id).values(**values))
 
     logger.info(
         "wa.status.updated",

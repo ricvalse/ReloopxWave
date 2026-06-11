@@ -74,7 +74,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Assigns a trace_id to every request and binds it to structlog contextvars."""
 
-    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         trace_id = request.headers.get("x-trace-id") or str(uuid.uuid4())
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(

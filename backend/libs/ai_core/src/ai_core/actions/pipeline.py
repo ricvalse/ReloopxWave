@@ -19,8 +19,9 @@ Side effects:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
@@ -34,6 +35,9 @@ from db import (
 )
 from integrations.ghl.client import GHLClient, GHLTokenBundle
 from shared import IntegrationError, get_logger
+
+if TYPE_CHECKING:
+    from ai_core.conversation_service import TurnContext
 
 logger = get_logger(__name__)
 
@@ -60,7 +64,7 @@ class MovePipelineHandler:
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
 
-    async def __call__(self, action: OrchestratorAction, turn_ctx) -> None:
+    async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
             tenant_id=turn_ctx.tenant_id,
             merchant_id=turn_ctx.merchant_id,
@@ -165,7 +169,7 @@ class MovePipelineHandler:
     async def _execute(
         self,
         *,
-        ghl,
+        ghl: Any,
         stage_id: str,
         pipeline_id: str | None,
         opportunity_id: str | None,
@@ -173,7 +177,7 @@ class MovePipelineHandler:
         contact_fields: dict[str, Any],
         value: float | None,
         currency: str,
-        on_token_refresh=None,
+        on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> MoveOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(

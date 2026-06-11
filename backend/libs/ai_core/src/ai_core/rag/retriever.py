@@ -1,4 +1,5 @@
 """RAG — indexing and retrieval on Supabase pgvector (section 6.3)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

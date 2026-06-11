@@ -6,6 +6,7 @@ conversation close, or on a daily sweep of unclassified conversations).
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -25,7 +26,7 @@ from shared import DomainError, get_logger
 logger = get_logger(__name__)
 
 
-async def extract_for_conversation(ctx: dict, *, conversation_id: str) -> dict:
+async def extract_for_conversation(ctx: dict[str, Any], *, conversation_id: str) -> dict[str, Any]:
     settings = ctx["settings"]
     if not settings.openai_api_key:
         raise DomainError("openai key missing", error_code="no_openai_key")

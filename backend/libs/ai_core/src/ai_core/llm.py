@@ -1,4 +1,5 @@
 """LLM client abstraction — every provider implements the same Protocol."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -102,7 +103,9 @@ class OpenAIClient:
 class AnthropicClient:
     """Fallback provider. Gated by feature flag."""
 
-    def __init__(self, *, api_key: str, model: str = "claude-sonnet-4-6", timeout: float = 30.0) -> None:
+    def __init__(
+        self, *, api_key: str, model: str = "claude-sonnet-4-6", timeout: float = 30.0
+    ) -> None:
         self._api_key = api_key
         self.model = model
         self._timeout = timeout
@@ -143,7 +146,9 @@ class AnthropicClient:
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
-        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+        text = "".join(
+            block.text for block in resp.content if getattr(block, "type", None) == "text"
+        )
         return CompletionResult(
             content=text,
             model=resp.model,

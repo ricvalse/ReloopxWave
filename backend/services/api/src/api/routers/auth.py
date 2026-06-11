@@ -15,6 +15,7 @@ Safety properties:
   3. Never grants merchant_id — the boostrap only mints agency_admin claims.
      Merchant users continue to come through the regular invite flow.
 """
+
 from __future__ import annotations
 
 from typing import Annotated, Any

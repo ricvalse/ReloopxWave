@@ -4,6 +4,7 @@ Strategy: paragraph-first. Walk paragraphs, pack them into a window until the
 character budget is hit, then start a new window with a small overlap so
 sentences near the boundary still have neighbour context.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -49,9 +50,7 @@ def chunk_text(
     return _split_oversized(chunks, target_chars=target_chars, overlap_chars=overlap_chars)
 
 
-def _split_oversized(
-    chunks: list[Chunk], *, target_chars: int, overlap_chars: int
-) -> list[Chunk]:
+def _split_oversized(chunks: list[Chunk], *, target_chars: int, overlap_chars: int) -> list[Chunk]:
     result: list[Chunk] = []
     for c in chunks:
         if c.char_count <= target_chars:

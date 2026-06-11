@@ -80,7 +80,7 @@ async def tenant_session(ctx: TenantContext) -> AsyncIterator[AsyncSession]:
     """
     factory = get_session_factory()
     async with factory() as session:
-        claims = {
+        claims: dict[str, object] = {
             "tenant_id": str(ctx.tenant_id),
             "merchant_id": str(ctx.merchant_id) if ctx.merchant_id else None,
             "user_role": ctx.role,

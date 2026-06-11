@@ -1,4 +1,5 @@
 """UC-09 — hash-based variant assignment is deterministic and respects weights."""
+
 from __future__ import annotations
 
 import uuid
@@ -20,8 +21,7 @@ def test_different_leads_approximate_split() -> None:
     exp = uuid.uuid4()
     variants = [{"id": "a", "weight": 50}, {"id": "b", "weight": 50}]
     picks = Counter(
-        _hash_pick(experiment_id=exp, lead_id=uuid.uuid4(), variants=variants)
-        for _ in range(2000)
+        _hash_pick(experiment_id=exp, lead_id=uuid.uuid4(), variants=variants) for _ in range(2000)
     )
     # Allow 10% skew given 2k samples.
     assert 900 < picks["a"] < 1100
@@ -32,8 +32,7 @@ def test_skewed_weights() -> None:
     exp = uuid.uuid4()
     variants = [{"id": "a", "weight": 80}, {"id": "b", "weight": 20}]
     picks = Counter(
-        _hash_pick(experiment_id=exp, lead_id=uuid.uuid4(), variants=variants)
-        for _ in range(2000)
+        _hash_pick(experiment_id=exp, lead_id=uuid.uuid4(), variants=variants) for _ in range(2000)
     )
     assert picks["a"] > picks["b"] * 2.5  # roughly 4x but noisy
 

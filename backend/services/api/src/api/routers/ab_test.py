@@ -1,4 +1,5 @@
 """UC-09 — A/B experiment CRUD + metrics."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
 from db import ABRepository, PromptRepository
+from db.session import TenantContext
 from shared import NotFoundError, PermissionDeniedError
 
 router = APIRouter()
@@ -46,9 +48,9 @@ class ExperimentOut(BaseModel):
 
 @router.get("/", response_model=list[ExperimentOut])
 async def list_experiments(ctx: CurrentContext, session: DBSession) -> list[ExperimentOut]:
-    _require_merchant(ctx)
+    merchant_id = _require_merchant(ctx)
     repo = ABRepository(session)
-    experiments = await repo.list_active_for_merchant(ctx.merchant_id)  # type: ignore[arg-type]
+    experiments = await repo.list_active_for_merchant(merchant_id)
     return [_to_out(e) for e in experiments]
 
 
@@ -56,7 +58,7 @@ async def list_experiments(ctx: CurrentContext, session: DBSession) -> list[Expe
 async def create_experiment(
     payload: ExperimentIn, ctx: CurrentContext, session: DBSession
 ) -> ExperimentOut:
-    _require_merchant(ctx)
+    merchant_id = _require_merchant(ctx)
     _validate_weights(payload.variants)
 
     repo = ABRepository(session)
@@ -69,7 +71,7 @@ async def create_experiment(
             entry["prompt_template_id"] = str(v.prompt_template_id)
         if v.prompt_body and v.prompt_body.strip():
             template_id = await prompts.upsert_system_prompt(
-                merchant_id=ctx.merchant_id,  # type: ignore[arg-type]
+                merchant_id=merchant_id,
                 variant_id=v.id,
                 body=v.prompt_body.strip(),
             )
@@ -77,7 +79,7 @@ async def create_experiment(
         variants_payload.append(entry)
 
     exp = await repo.create(
-        merchant_id=ctx.merchant_id,  # type: ignore[arg-type]
+        merchant_id=merchant_id,
         name=payload.name,
         description=payload.description,
         variants=variants_payload,
@@ -96,9 +98,7 @@ async def start_experiment(
     exp = await repo.get(experiment_id)
     if exp is None or exp.merchant_id != ctx.merchant_id:
         raise NotFoundError("Experiment not found")
-    await repo.set_status(
-        experiment_id, status="running", started_at=datetime.now(tz=UTC)
-    )
+    await repo.set_status(experiment_id, status="running", started_at=datetime.now(tz=UTC))
     exp = await repo.get(experiment_id)
     assert exp is not None
     return _to_out(exp)
@@ -107,7 +107,7 @@ async def start_experiment(
 @router.get("/{experiment_id}/metrics")
 async def experiment_metrics(
     experiment_id: UUID, ctx: CurrentContext, session: DBSession
-) -> dict:
+) -> dict[str, Any]:
     _require_merchant(ctx)
     repo = ABRepository(session)
     exp = await repo.get(experiment_id)
@@ -135,12 +135,14 @@ async def experiment_metrics(
     }
 
 
-def _require_merchant(ctx) -> None:
+def _require_merchant(ctx: TenantContext) -> UUID:
+    """Assert merchant context and return the (now non-null) merchant_id."""
     if ctx.merchant_id is None:
         raise PermissionDeniedError(
             "Experiment endpoints require merchant context",
             error_code="no_merchant_context",
         )
+    return ctx.merchant_id
 
 
 def _validate_weights(variants: list[VariantIn]) -> None:
@@ -155,7 +157,7 @@ def _validate_weights(variants: list[VariantIn]) -> None:
         )
 
 
-def _to_out(exp) -> ExperimentOut:
+def _to_out(exp: Any) -> ExperimentOut:
     return ExperimentOut(
         id=exp.id,
         name=exp.name,

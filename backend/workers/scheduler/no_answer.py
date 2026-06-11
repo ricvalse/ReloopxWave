@@ -11,9 +11,11 @@ tick we:
 Idempotency: a Redis dedup key per (conversation, attempt) stops us sending
 the same reminder twice even if the job overlaps with itself.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from redis.asyncio import Redis
 
@@ -40,7 +42,7 @@ REMINDER_TEXTS = {
 DEDUP_TTL_SECONDS = 60 * 60 * 24 * 3  # 3 days — longer than the second-reminder window
 
 
-async def followup_no_answer(ctx: dict) -> dict:
+async def followup_no_answer(ctx: dict[str, Any]) -> dict[str, Any]:
     settings = ctx["settings"]
     redis: Redis = ctx.get("redis") or Redis.from_url(settings.redis_url)
 
@@ -50,7 +52,9 @@ async def followup_no_answer(ctx: dict) -> dict:
 
     sent = 0
     for cand in candidates:
-        did_send = await _maybe_send_reminder(cand, redis=redis, kek=settings.integrations_kek_base64)
+        did_send = await _maybe_send_reminder(
+            cand, redis=redis, kek=settings.integrations_kek_base64
+        )
         if did_send:
             sent += 1
 
@@ -63,9 +67,7 @@ async def _scan_candidates(*, max_followups: int) -> list[ReminderCandidate]:
         return await repo.list_reminder_candidates(max_followups=max_followups)
 
 
-async def _maybe_send_reminder(
-    cand: ReminderCandidate, *, redis: Redis, kek: str
-) -> bool:
+async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: str) -> bool:
     now = datetime.now(tz=UTC)
     tenant_ctx = TenantContext(
         tenant_id=cand.tenant_id,
@@ -77,11 +79,15 @@ async def _maybe_send_reminder(
     async with tenant_session(tenant_ctx) as session:
         config = ConfigResolver(session)
         first_min = _as_int(
-            await config.resolve(ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN, merchant_id=cand.merchant_id),
+            await config.resolve(
+                ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN, merchant_id=cand.merchant_id
+            ),
             120,
         )
         second_min = _as_int(
-            await config.resolve(ConfigKey.NO_ANSWER_SECOND_REMINDER_MIN, merchant_id=cand.merchant_id),
+            await config.resolve(
+                ConfigKey.NO_ANSWER_SECOND_REMINDER_MIN, merchant_id=cand.merchant_id
+            ),
             1440,
         )
         max_attempts = _as_int(
@@ -145,12 +151,15 @@ async def _maybe_send_reminder(
             event_type="reminder.sent",
             subject_type="conversation",
             subject_id=cand.conversation_id,
-            properties={"attempt": next_attempt, "idle_minutes": int((now - reference).total_seconds() / 60)},
+            properties={
+                "attempt": next_attempt,
+                "idle_minutes": int((now - reference).total_seconds() / 60),
+            },
         )
         return True
 
 
-def _as_int(value, default: int) -> int:
+def _as_int(value: object, default: int) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.isdigit():

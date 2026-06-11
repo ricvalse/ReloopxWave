@@ -11,7 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -74,7 +74,7 @@ class GHLClient:
 
     async def list_pipelines(self, location_id: str) -> list[dict[str, Any]]:
         resp = await self._request("GET", f"/opportunities/pipelines?locationId={location_id}")
-        return resp.get("pipelines", [])
+        return cast(list[dict[str, Any]], resp.get("pipelines", []))
 
     async def move_opportunity(
         self, opportunity_id: str, *, stage_id: str, pipeline_id: str
@@ -97,7 +97,7 @@ class GHLClient:
             "GET",
             f"/opportunities/search?contact_id={contact_id}&location_id={location_id}",
         )
-        return resp.get("opportunities", [])
+        return cast(list[dict[str, Any]], resp.get("opportunities", []))
 
     async def create_opportunity(
         self,

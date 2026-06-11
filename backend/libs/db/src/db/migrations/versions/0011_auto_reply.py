@@ -15,6 +15,7 @@ analytics still fire, just no assistant message is generated or sent).
 Default true so the existing fleet keeps replying; merchants opt out
 explicitly per-thread or per-account.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

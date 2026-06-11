@@ -9,6 +9,7 @@ Reuses the Orchestrator + model router, but deliberately bypasses:
 This lets a merchant try a system prompt + prompt variant combo against a fake
 conversation history before publishing it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -119,9 +120,7 @@ class PlaygroundRunner:
 
         return PlaygroundResponse(
             reply_text=response.reply_text,
-            actions=[
-                {"kind": a.kind, "payload": a.payload} for a in response.actions
-            ],
+            actions=[{"kind": a.kind, "payload": a.payload} for a in response.actions],
             model=response.model,
             tokens_in=response.tokens_in,
             tokens_out=response.tokens_out,

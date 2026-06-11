@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -42,7 +43,7 @@ class Conversation(Base, TimestampMixin):
     # Free-text internal note shown in the inbox detail panel. Per-thread,
     # edited by an agent; NULL when empty. See migration 0012.
     internal_note: Mapped[str | None] = mapped_column(String, nullable=True)
-    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821
     messages: Mapped[list[Message]] = relationship(back_populates="conversation")
@@ -82,8 +83,8 @@ class Message(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    error: Mapped[dict | None] = mapped_column(JSONB)
-    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()"), index=True
     )

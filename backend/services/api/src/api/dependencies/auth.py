@@ -18,6 +18,7 @@ The custom claims `tenant_id`, `merchant_id`, and `role` are written by a
 Supabase Auth hook (see migration `0002_auth_jwt_hook.py`) and passed through
 here.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -71,9 +72,7 @@ async def _load_jwks(supabase_url: str) -> dict[str, dict[str, Any]]:
                 status=resp.status_code,
             )
         data = resp.json()
-        keys: dict[str, dict[str, Any]] = {
-            k["kid"]: k for k in data.get("keys", []) if "kid" in k
-        }
+        keys: dict[str, dict[str, Any]] = {k["kid"]: k for k in data.get("keys", []) if "kid" in k}
         _jwks_cache["keys"] = keys
         _jwks_cache["fetched_at"] = time.time()
         logger.info("auth.jwks.refreshed", count=len(keys))
@@ -85,9 +84,7 @@ def _decode_unverified_header(token: str) -> dict[str, Any]:
         header_b64 = token.split(".", 1)[0]
         import json
 
-        parsed: dict[str, Any] = json.loads(
-            base64url_decode(header_b64.encode()).decode()
-        )
+        parsed: dict[str, Any] = json.loads(base64url_decode(header_b64.encode()).decode())
         return parsed
     except Exception as e:
         raise PermissionDeniedError(
@@ -100,9 +97,7 @@ async def _verify_asymmetric(token: str, *, supabase_url: str) -> dict[str, Any]
     alg_raw = header.get("alg")
     kid_raw = header.get("kid")
     if not isinstance(alg_raw, str) or not isinstance(kid_raw, str) or not kid_raw:
-        raise PermissionDeniedError(
-            "Asymmetric JWT missing alg/kid", error_code="missing_kid"
-        )
+        raise PermissionDeniedError("Asymmetric JWT missing alg/kid", error_code="missing_kid")
     alg: str = alg_raw
     kid: str = kid_raw
 
@@ -191,7 +186,9 @@ async def get_tenant_context(
 ) -> TenantContext:
     tenant_id = claims.get("tenant_id")
     if tenant_id is None:
-        raise PermissionDeniedError("Token missing tenant_id claim", error_code="missing_tenant_claim")
+        raise PermissionDeniedError(
+            "Token missing tenant_id claim", error_code="missing_tenant_claim"
+        )
     merchant_id_raw = claims.get("merchant_id")
     # `user_role` is the app role written by the custom_access_token_hook
     # (migration 0007). Fall back to legacy `role` for tokens issued before

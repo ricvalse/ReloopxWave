@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -33,7 +34,7 @@ class AnalyticsEvent(Base):
     subject_type: Mapped[str | None] = mapped_column(String(32))
     subject_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     variant_id: Mapped[str | None] = mapped_column(String(32))
-    properties: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    properties: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()"), index=True
     )

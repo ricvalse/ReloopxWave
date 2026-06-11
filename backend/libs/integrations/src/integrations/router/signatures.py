@@ -31,9 +31,7 @@ def verify_router_signature(
     if not header_value or not shared_secret:
         return False
     bare = header_value.removeprefix(_PREFIX)
-    expected = hmac.new(
-        shared_secret.encode("utf-8"), raw_body, hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(shared_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     if len(bare) != len(expected):
         return False
     return hmac.compare_digest(bare, expected)
@@ -41,7 +39,5 @@ def verify_router_signature(
 
 def sign_router_payload(*, raw_body: bytes, shared_secret: str) -> str:
     """Compute the `X-Relooptech-Signature` value for `raw_body`."""
-    digest = hmac.new(
-        shared_secret.encode("utf-8"), raw_body, hashlib.sha256
-    ).hexdigest()
+    digest = hmac.new(shared_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return f"{_PREFIX}{digest}"

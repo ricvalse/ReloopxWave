@@ -45,7 +45,9 @@ def _require_privileged(ctx: CurrentContext) -> None:
 
 
 async def _load_lead(session: Any, lead_id: UUID) -> Lead:
-    lead = (await session.execute(select(Lead).where(Lead.id == lead_id))).scalar_one_or_none()
+    lead: Lead | None = (
+        await session.execute(select(Lead).where(Lead.id == lead_id))
+    ).scalar_one_or_none()
     if lead is None:
         raise HTTPException(status_code=404, detail="lead not found")
     return lead

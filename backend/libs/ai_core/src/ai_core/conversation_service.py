@@ -11,10 +11,11 @@ This is the thing workers call when a WhatsApp message arrives. It owns:
 Downstream UCs (02/04/05/…) plug in by registering an ActionHandler in the
 `ActionDispatcher`, not by forking this file.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -63,8 +64,12 @@ def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
 
 # ---- Action dispatcher ----------------------------------------------------
 
+
 class ActionHandler(Protocol):
-    async def __call__(self, action: OrchestratorAction, ctx: TurnContext) -> None: ...
+    # Positional-only params: the dispatcher always calls handlers positionally
+    # (`handler(action, ctx)`), and handlers name the 2nd arg `turn_ctx`, so the
+    # protocol must not require a matching keyword name.
+    async def __call__(self, action: OrchestratorAction, ctx: TurnContext, /) -> None: ...
 
 
 class ActionDispatcher:
@@ -84,11 +89,15 @@ class ActionDispatcher:
                 await handler(action, ctx)
             except Exception as e:
                 logger.warning(
-                    "action.handler_failed", kind=action.kind, error=str(e), merchant_id=str(ctx.merchant_id)
+                    "action.handler_failed",
+                    kind=action.kind,
+                    error=str(e),
+                    merchant_id=str(ctx.merchant_id),
                 )
 
 
 # ---- The turn context passed to action handlers --------------------------
+
 
 @dataclass(slots=True)
 class TurnContext:
@@ -108,6 +117,7 @@ class TurnContext:
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
 
+
 class ReplySender(Protocol):
     async def send(
         self,
@@ -121,6 +131,7 @@ class ReplySender(Protocol):
 
 
 # ---- The entry point workers call ----------------------------------------
+
 
 @dataclass(slots=True, frozen=True)
 class InboundResult:
@@ -201,7 +212,9 @@ class ConversationService:
             msgs = MessageRepository(session)
             analytics = AnalyticsRepository(session)
 
-            already_persisted = await msgs.find_by_wa_message_id(wa_message_id)
+            already_persisted = (
+                await msgs.find_by_wa_message_id(wa_message_id) if wa_message_id else None
+            )
 
             lead = await leads.upsert_by_phone(merchant_id=resolved.merchant_id, phone=from_phone)
 
@@ -335,9 +348,7 @@ class ConversationService:
                     text=text,
                 )
                 if lead_id is not None and sentiment:
-                    await LeadRepository(session).update_sentiment(
-                        lead_id, sentiment=sentiment
-                    )
+                    await LeadRepository(session).update_sentiment(lead_id, sentiment=sentiment)
 
             await msgs.persist_assistant_message(
                 conversation_id=conv_id,
@@ -453,9 +464,7 @@ class ConversationService:
 
             existing_id = (
                 await session.execute(
-                    select(_Message.conversation_id).where(
-                        _Message.wa_message_id == wa_message_id
-                    )
+                    select(_Message.conversation_id).where(_Message.wa_message_id == wa_message_id)
                 )
             ).scalar_one_or_none()
             if existing_id is not None:
@@ -506,7 +515,9 @@ class ConversationService:
 
     # ---- helpers ----------------------------------------------------------
 
-    async def _resolve_integration(self, phone_number_id: str) -> ResolvedWhatsAppIntegration | None:
+    async def _resolve_integration(
+        self, phone_number_id: str
+    ) -> ResolvedWhatsAppIntegration | None:
         """Integration lookup runs without a tenant context (the lookup *is* what
         determines the tenant). We use the service-role session for this one query.
         """
@@ -533,9 +544,7 @@ class ConversationService:
         return await manager.resolve_system_prompt(
             merchant_id=merchant_id,
             variant_id=variant_id,
-            fallback=lambda: self._cascade_system_prompt(
-                session=session, merchant_id=merchant_id
-            ),
+            fallback=lambda: self._cascade_system_prompt(session=session, merchant_id=merchant_id),
         )
 
     async def _cascade_system_prompt(self, *, session: Any, merchant_id: UUID) -> str:
@@ -568,7 +577,17 @@ class ConversationService:
         extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
 
         has_profile = any(
-            [business_name, industry, description, offer, hours, location, pricing_notes, website, extras]
+            [
+                business_name,
+                industry,
+                description,
+                offer,
+                hours,
+                location,
+                pricing_notes,
+                website,
+                extras,
+            ]
         )
         if not has_profile:
             return DEFAULT_SYSTEM_PROMPT
@@ -665,16 +684,17 @@ def _with_score_action(
     return out
 
 
-async def _assign_ab_variant(
-    session: Any, *, merchant_id: UUID, lead_id: UUID
-) -> str | None:
+async def _assign_ab_variant(session: Any, *, merchant_id: UUID, lead_id: UUID) -> str | None:
     """Pick the oldest running experiment (if any) and hash-assign the lead."""
     try:
         ab = ABRepository(session)
         running = await ab.list_active_for_merchant(merchant_id)
         if not running:
             return None
-        return await ab.assign_variant(running[0], lead_id=lead_id, merchant_id=merchant_id)
+        return cast(
+            "str | None",
+            await ab.assign_variant(running[0], lead_id=lead_id, merchant_id=merchant_id),
+        )
     except Exception as e:  # pragma: no cover — defensive only
         logger.warning("uc09.assignment_failed", error=str(e))
         return None

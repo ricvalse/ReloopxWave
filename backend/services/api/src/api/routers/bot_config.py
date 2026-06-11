@@ -16,6 +16,7 @@ from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import BotConfigSchema, ConfigKey
 from db import BotTemplateRepository
 from db.models import BotConfig
+from db.session import TenantContext
 from shared import NotFoundError, PermissionDeniedError
 
 router = APIRouter()
@@ -164,7 +165,7 @@ async def update_overrides(
     payload: OverridesIn,
     session: DBSession,
     ctx: CurrentContext,
-) -> dict:
+) -> dict[str, Any]:
     _assert_merchant(ctx, merchant_id)
     _validate_defaults(payload.overrides)
 
@@ -192,7 +193,7 @@ async def update_overrides(
 # ---- helpers -------------------------------------------------------------
 
 
-def _tmpl_out(t) -> TemplateOut:
+def _tmpl_out(t: Any) -> TemplateOut:
     return TemplateOut(
         id=t.id,
         name=t.name,
@@ -219,7 +220,7 @@ def _validate_locked_keys(keys: list[str]) -> None:
         raise PermissionDeniedError(f"Unknown config keys: {bad}", error_code="unknown_locked_keys")
 
 
-def _assert_merchant(ctx, merchant_id: UUID) -> None:
+def _assert_merchant(ctx: TenantContext, merchant_id: UUID) -> None:
     if ctx.merchant_id is not None and ctx.merchant_id != merchant_id:
         raise PermissionDeniedError(
             "Cannot act on another merchant", error_code="cross_merchant_access"

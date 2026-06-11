@@ -6,6 +6,7 @@ Rotation: bump `kek_version` on the integrations row and re-encrypt.
 Ciphertext layout on disk: {nonce: 12B, ciphertext_with_tag: N}. We store
 nonce and ciphertext in separate columns so neither can be swapped.
 """
+
 from __future__ import annotations
 
 import base64

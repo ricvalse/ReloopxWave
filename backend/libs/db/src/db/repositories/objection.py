@@ -89,8 +89,7 @@ class ObjectionRepository:
             .order_by(day)
         )
         return [
-            {"day": d.date().isoformat(), "category": c, "count": int(n)}
-            for d, c, n in rows.all()
+            {"day": d.date().isoformat(), "category": c, "count": int(n)} for d, c, n in rows.all()
         ]
 
     async def recent_samples(

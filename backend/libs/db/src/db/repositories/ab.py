@@ -1,4 +1,5 @@
 """A/B testing repository — experiments, deterministic variant assignment, metrics."""
+
 from __future__ import annotations
 
 import hashlib
@@ -105,7 +106,9 @@ class ABRepository:
             .where(ABAssignment.experiment_id == experiment_id)
             .group_by(ABAssignment.variant_id)
         )
-        assignments = dict((await self._session.execute(assignments_stmt)).all())
+        assignments: dict[str, int] = dict(
+            (await self._session.execute(assignments_stmt)).tuples().all()
+        )
 
         events_stmt = (
             select(

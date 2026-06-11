@@ -3,6 +3,7 @@
 Output is stable and auditable: (score, reason_codes). Hooks in V2 can swap
 the function body for an ML model without changing the call site.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

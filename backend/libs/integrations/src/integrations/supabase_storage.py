@@ -77,7 +77,7 @@ class SupabaseStorage:
                     f"Supabase Storage sign failed ({resp.status_code})",
                     error_code="storage_sign_failed",
                 )
-            signed = resp.json().get("signedURL") or resp.json().get("signedUrl", "")
+            signed: str = resp.json().get("signedURL") or resp.json().get("signedUrl", "")
             if not signed:
                 raise IntegrationError(
                     "sign response missing signedURL", error_code="storage_sign_missing"

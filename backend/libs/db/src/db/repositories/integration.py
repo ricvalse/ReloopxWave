@@ -9,14 +9,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Integration, Merchant
-from shared import EncryptedSecret, decrypt_secret, encrypt_secret
+from shared import (
+    EncryptedSecret,
+    decrypt_secret,
+    encrypt_secret,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -199,9 +203,7 @@ class IntegrationRepository:
         # here — there is no shared/placeholder fallback now that Wave
         # Marketing doesn't hold a Partner key of its own.
         if not api_key:
-            raise ValueError(
-                "api_key is required (router delivers per-channel keys)"
-            )
+            raise ValueError("api_key is required (router delivers per-channel keys)")
         aad = f"wa:{merchant_id}".encode()
         secret = encrypt_secret(api_key, kek_base64=self._kek, aad=aad)
 
@@ -267,7 +269,7 @@ class IntegrationRepository:
             .where(Integration.merchant_id == merchant_id)
             .where(Integration.provider == "whatsapp")
         )
-        result = await self._session.execute(stmt)
+        result = cast(CursorResult[Any], await self._session.execute(stmt))
         await self._session.flush()
         return (result.rowcount or 0) > 0
 

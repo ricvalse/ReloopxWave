@@ -7,9 +7,11 @@ Sends a reactivation WhatsApp message, stamps the lead.
 
 Idempotency: Redis dedup per (lead, attempt) just like UC-03.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from redis.asyncio import Redis
 
@@ -37,7 +39,7 @@ REACTIVATION_TEXTS = {
 DEDUP_TTL_SECONDS = 60 * 60 * 24 * 14  # two weeks — covers the longest interval_days default
 
 
-async def reactivate_dormant_leads(ctx: dict) -> dict:
+async def reactivate_dormant_leads(ctx: dict[str, Any]) -> dict[str, Any]:
     settings = ctx["settings"]
     redis: Redis = ctx.get("redis") or Redis.from_url(settings.redis_url)
 
@@ -86,9 +88,7 @@ async def _maybe_send(
     async with tenant_session(tenant_ctx) as session:
         config = ConfigResolver(session)
         dormant_days = _as_int(
-            await config.resolve(
-                ConfigKey.REACTIVATION_DORMANT_DAYS, merchant_id=cand.merchant_id
-            ),
+            await config.resolve(ConfigKey.REACTIVATION_DORMANT_DAYS, merchant_id=cand.merchant_id),
             90,
         )
         interval_days = _as_int(
@@ -98,9 +98,7 @@ async def _maybe_send(
             7,
         )
         max_attempts = _as_int(
-            await config.resolve(
-                ConfigKey.REACTIVATION_MAX_ATTEMPTS, merchant_id=cand.merchant_id
-            ),
+            await config.resolve(ConfigKey.REACTIVATION_MAX_ATTEMPTS, merchant_id=cand.merchant_id),
             3,
         )
 
@@ -108,9 +106,8 @@ async def _maybe_send(
             return False
         if now - cand.last_interaction_at < timedelta(days=dormant_days):
             return False
-        if (
-            cand.last_reactivation_at is not None
-            and now - cand.last_reactivation_at < timedelta(days=interval_days)
+        if cand.last_reactivation_at is not None and now - cand.last_reactivation_at < timedelta(
+            days=interval_days
         ):
             return False
 
@@ -163,7 +160,7 @@ async def _maybe_send(
         return True
 
 
-def _as_int(value, default: int) -> int:
+def _as_int(value: object, default: int) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.isdigit():

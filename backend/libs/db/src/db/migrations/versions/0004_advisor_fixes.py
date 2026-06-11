@@ -11,6 +11,7 @@ Three things:
      Postgres lifts it into an init-plan and evaluates it once per query
      instead of once per row. Helper lives in public._jwt_claim(text).
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

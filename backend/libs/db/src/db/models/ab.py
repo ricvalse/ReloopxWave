@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -23,7 +24,9 @@ class ABExperiment(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
-    variants: Mapped[list] = mapped_column(JSONB, nullable=False)  # [{id, weight, prompt_template_id}]
+    variants: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False
+    )  # [{id, weight, prompt_template_id}]
     primary_metric: Mapped[str] = mapped_column(String(64), nullable=False)
     min_sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")

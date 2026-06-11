@@ -18,6 +18,7 @@ so nothing else needs to migrate. Existing tokens will fail role checks
 until users re-login — this is acceptable since the prior behavior was
 already broken for merchant_user tokens hitting Supabase directly.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

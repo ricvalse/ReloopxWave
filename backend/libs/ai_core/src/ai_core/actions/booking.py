@@ -15,9 +15,10 @@ text from the orchestrator. Booking confirmation is a separate WhatsApp message.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.orchestrator import OrchestratorAction
@@ -32,6 +33,9 @@ from db import (
 )
 from integrations.ghl.client import GHLClient, GHLTokenBundle
 from shared import IntegrationError, get_logger
+
+if TYPE_CHECKING:
+    from ai_core.conversation_service import ReplySender, TurnContext
 
 logger = get_logger(__name__)
 
@@ -62,14 +66,14 @@ class BookSlotHandler:
         kek_base64: str,
         ghl_client_id: str,
         ghl_client_secret: str,
-        reply_sender,  # ai_core.ReplySender
+        reply_sender: ReplySender,
     ) -> None:
         self._kek = kek_base64
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
         self._reply_sender = reply_sender
 
-    async def __call__(self, action: OrchestratorAction, turn_ctx) -> None:
+    async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
             tenant_id=turn_ctx.tenant_id,
             merchant_id=turn_ctx.merchant_id,
@@ -181,7 +185,7 @@ class BookSlotHandler:
     async def _try_book(
         self,
         *,
-        ghl,
+        ghl: Any,
         calendar_id: str,
         duration_min: int,
         contact_phone: str,
@@ -190,7 +194,7 @@ class BookSlotHandler:
         pipeline_id: str | None,
         new_stage_id: str | None,
         tz_name: str = "Europe/Rome",
-        on_token_refresh=None,
+        on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> BookingOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(
@@ -255,8 +259,8 @@ class BookSlotHandler:
                     start_iso=window_start.isoformat(),
                     end_iso=window_end.isoformat(),
                 )
-                suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
-                suggestions = [s for s in suggestions if s]
+                raw_suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
+                suggestions: list[str] = [s for s in raw_suggestions if s]
                 return BookingOutcome(
                     False,
                     None,
@@ -312,7 +316,9 @@ class BookSlotHandler:
             logger.warning("book_slot.opportunity_failed", error=str(e))
             return None
 
-    async def _send_confirmation(self, turn_ctx, outcome: BookingOutcome | None) -> None:
+    async def _send_confirmation(
+        self, turn_ctx: TurnContext, outcome: BookingOutcome | None
+    ) -> None:
         if outcome is None:
             return
         if outcome.booked and outcome.slot_start_iso:

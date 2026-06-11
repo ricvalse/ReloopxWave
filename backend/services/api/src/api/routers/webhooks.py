@@ -113,18 +113,18 @@ async def whatsapp_inbound(
     # never run them through the LLM orchestrator (already sent).
     echoes = parse_message_echo_payload(payload)
     enqueued_echoes = 0
-    for ev in echoes:
-        if ev.text is None or not ev.phone_number_id:
+    for echo in echoes:
+        if echo.text is None or not echo.phone_number_id:
             continue
-        if not ev.message_id or not ev.customer_phone:
+        if not echo.message_id or not echo.customer_phone:
             continue
         await arq.enqueue_job(
             "handle_phone_app_echo",
-            ev.phone_number_id,
-            ev.customer_phone,
-            ev.text,
-            ev.message_id,
-            _job_id=f"wa:echo:{ev.message_id}",
+            echo.phone_number_id,
+            echo.customer_phone,
+            echo.text,
+            echo.message_id,
+            _job_id=f"wa:echo:{echo.message_id}",
         )
         enqueued_echoes += 1
 

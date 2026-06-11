@@ -87,9 +87,7 @@ def test_valid_signature_persists_channel(client: TestClient) -> None:
         "event": "whatsapp.connected",
         "platform_id": _PLATFORM,
         "customer_id": merchant_id,
-        "channels": [
-            {"phone_number_id": "pnid-1", "channel_api_key": "D360-KEY"}
-        ],
+        "channels": [{"phone_number_id": "pnid-1", "channel_api_key": "D360-KEY"}],
     }
     raw, sig = _signed(body)
     resp = client.post(
@@ -108,12 +106,14 @@ def test_valid_signature_persists_channel(client: TestClient) -> None:
 def test_unknown_event_rejected(client: TestClient) -> None:
     """A signed payload with an unsupported event must log + return 400 — not
     blow up on the structlog `event=` keyword collision."""
-    raw, sig = _signed({
-        "event": "whatsapp.exploded",
-        "platform_id": _PLATFORM,
-        "customer_id": str(uuid4()),
-        "channels": [],
-    })
+    raw, sig = _signed(
+        {
+            "event": "whatsapp.exploded",
+            "platform_id": _PLATFORM,
+            "customer_id": str(uuid4()),
+            "channels": [],
+        }
+    )
     resp = client.post(
         "/internal/whatsapp-connected",
         content=raw,
@@ -124,8 +124,14 @@ def test_unknown_event_rejected(client: TestClient) -> None:
 
 
 def test_bad_signature_rejected(client: TestClient) -> None:
-    raw, _ = _signed({"event": "whatsapp.connected", "platform_id": _PLATFORM,
-                      "customer_id": str(uuid4()), "channels": []})
+    raw, _ = _signed(
+        {
+            "event": "whatsapp.connected",
+            "platform_id": _PLATFORM,
+            "customer_id": str(uuid4()),
+            "channels": [],
+        }
+    )
     resp = client.post(
         "/internal/whatsapp-connected",
         content=raw,

@@ -7,10 +7,11 @@ source}, we create the KnowledgeBaseDoc row and enqueue the reindex job.
 
 URL-based docs don't need Storage at all — just the URL.
 """
+
 from __future__ import annotations
 
 import time
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Request
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 from api.dependencies.session import CurrentContext, DBSession
 from db import KnowledgeBaseRepository
+from db.session import TenantContext
 from shared import PermissionDeniedError
 
 router = APIRouter()
@@ -75,7 +77,7 @@ async def reindex(
     doc_id: UUID,
     request: Request,
     ctx: CurrentContext,
-) -> dict:
+) -> dict[str, Any]:
     _assert_merchant_scope(ctx, merchant_id)
     arq = request.app.state.arq
     # Distinct job id per manual reindex so re-triggers aren't deduped away by
@@ -107,7 +109,7 @@ async def list_docs(
     ]
 
 
-def _assert_merchant_scope(ctx, merchant_id: UUID) -> None:
+def _assert_merchant_scope(ctx: TenantContext, merchant_id: UUID) -> None:
     if ctx.merchant_id is not None and ctx.merchant_id != merchant_id:
         raise PermissionDeniedError(
             "Cannot act on another merchant", error_code="cross_merchant_access"

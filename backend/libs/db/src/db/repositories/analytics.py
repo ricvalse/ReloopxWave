@@ -82,7 +82,7 @@ class AnalyticsRepository:
         leads_total = int(leads_row[0] or 0)
         leads_hot = int(leads_row[1] or 0)
 
-        counts = dict(
+        counts: dict[str, int] = dict(
             (
                 await self._session.execute(
                     select(AnalyticsEvent.event_type, func.count(AnalyticsEvent.id))
@@ -92,7 +92,9 @@ class AnalyticsRepository:
                     )
                     .group_by(AnalyticsEvent.event_type)
                 )
-            ).all()
+            )
+            .tuples()
+            .all()
         )
         messages_received = int(counts.get("message.received", 0))
         messages_replied = int(counts.get("message.replied", 0))
@@ -127,11 +129,9 @@ class AnalyticsRepository:
 
     # ---- UC-12 agency dashboard -----------------------------------------
 
-    async def tenant_totals(
-        self, *, tenant_id: UUID, since_days: int = 30
-    ) -> dict[str, int]:
+    async def tenant_totals(self, *, tenant_id: UUID, since_days: int = 30) -> dict[str, int]:
         since = datetime.now(tz=UTC) - timedelta(days=since_days)
-        counts = dict(
+        counts: dict[str, int] = dict(
             (
                 await self._session.execute(
                     select(AnalyticsEvent.event_type, func.count(AnalyticsEvent.id))
@@ -141,7 +141,9 @@ class AnalyticsRepository:
                     )
                     .group_by(AnalyticsEvent.event_type)
                 )
-            ).all()
+            )
+            .tuples()
+            .all()
         )
         leads_total = int(
             (
@@ -156,8 +158,9 @@ class AnalyticsRepository:
         active_merchants = int(
             (
                 await self._session.execute(
-                    select(func.count(Merchant.id))
-                    .where(Merchant.tenant_id == tenant_id, Merchant.status == "active")
+                    select(func.count(Merchant.id)).where(
+                        Merchant.tenant_id == tenant_id, Merchant.status == "active"
+                    )
                 )
             ).scalar()
             or 0

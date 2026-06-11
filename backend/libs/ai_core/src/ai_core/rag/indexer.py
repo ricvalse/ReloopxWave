@@ -4,6 +4,7 @@ Keeps external parser deps (pypdf, python-docx, beautifulsoup4) behind lazy
 imports so the ai_core package installs without them at runtime if a deployment
 only needs retrieval.
 """
+
 from __future__ import annotations
 
 import io
@@ -95,6 +96,7 @@ class Indexer:
 
 
 # ---- Extractors ----------------------------------------------------------
+
 
 def extract_text_from_bytes(source: str, raw: bytes) -> str:
     if source == "pdf":

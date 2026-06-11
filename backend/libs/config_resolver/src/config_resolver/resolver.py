@@ -71,7 +71,11 @@ class ConfigResolver:
                 return value
 
         # 3. System default
-        value = SYSTEM_DEFAULTS.get(ConfigKey(key_str)) if key_str in {k.value for k in ConfigKey} else None
+        value = (
+            SYSTEM_DEFAULTS.get(ConfigKey(key_str))
+            if key_str in {k.value for k in ConfigKey}
+            else None
+        )
         await self._cache(cache_key, value)
         return value
 
@@ -91,7 +95,7 @@ class ConfigResolver:
         await self._redis.set(key, json.dumps(value), ex=CACHE_TTL_SECONDS)
 
 
-def _lookup(bag: dict, dotted_key: str) -> Any:
+def _lookup(bag: dict[str, Any], dotted_key: str) -> Any:
     """Walks a dotted key (`a.b.c`) through a nested JSON bag."""
     node: Any = bag
     for part in dotted_key.split("."):

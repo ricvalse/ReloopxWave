@@ -9,6 +9,7 @@ Base URL: https://waba-v2.360dialog.io
 Send endpoint: `/messages` (the API key already scopes to a channel, so
 there's no `{phone_number_id}` path component like Meta's).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -44,20 +45,20 @@ class D360WhatsAppClient:
         # the same `waba-v2.360dialog.io` host, but 360dialog reserves the
         # right to issue per-region/per-platform URLs — using `address` makes
         # us forward-compatible with that without changing call sites.
-        self._http = http or httpx.AsyncClient(
-            base_url=base_url or D360_BASE, timeout=15.0
-        )
+        self._http = http or httpx.AsyncClient(base_url=base_url or D360_BASE, timeout=15.0)
 
     async def close(self) -> None:
         await self._http.aclose()
 
     async def send_text(self, *, to_phone: str, text: str) -> dict[str, Any]:
-        return await self._send({
-            "messaging_product": "whatsapp",
-            "to": to_phone,
-            "type": "text",
-            "text": {"body": text, "preview_url": False},
-        })
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "to": to_phone,
+                "type": "text",
+                "text": {"body": text, "preview_url": False},
+            }
+        )
 
     async def send_template(
         self,
@@ -67,16 +68,18 @@ class D360WhatsAppClient:
         language: str = "it",
         components: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        return await self._send({
-            "messaging_product": "whatsapp",
-            "to": to_phone,
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {"code": language},
-                "components": components or [],
-            },
-        })
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "to": to_phone,
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": language},
+                    "components": components or [],
+                },
+            }
+        )
 
     async def send_interactive(
         self,
@@ -86,22 +89,24 @@ class D360WhatsAppClient:
         body: str,
         buttons: list[dict[str, str]],
     ) -> dict[str, Any]:
-        return await self._send({
-            "messaging_product": "whatsapp",
-            "to": to_phone,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "header": {"type": "text", "text": header} if header else None,
-                "body": {"text": body},
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
-                        for b in buttons
-                    ]
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "to": to_phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "header": {"type": "text", "text": header} if header else None,
+                    "body": {"text": body},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
+                            for b in buttons
+                        ]
+                    },
                 },
-            },
-        })
+            }
+        )
 
     @retry(
         stop=stop_after_attempt(3),
@@ -123,4 +128,3 @@ class D360WhatsAppClient:
             )
         result: dict[str, Any] = resp.json()
         return result
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
@@ -25,8 +26,8 @@ class BotTemplate(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String(500))
-    defaults: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    locked_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    defaults: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    locked_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     tenant: Mapped[Tenant] = relationship(back_populates="templates")  # type: ignore[name-defined]  # noqa: F821
@@ -50,7 +51,7 @@ class BotConfig(Base, TimestampMixin):
         ForeignKey("bot_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
-    overrides: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    overrides: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="bot_config")  # type: ignore[name-defined]  # noqa: F821
 
@@ -61,7 +62,11 @@ class PromptTemplate(Base, TimestampMixin):
     __tablename__ = "prompt_templates"
     __table_args__ = (
         UniqueConstraint(
-            "merchant_id", "kind", "version", "variant_id", name="uq_prompt_templates_version_variant"
+            "merchant_id",
+            "kind",
+            "version",
+            "variant_id",
+            name="uq_prompt_templates_version_variant",
         ),
     )
 
@@ -72,9 +77,11 @@ class PromptTemplate(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # system | user | escalation | ...
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # system | user | escalation | ...
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     variant_id: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
     body: Mapped[str] = mapped_column(String, nullable=False)
-    variables: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    variables: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

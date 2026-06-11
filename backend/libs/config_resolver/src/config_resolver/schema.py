@@ -4,6 +4,7 @@ Keys map 1:1 to the table in section 9.4 of reloop-ai-architettura.md.
 Adding a new configurable knob means: add a key here, add the default,
 run the OpenAPI codegen to sync the frontend.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum

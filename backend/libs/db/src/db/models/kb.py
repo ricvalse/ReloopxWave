@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]  # no py.typed marker
 from sqlalchemy import ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -31,7 +32,7 @@ class KnowledgeBaseDoc(Base, TimestampMixin):
     url: Mapped[str | None] = mapped_column(String(2000))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class KBChunk(Base, TimestampMixin):
@@ -56,4 +57,4 @@ class KBChunk(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(String, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

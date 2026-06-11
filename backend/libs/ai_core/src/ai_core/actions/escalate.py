@@ -17,6 +17,8 @@ notifies, it does not send another WhatsApp message.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -27,13 +29,16 @@ from db import (
 )
 from shared import get_logger
 
+if TYPE_CHECKING:
+    from ai_core.conversation_service import TurnContext
+
 logger = get_logger(__name__)
 
 
 class EscalateHumanHandler:
     kind = "escalate_human"
 
-    async def __call__(self, action: OrchestratorAction, turn_ctx) -> None:
+    async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
             tenant_id=turn_ctx.tenant_id,
             merchant_id=turn_ctx.merchant_id,

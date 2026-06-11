@@ -51,15 +51,12 @@ class RouterClient:
             # `ROUTER_BASE_URL=router.relooptech.ai` once and got a 500
             # with a 20-line httpcore traceback.
             raise ValueError(
-                f"router base_url must start with http:// or https:// "
-                f"(got: {base_url!r})"
+                f"router base_url must start with http:// or https:// (got: {base_url!r})"
             )
         if not shared_secret:
             raise ValueError("router shared_secret is required")
         self._shared_secret = shared_secret
-        self._http = http or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), timeout=timeout
-        )
+        self._http = http or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -87,9 +84,7 @@ class RouterClient:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        signature = sign_router_payload(
-            raw_body=body, shared_secret=self._shared_secret
-        )
+        signature = sign_router_payload(raw_body=body, shared_secret=self._shared_secret)
 
         resp = await self._http.post(
             "/onboard/start",

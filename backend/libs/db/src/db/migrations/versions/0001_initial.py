@@ -8,6 +8,7 @@ Creates the full V1 schema including pgvector extension, HNSW index on
 kb_chunks.embedding, and RLS policies keyed on Supabase JWT claims
 (current_setting('request.jwt.claims', true)::jsonb ->> 'tenant_id' / 'merchant_id').
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -52,26 +53,63 @@ def upgrade() -> None:
 
     op.create_table(
         "tenants",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
         sa.Column("slug", sa.String(64), nullable=False, unique=True),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
-        sa.Column("settings", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "settings", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
 
     op.create_table(
         "merchants",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tenant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("slug", sa.String(64), nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
         sa.Column("timezone", sa.String(64), nullable=False, server_default="Europe/Rome"),
         sa.Column("locale", sa.String(8), nullable=False, server_default="it"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.UniqueConstraint("tenant_id", "slug", name="uq_merchants_tenant_slug"),
     )
     op.create_index("ix_merchants_tenant_id", "merchants", ["tenant_id"])
@@ -80,61 +118,171 @@ def upgrade() -> None:
         "users",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("email", sa.String(320), nullable=False, unique=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=True),
+        sa.Column(
+            "tenant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
         sa.Column("role", sa.String(32), nullable=False),
         sa.Column("full_name", sa.String(200)),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_users_tenant_id", "users", ["tenant_id"])
     op.create_index("ix_users_merchant_id", "users", ["merchant_id"])
 
     op.create_table(
         "bot_templates",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tenant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(120), nullable=False),
         sa.Column("description", sa.String(500)),
-        sa.Column("defaults", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("locked_keys", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column(
+            "defaults", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
+        sa.Column(
+            "locked_keys", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+        ),
         sa.Column("is_default", sa.Boolean, nullable=False, server_default=sa.text("false")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.UniqueConstraint("tenant_id", "name", name="uq_bot_templates_tenant_name"),
     )
     op.create_index("ix_bot_templates_tenant_id", "bot_templates", ["tenant_id"])
 
     op.create_table(
         "bot_configs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False, unique=True),
-        sa.Column("template_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("bot_templates.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("overrides", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+        ),
+        sa.Column(
+            "template_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("bot_templates.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "overrides", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
 
     op.create_table(
         "prompt_templates",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("kind", sa.String(32), nullable=False),
         sa.Column("version", sa.Integer, nullable=False, server_default="1"),
         sa.Column("variant_id", sa.String(32), nullable=False, server_default="default"),
         sa.Column("body", sa.Text, nullable=False),
-        sa.Column("variables", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column(
+            "variables", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+        ),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.UniqueConstraint("merchant_id", "kind", "version", "variant_id", name="uq_prompt_templates_version_variant"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.UniqueConstraint(
+            "merchant_id",
+            "kind",
+            "version",
+            "variant_id",
+            name="uq_prompt_templates_version_variant",
+        ),
     )
     op.create_index("ix_prompt_templates_merchant_id", "prompt_templates", ["merchant_id"])
 
     op.create_table(
         "knowledge_base_docs",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("title", sa.String(300), nullable=False),
         sa.Column("source", sa.String(32), nullable=False),
         sa.Column("storage_path", sa.String(500)),
@@ -142,23 +290,58 @@ def upgrade() -> None:
         sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
         sa.Column("chunk_count", sa.Integer, nullable=False, server_default="0"),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_knowledge_base_docs_merchant_id", "knowledge_base_docs", ["merchant_id"])
 
     op.create_table(
         "kb_chunks",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("doc_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("knowledge_base_docs.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "doc_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("knowledge_base_docs.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("chunk_index", sa.Integer, nullable=False),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("embedding", Vector(1536), nullable=False),
         sa.Column("tokens", sa.Integer, nullable=False, server_default="0"),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_kb_chunks_doc_id", "kb_chunks", ["doc_id"])
     op.create_index("ix_kb_chunks_merchant_id", "kb_chunks", ["merchant_id"])
@@ -169,21 +352,43 @@ def upgrade() -> None:
 
     op.create_table(
         "leads",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("phone", sa.String(32), nullable=False),
         sa.Column("ghl_contact_id", sa.String(120)),
         sa.Column("name", sa.String(200)),
         sa.Column("email", sa.String(320)),
         sa.Column("score", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("score_reasons", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+        sa.Column(
+            "score_reasons", postgresql.JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+        ),
         sa.Column("sentiment", sa.String(16)),
         sa.Column("status", sa.String(32), nullable=False, server_default="new"),
         sa.Column("last_interaction_at", sa.String(64)),
         sa.Column("pipeline_stage_id", sa.String(120)),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.UniqueConstraint("merchant_id", "phone", name="uq_leads_merchant_phone"),
         sa.UniqueConstraint("merchant_id", "ghl_contact_id", name="uq_leads_merchant_ghl"),
     )
@@ -191,19 +396,49 @@ def upgrade() -> None:
 
     op.create_table(
         "conversations",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("lead_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("leads.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "lead_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("leads.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("wa_phone_number_id", sa.String(64)),
         sa.Column("wa_contact_phone", sa.String(32)),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
         sa.Column("variant_id", sa.String(32)),
-        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "started_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.Column("last_message_at", sa.DateTime(timezone=True)),
         sa.Column("message_count", sa.Integer, nullable=False, server_default="0"),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_conversations_merchant_id", "conversations", ["merchant_id"])
     op.create_index("ix_conversations_lead_id", "conversations", ["lead_id"])
@@ -211,9 +446,24 @@ def upgrade() -> None:
 
     op.create_table(
         "messages",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("conversation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "conversation_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("conversations.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("role", sa.String(16), nullable=False),
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("variant_id", sa.String(32)),
@@ -223,7 +473,12 @@ def upgrade() -> None:
         sa.Column("latency_ms", sa.Integer),
         sa.Column("wa_message_id", sa.String(120)),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_messages_conversation_id", "messages", ["conversation_id"])
     op.create_index("ix_messages_merchant_id", "messages", ["merchant_id"])
@@ -232,16 +487,41 @@ def upgrade() -> None:
 
     op.create_table(
         "objections",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("conversation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "conversation_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("conversations.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("category", sa.String(64), nullable=False),
         sa.Column("summary", sa.String(1000), nullable=False),
         sa.Column("quote", sa.String(2000)),
         sa.Column("severity", sa.String(16), nullable=False, server_default="medium"),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_objections_merchant_id", "objections", ["merchant_id"])
     op.create_index("ix_objections_conversation_id", "objections", ["conversation_id"])
@@ -249,8 +529,18 @@ def upgrade() -> None:
 
     op.create_table(
         "ab_experiments",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("description", sa.String(1000)),
         sa.Column("variants", postgresql.JSONB, nullable=False),
@@ -260,19 +550,54 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("ended_at", sa.DateTime(timezone=True)),
         sa.Column("is_default", sa.Boolean, nullable=False, server_default=sa.text("false")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_ab_experiments_merchant_id", "ab_experiments", ["merchant_id"])
 
     op.create_table(
         "ab_assignments",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("experiment_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("ab_experiments.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("lead_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("leads.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "experiment_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("ab_experiments.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "lead_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("leads.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("variant_id", sa.String(32), nullable=False),
-        sa.Column("assigned_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "assigned_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.UniqueConstraint("experiment_id", "lead_id", name="uq_ab_assignments_exp_lead"),
     )
     op.create_index("ix_ab_assignments_experiment_id", "ab_assignments", ["experiment_id"])
@@ -281,15 +606,37 @@ def upgrade() -> None:
 
     op.create_table(
         "analytics_events",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=True),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tenant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
         sa.Column("event_type", sa.String(64), nullable=False),
         sa.Column("subject_type", sa.String(32)),
         sa.Column("subject_id", postgresql.UUID(as_uuid=True)),
         sa.Column("variant_id", sa.String(32)),
-        sa.Column("properties", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "properties", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
+        sa.Column(
+            "occurred_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_analytics_events_tenant_id", "analytics_events", ["tenant_id"])
     op.create_index("ix_analytics_events_merchant_id", "analytics_events", ["merchant_id"])
@@ -298,8 +645,18 @@ def upgrade() -> None:
 
     op.create_table(
         "integrations",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("provider", sa.String(32), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
         sa.Column("external_account_id", sa.String(200)),
@@ -309,17 +666,42 @@ def upgrade() -> None:
         sa.Column("kek_version", sa.Integer, nullable=False, server_default="1"),
         sa.Column("expires_at", sa.DateTime(timezone=True)),
         sa.Column("meta", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.UniqueConstraint("merchant_id", "provider", name="uq_integrations_merchant_provider"),
     )
     op.create_index("ix_integrations_merchant_id", "integrations", ["merchant_id"])
 
     op.create_table(
         "ft_models",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), primary_key=True),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("merchant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("merchants.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "id",
+            postgresql.UUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tenant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "merchant_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("merchants.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("version", sa.Integer, nullable=False),
         sa.Column("base_model", sa.String(120), nullable=False),
         sa.Column("provider_model_id", sa.String(200), nullable=False),
@@ -327,10 +709,22 @@ def upgrade() -> None:
         sa.Column("training_job_id", sa.String(200)),
         sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
         sa.Column("trained_at", sa.DateTime(timezone=True)),
-        sa.Column("evaluation", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column(
+            "evaluation", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
         sa.Column("is_default", sa.Boolean, nullable=False, server_default=sa.text("false")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
     )
     op.create_index("ix_ft_models_tenant_id", "ft_models", ["tenant_id"])
     op.create_index("ix_ft_models_merchant_id", "ft_models", ["merchant_id"])

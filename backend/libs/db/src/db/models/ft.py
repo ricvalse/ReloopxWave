@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -36,5 +37,5 @@ class FTModel(Base, TimestampMixin):
     training_job_id: Mapped[str | None] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     trained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    evaluation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    evaluation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

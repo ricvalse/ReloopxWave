@@ -76,9 +76,7 @@ class SupabaseAdminClient:
         url = f"{self._base}/auth/v1/invite"
         params = {"redirect_to": redirect_to} if redirect_to else None
         try:
-            resp = await self._http.post(
-                url, json=payload, params=params, headers=self._headers()
-            )
+            resp = await self._http.post(url, json=payload, params=params, headers=self._headers())
         except httpx.HTTPError as e:
             raise IntegrationError(
                 "Supabase invite transport failure",

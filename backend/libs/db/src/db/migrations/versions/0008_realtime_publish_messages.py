@@ -15,6 +15,7 @@ changes) carry complete row data when we add those subscriptions.
 RLS on both tables already restricts merchant_user subscribers to their
 own merchant via the policies created in 0001_initial.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

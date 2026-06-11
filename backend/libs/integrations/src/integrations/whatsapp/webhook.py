@@ -1,4 +1,5 @@
 """WhatsApp webhook payload parsing."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

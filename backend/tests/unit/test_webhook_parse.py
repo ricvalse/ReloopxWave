@@ -13,7 +13,12 @@ def test_parse_text_message() -> None:
                         "value": {
                             "metadata": {"phone_number_id": "42"},
                             "messages": [
-                                {"id": "abc", "from": "39333000000", "type": "text", "text": {"body": "ciao"}}
+                                {
+                                    "id": "abc",
+                                    "from": "39333000000",
+                                    "type": "text",
+                                    "text": {"body": "ciao"},
+                                }
                             ],
                         }
                     }

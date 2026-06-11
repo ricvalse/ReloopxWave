@@ -25,6 +25,7 @@ is already taken by `0005_super_admin_support`. The Supabase MCP world
 numbered it 0005 because slots 0006-0008 had not yet been ported. End
 state is identical either way.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -55,14 +56,11 @@ def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS internal")
     op.execute("ALTER TABLE IF EXISTS public.alembic_version SET SCHEMA internal")
     op.execute(
-        "ALTER FUNCTION public.custom_access_token_hook(jsonb) "
-        "SET search_path = 'public, auth'"
+        "ALTER FUNCTION public.custom_access_token_hook(jsonb) SET search_path = 'public, auth'"
     )
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER FUNCTION public.custom_access_token_hook(jsonb) RESET search_path"
-    )
+    op.execute("ALTER FUNCTION public.custom_access_token_hook(jsonb) RESET search_path")
     op.execute("ALTER TABLE IF EXISTS internal.alembic_version SET SCHEMA public")
     op.execute("ALTER FUNCTION public._jwt_claim(text) RESET search_path")

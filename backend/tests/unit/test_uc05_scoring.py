@@ -1,4 +1,5 @@
 """UC-05 — update_score handler unit tests."""
+
 from __future__ import annotations
 
 import uuid
@@ -46,6 +47,7 @@ def _patch(monkeypatch, lead: FakeLead | None, captured_events: list, captured_u
         def __init__(self, session): ...
         async def get_by_phone(self, *, merchant_id, phone):
             return lead
+
         async def update_score(self, lead_id, *, score, reasons):
             captured_updates.append({"lead_id": lead_id, "score": score, "reasons": reasons})
 

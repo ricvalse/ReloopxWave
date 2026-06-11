@@ -3,8 +3,10 @@
 Triggered by the API router after a new doc is uploaded, or manually from the
 merchant panel. Idempotent (Indexer drops existing chunks before re-embedding).
 """
+
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from db import (
@@ -19,12 +21,14 @@ from shared import DomainError, get_logger
 logger = get_logger(__name__)
 
 
-async def reindex_doc(ctx: dict, *, doc_id: str) -> dict:
+async def reindex_doc(ctx: dict[str, Any], *, doc_id: str) -> dict[str, Any]:
     runtime = ctx["runtime"]
     settings = runtime.settings
     embedder = runtime.embedder
     if embedder is None:
-        raise DomainError("no openai key configured — indexing unavailable", error_code="no_embedder")
+        raise DomainError(
+            "no openai key configured — indexing unavailable", error_code="no_embedder"
+        )
 
     # First resolve tenant/merchant for the doc (admin session — we don't know the scope yet).
     from sqlalchemy import select

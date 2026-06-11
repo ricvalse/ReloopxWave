@@ -4,6 +4,7 @@ Revision ID: 0003_storage_buckets
 Revises: 0002_auth_jwt_hook
 Create Date: 2026-04-22
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -57,8 +58,8 @@ def upgrade() -> None:
 
     # kb-documents: merchant-prefixed path, authenticated CRUD.
     for suffix, stmt in (
-        ("read",   "FOR SELECT TO authenticated USING"),
-        ("write",  "FOR INSERT TO authenticated WITH CHECK"),
+        ("read", "FOR SELECT TO authenticated USING"),
+        ("write", "FOR INSERT TO authenticated WITH CHECK"),
         ("update", "FOR UPDATE TO authenticated USING"),
         ("delete", "FOR DELETE TO authenticated USING"),
     ):
@@ -69,7 +70,7 @@ def upgrade() -> None:
         )
 
     for suffix, stmt in (
-        ("read",  "FOR SELECT TO authenticated USING"),
+        ("read", "FOR SELECT TO authenticated USING"),
         ("write", "FOR INSERT TO authenticated WITH CHECK"),
     ):
         op.execute(f"DROP POLICY IF EXISTS branding_assets_merchant_{suffix} ON storage.objects")

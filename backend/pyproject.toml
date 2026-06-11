@@ -79,6 +79,11 @@ exclude = [
     "libs/db/src/db/migrations/",
     "build/",
     "dist/",
+    # Tests use pytest fixtures, fakes, monkeypatch and SimpleNamespace stand-ins
+    # — intentionally loosely typed. We keep strict typing on production code and
+    # exempt the suites rather than annotate hundreds of fixtures.
+    "/tests/",
+    "tests/",
 ]
 
 [[tool.mypy.overrides]]

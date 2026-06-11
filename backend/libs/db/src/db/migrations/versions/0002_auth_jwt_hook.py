@@ -12,6 +12,7 @@ After the migration runs, enable the hook in the Supabase dashboard:
   Authentication → Hooks → Custom Access Token
   → point to public.custom_access_token_hook
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

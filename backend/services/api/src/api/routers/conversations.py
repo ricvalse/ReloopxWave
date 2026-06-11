@@ -66,7 +66,7 @@ class ConversationNoteOut(BaseModel):
 
 
 @router.get("/")
-async def list_conversations(ctx: CurrentContext, session: DBSession) -> list[dict]:
+async def list_conversations(ctx: CurrentContext, session: DBSession) -> list[dict[str, Any]]:
     """Backend read fallback for conversation threads.
 
     The frontend usually reads these directly via the Supabase client (spec
@@ -90,7 +90,7 @@ async def list_conversations(ctx: CurrentContext, session: DBSession) -> list[di
 
 
 @router.get("/{conversation_id}")
-async def get_conversation(conversation_id: UUID, session: DBSession) -> dict:
+async def get_conversation(conversation_id: UUID, session: DBSession) -> dict[str, Any]:
     """Return a single conversation with its messages (oldest first).
 
     RLS scopes the lookup, so a missing row means not-found-or-not-yours and

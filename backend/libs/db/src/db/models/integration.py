@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
@@ -34,4 +35,4 @@ class Integration(Base, TimestampMixin):
     secret_aad: Mapped[bytes | None] = mapped_column(LargeBinary)
     kek_version: Mapped[int] = mapped_column(nullable=False, default=1)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    meta: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

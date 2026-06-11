@@ -1,6 +1,8 @@
 """UC-13 — objection report + trigger endpoint."""
+
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
@@ -18,16 +20,14 @@ async def objection_report(
     session: DBSession,
     since_days: int = Query(30, ge=1, le=365),
     samples_per_category: int = Query(3, ge=0, le=10),
-) -> dict:
+) -> dict[str, Any]:
     if ctx.merchant_id is None:
         raise PermissionDeniedError(
             "Objection report requires a merchant context",
             error_code="no_merchant_context",
         )
     repo = ObjectionRepository(session)
-    categories = await repo.category_histogram(
-        merchant_id=ctx.merchant_id, since_days=since_days
-    )
+    categories = await repo.category_histogram(merchant_id=ctx.merchant_id, since_days=since_days)
 
     payload = []
     for cat in categories:
@@ -47,21 +47,17 @@ async def objection_report(
         )
 
     # Per-day, per-category series powering the heatmap + trend view (UC-13).
-    trend = await repo.category_histogram_by_day(
-        merchant_id=ctx.merchant_id, since_days=since_days
-    )
+    trend = await repo.category_histogram_by_day(merchant_id=ctx.merchant_id, since_days=since_days)
     return {"since_days": since_days, "categories": payload, "trend": trend}
 
 
 @router.post("/objections/extract/{conversation_id}")
 async def trigger_extraction(
     conversation_id: UUID, request: Request, ctx: CurrentContext
-) -> dict:
+) -> dict[str, Any]:
     """Manually re-run objection extraction for a conversation. Useful during tuning."""
     if ctx.merchant_id is None:
-        raise PermissionDeniedError(
-            "Requires merchant context", error_code="no_merchant_context"
-        )
+        raise PermissionDeniedError("Requires merchant context", error_code="no_merchant_context")
     arq = request.app.state.arq
     await arq.enqueue_job(
         "objection_extraction",

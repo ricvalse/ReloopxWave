@@ -24,6 +24,7 @@ REPLICA IDENTITY FULL is already set on `messages` (migration 0008), so
 status UPDATEs will broadcast complete row data for the Realtime
 subscription that drives the tick state machine.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

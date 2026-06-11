@@ -7,6 +7,7 @@ The response is constrained by a Pydantic schema so downstream workers can
 dispatch book_slot / move_pipeline / update_score / escalate_human without
 parsing free-form text.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
