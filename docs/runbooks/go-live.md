@@ -44,7 +44,7 @@ Il backend ha un **fail-fast** in produzione: con `ENVIRONMENT=production`, API 
 **Modelli LLM (🟡 override solo se gli id differiscono dal tuo provider):**
 `LLM_MODEL_DEFAULT` · `LLM_MODEL_ESCALATION` · `LLM_MODEL_SENTIMENT` · `LLM_MODEL_FALLBACK` · `LLM_MODEL_EMBEDDING` (default rispettivamente `gpt-5-mini`, `gpt-5.2`, `gpt-5-nano`, `claude-sonnet-4-6`, `text-embedding-3-small`). **Verifica che esistano sul tuo account OpenAI**; altrimenti impostali ai nomi reali — niente più modifiche al codice.
 
-**GHL (🔴 per il booking):** `GHL_CLIENT_ID` · `GHL_CLIENT_SECRET` · `GHL_REDIRECT_URI` (= `{PUBLIC_API_BASE_URL}/integrations/ghl/oauth/callback`) · `GHL_OAUTH_STATE_SECRET` (se assente usa il client_secret) · `GHL_WEBHOOK_SECRET`.
+**GHL (🔴 per il booking):** `GHL_CLIENT_ID` · `GHL_CLIENT_SECRET` · `GHL_REDIRECT_URI` (= `{PUBLIC_API_BASE_URL}/integrations/crm/oauth/callback` — il path usa `crm`, NON `ghl`, perché GHL rifiuta i redirect URI che contengono riferimenti al brand HighLevel) · `GHL_OAUTH_STATE_SECRET` (se assente usa il client_secret) · `GHL_WEBHOOK_SECRET`.
 
 **Router/WhatsApp (🔴 per WhatsApp):** `ROUTER_BASE_URL` · `ROUTER_SHARED_SECRET` · `ROUTER_PLATFORM_ID` (default `wavemarketing`).
 
@@ -71,7 +71,7 @@ Non c'è IaC: i servizi si creano a mano dalla dashboard (vedi `infra/railway/RE
 
 ## 4. App GHL Marketplace
 1. 🔴 Crea l'app sul Marketplace GHL.
-2. 🔴 **Redirect URI** = `{PUBLIC_API_BASE_URL}/integrations/ghl/oauth/callback`.
+2. 🔴 **Redirect URI** = `{PUBLIC_API_BASE_URL}/integrations/crm/oauth/callback` (⚠️ usa `crm`, non `ghl`: GHL rifiuta i redirect URI che contengono "ghl"/"highlevel").
 3. 🔴 **Scope** (da `oauth.py:DEFAULT_SCOPES`): `contacts.readonly`, `contacts.write`, `opportunities.readonly`, `opportunities.write`, `calendars.readonly`, `calendars.write`, `calendars/events.readonly`, `calendars/events.write`.
 4. 🔴 Metti `GHL_CLIENT_ID`/`GHL_CLIENT_SECRET` in env.
 

@@ -3,8 +3,11 @@
 Scope:
 - `POST /integrations/ghl/oauth/start` — mints a signed state, returns the
   GHL marketplace URL. Merchant user opens it in a new tab.
-- `GET /integrations/ghl/oauth/callback` — verifies state, exchanges code,
+- `GET /integrations/crm/oauth/callback` — verifies state, exchanges code,
   encrypts + persists the token bundle, redirects to the merchant portal.
+  NOTE: the path deliberately avoids the substring "ghl" — GoHighLevel rejects
+  any OAuth redirect URI that contains a HighLevel brand reference (highlevel /
+  gohighlevel / ghl). The `start` path keeps "ghl" since GHL never validates it.
 - `POST /integrations/whatsapp/onboard/start` — server-to-server proxy to
   the router's `/onboard/start`. Mints a one-shot state token tied to the
   caller's merchant_id and returns the assembled 360dialog Embedded Signup
@@ -116,7 +119,7 @@ async def ghl_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStart
     return OAuthStartResponse(authorize_url=url)
 
 
-@router.get("/ghl/oauth/callback")
+@router.get("/crm/oauth/callback")
 async def ghl_oauth_callback(code: str, state: str) -> Response:
     """Public callback — no JWT. This is a browser redirect from GHL, so it
     carries no Supabase Authorization header; the signed `state` is what ties
@@ -325,7 +328,9 @@ def _ghl_redirect_uri(settings: Any) -> str:
             error_code="ghl_redirect_not_configured",
         )
     base = settings.public_api_base_url.rstrip("/")
-    return f"{base}/integrations/ghl/oauth/callback"
+    # Path must NOT contain "ghl"/"highlevel" — GHL rejects redirect URIs with a
+    # HighLevel brand reference. Keep this in sync with the route above.
+    return f"{base}/integrations/crm/oauth/callback"
 
 
 def _require_router_config(settings: Any) -> None:

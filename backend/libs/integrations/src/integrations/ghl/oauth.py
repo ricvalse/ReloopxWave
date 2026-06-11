@@ -3,7 +3,8 @@
 Flow (section 7.1):
 1. Merchant clicks "Connect GHL" → backend mints a signed state tying merchant_id
    and an expiry to the caller, returns the GHL authorize URL with that state.
-2. GHL redirects back to `/integrations/ghl/oauth/callback?code=...&state=...`.
+2. GHL redirects back to `/integrations/crm/oauth/callback?code=...&state=...`
+   (path avoids the "ghl" substring — GHL rejects branded redirect URIs).
 3. Backend verifies the state, extracts merchant_id, exchanges the code for a
    token bundle, encrypts with the KEK, and upserts the integrations row.
 

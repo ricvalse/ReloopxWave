@@ -107,7 +107,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         RateLimitMiddleware,
         limit_per_min=settings.rate_limit_public_per_min,
-        prefixes=("/integrations/ghl/oauth/callback",),
+        prefixes=("/integrations/crm/oauth/callback",),
     )
 
     # Validate the Host header in non-local environments when an allowlist is set

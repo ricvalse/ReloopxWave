@@ -153,6 +153,13 @@ export interface paths {
          *     left untouched. Read the user list from public.users *before* the DELETE,
          *     because the FK CASCADE wipes the mirror in the same transaction.
          *
+         *     Ordering: the DB is the source of truth, so we DELETE + commit first, then
+         *     best-effort-remove the auth users. A partial auth-cleanup failure therefore
+         *     can't leave a half-deleted merchant (the old order deleted some auth users
+         *     then 500'd with the merchant row still present). An orphaned auth.users row
+         *     is inert — its public.users mirror is gone, so it can no longer resolve a
+         *     tenant/merchant context — and is logged for reconciliation.
+         *
          *     Destructive — UI must require explicit confirmation.
          */
         delete: operations["delete_merchant_merchants__merchant_id__delete"];
@@ -685,7 +692,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/integrations/ghl/oauth/callback": {
+    "/integrations/crm/oauth/callback": {
         parameters: {
             query?: never;
             header?: never;
@@ -702,7 +709,7 @@ export interface paths {
          *     integration through an unscoped service-role session — the merchant
          *     identity comes from the verified state, not from RLS.
          */
-        get: operations["ghl_oauth_callback_integrations_ghl_oauth_callback_get"];
+        get: operations["ghl_oauth_callback_integrations_crm_oauth_callback_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3058,7 +3065,7 @@ export interface operations {
             };
         };
     };
-    ghl_oauth_callback_integrations_ghl_oauth_callback_get: {
+    ghl_oauth_callback_integrations_crm_oauth_callback_get: {
         parameters: {
             query: {
                 code: string;
@@ -3403,7 +3410,7 @@ export enum ApiPaths {
     run_fine_tune_fine_tuning_run_post = "/fine-tuning/run",
     list_ft_models_fine_tuning_models_get = "/fine-tuning/models",
     ghl_oauth_start_integrations_ghl_oauth_start_post = "/integrations/ghl/oauth/start",
-    ghl_oauth_callback_integrations_ghl_oauth_callback_get = "/integrations/ghl/oauth/callback",
+    ghl_oauth_callback_integrations_crm_oauth_callback_get = "/integrations/crm/oauth/callback",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
