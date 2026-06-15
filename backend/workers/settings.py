@@ -29,6 +29,7 @@ from workers.fine_tuning.handlers import (
 )
 from workers.runtime import build_runtime
 from workers.scheduler.handlers import (
+    apply_template_status_event,
     build_analytics_export,
     close_idle_conversations,
     daily_kpi_rollup,
@@ -38,6 +39,7 @@ from workers.scheduler.handlers import (
     kb_reindex,
     objection_extraction,
     reactivate_dormant_leads,
+    template_status_sync,
 )
 
 
@@ -77,6 +79,9 @@ class WorkerSettings:
         integration_health_check,
         build_analytics_export,
         enforce_retention,
+        # WhatsApp template approval-status sync (webhook-driven + cron fallback)
+        apply_template_status_event,
+        template_status_sync,
         # queue: ft:pipeline
         fine_tune_run,
         fine_tune_train,
@@ -113,4 +118,7 @@ class WorkerSettings:
         # GDPR retention: nightly purge of conversation data past each merchant's
         # privacy.retention_months window. 03:30 UTC — off-peak.
         cron(enforce_retention, hour=3, minute=30, timeout=600, max_tries=1),
+        # WhatsApp template approval sync — hourly fallback for any
+        # message_template_status_update webhook we missed. Webhook is primary.
+        cron(template_status_sync, minute=40, timeout=300, max_tries=1),
     ]

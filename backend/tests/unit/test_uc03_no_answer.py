@@ -54,6 +54,8 @@ def candidate(integration: ResolvedWhatsAppIntegration) -> ReminderCandidate:
         last_message_at=datetime.now(tz=UTC) - timedelta(hours=3),
         reminders_sent=0,
         last_reminder_at=None,
+        # Inside the 24h window → free-text reminder is allowed.
+        last_inbound_at=datetime.now(tz=UTC) - timedelta(hours=3),
     )
 
 
@@ -100,6 +102,12 @@ def _patch_session(
             if record_reminder_calls is not None:
                 record_reminder_calls.append(conversation_id)
 
+    class FakeFlowRepo:
+        def __init__(self, session): ...
+        async def resolve_step(self, *, merchant_id, key, step_index):
+            # No flow configured → scheduler uses built-in free-text fallback.
+            return None
+
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
         async def emit(self, **kw):
@@ -122,6 +130,7 @@ def _patch_session(
     monkeypatch.setattr(no_answer, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(no_answer, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(no_answer, "AnalyticsRepository", FakeAnalyticsRepo)
+    monkeypatch.setattr(no_answer, "FlowRepository", FakeFlowRepo)
     monkeypatch.setattr(no_answer, "build_whatsapp_sender", fake_factory)
 
 

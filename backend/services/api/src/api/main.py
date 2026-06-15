@@ -27,6 +27,7 @@ from api.routers import (
     conversations,
     dsar,
     fine_tuning,
+    flows,
     integrations,
     internal,
     knowledge_base,
@@ -36,6 +37,7 @@ from api.routers import (
     tenants,
     users,
     webhooks,
+    whatsapp_templates,
 )
 from shared import Settings, configure_logging, get_logger, get_settings, init_posthog, init_sentry
 
@@ -138,6 +140,10 @@ def create_app() -> FastAPI:
     app.include_router(reports.router, prefix="/reports", tags=["reports"])
     app.include_router(fine_tuning.router, prefix="/fine-tuning", tags=["fine-tuning"])
     app.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+    app.include_router(
+        whatsapp_templates.router, prefix="/whatsapp-templates", tags=["whatsapp-templates"]
+    )
+    app.include_router(flows.router, prefix="/flows", tags=["flows"])
     app.include_router(dsar.router, prefix="/dsar", tags=["dsar"])
 
     # Public webhooks (signature-validated, no JWT).

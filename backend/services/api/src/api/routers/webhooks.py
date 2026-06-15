@@ -28,6 +28,7 @@ from integrations.whatsapp.webhook import (
     parse_inbound_payload,
     parse_message_echo_payload,
     parse_status_payload,
+    parse_template_status_payload,
 )
 from shared import get_logger, get_settings
 
@@ -146,6 +147,23 @@ async def whatsapp_inbound(
         )
         enqueued_statuses += 1
 
+    # Template approval-status updates (message_template_status_update). Apply
+    # the local status flip in the worker so the webhook stays fast.
+    template_events = parse_template_status_payload(payload)
+    enqueued_templates = 0
+    for tev in template_events:
+        if not tev.template_name or not tev.event:
+            continue
+        await arq.enqueue_job(
+            "apply_template_status_event",
+            tev.template_name,
+            tev.event,
+            tev.reason,
+            tev.template_id,
+            _job_id=f"wa:tplstatus:{tev.template_name}:{tev.event}",
+        )
+        enqueued_templates += 1
+
     logger.info(
         "webhook.router.inbound",
         msg_events=len(events),
@@ -154,10 +172,12 @@ async def whatsapp_inbound(
         echo_enqueued=enqueued_echoes,
         status_events=len(statuses),
         status_enqueued=enqueued_statuses,
+        template_events=len(template_events),
+        template_enqueued=enqueued_templates,
     )
     return {
-        "accepted": len(events) + len(echoes) + len(statuses),
-        "enqueued": enqueued_msgs + enqueued_echoes + enqueued_statuses,
+        "accepted": len(events) + len(echoes) + len(statuses) + len(template_events),
+        "enqueued": (enqueued_msgs + enqueued_echoes + enqueued_statuses + enqueued_templates),
     }
 
 

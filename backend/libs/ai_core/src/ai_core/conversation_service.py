@@ -254,6 +254,8 @@ class ConversationService:
                     wa_message_id=wa_message_id,
                     variant_id=conv.variant_id,
                 )
+                # Open/refresh the 24h customer-service window on a new inbound.
+                await convs.touch_last_inbound(conv.id)
                 received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}
                 if not auto_reply_on:
                     received_props["auto_reply_skipped"] = True

@@ -37,6 +37,24 @@ class WhatsAppPhoneEchoEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class WhatsAppTemplateStatusEvent:
+    """Template approval-status callback (`message_template_status_update`).
+
+    360dialog forwards Meta's template lifecycle events: when a submitted
+    template moves to APPROVED / REJECTED / DISABLED / PAUSED, the change is
+    delivered to the same webhook URL under
+    `change.field = "message_template_status_update"`.
+    """
+
+    template_name: str
+    language: str | None
+    event: str  # APPROVED | REJECTED | DISABLED | PAUSED | PENDING | ...
+    reason: str | None
+    template_id: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
 class WhatsAppStatusEvent:
     """Outbound message status callback.
 
@@ -79,6 +97,41 @@ def parse_status_payload(payload: dict[str, Any]) -> list[WhatsAppStatusEvent]:
                         raw=st,
                     )
                 )
+    return events
+
+
+def parse_template_status_payload(
+    payload: dict[str, Any],
+) -> list[WhatsAppTemplateStatusEvent]:
+    """Pull `message_template_status_update` events out of Meta's envelope.
+
+    Each event carries the template name + new lifecycle event so the sync
+    layer can flip the local `whatsapp_templates.status`. Non-template payloads
+    (messages / statuses) return an empty list.
+    """
+    events: list[WhatsAppTemplateStatusEvent] = []
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "message_template_status_update":
+                continue
+            value = change.get("value", {})
+            name = value.get("message_template_name") or value.get("name")
+            if not name:
+                continue
+            events.append(
+                WhatsAppTemplateStatusEvent(
+                    template_name=str(name),
+                    language=value.get("message_template_language") or value.get("language"),
+                    event=str(value.get("event") or value.get("status") or ""),
+                    reason=value.get("reason") or value.get("rejected_reason"),
+                    template_id=(
+                        str(value["message_template_id"])
+                        if value.get("message_template_id")
+                        else None
+                    ),
+                    raw=value,
+                )
+            )
     return events
 
 

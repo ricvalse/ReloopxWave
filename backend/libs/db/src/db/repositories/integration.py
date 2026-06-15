@@ -92,6 +92,39 @@ class IntegrationRepository:
             meta=meta,
         )
 
+    async def resolve_whatsapp_by_merchant(
+        self, merchant_id: UUID
+    ) -> ResolvedWhatsAppIntegration | None:
+        """Resolve the active WhatsApp channel for a merchant.
+
+        The template-management paths (create/submit, status sync) start from a
+        `merchant_id`, not a `phone_number_id`, so they can't use
+        `resolve_whatsapp`. Same decrypt + base-url handling.
+        """
+        stmt = (
+            select(Integration, Merchant.tenant_id)
+            .join(Merchant, Merchant.id == Integration.merchant_id)
+            .where(
+                Integration.merchant_id == merchant_id,
+                Integration.provider == "whatsapp",
+                Integration.status == "active",
+            )
+        )
+        row = (await self._session.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        integration, tenant_id = row
+        meta = dict(integration.meta or {})
+        base_url = meta.get("waba_base_url")
+        return ResolvedWhatsAppIntegration(
+            merchant_id=integration.merchant_id,
+            tenant_id=tenant_id,
+            phone_number_id=str(meta.get("phone_number_id") or ""),
+            api_key=self._decrypt(integration),
+            waba_base_url=str(base_url) if base_url else None,
+            meta=meta,
+        )
+
     async def resolve_ghl(self, merchant_id: UUID) -> ResolvedGHLIntegration | None:
         stmt = (
             select(Integration, Merchant.tenant_id)

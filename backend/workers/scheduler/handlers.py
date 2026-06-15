@@ -17,10 +17,15 @@ from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
 from workers.scheduler.reactivation import reactivate_dormant_leads  # re-export
 from workers.scheduler.retention import enforce_retention  # re-export
+from workers.scheduler.template_sync import (  # re-export
+    apply_template_status_event,
+    template_status_sync,
+)
 
 logger = get_logger(__name__)
 
 __all__ = [
+    "apply_template_status_event",
     "build_analytics_export",
     "close_idle_conversations",
     "daily_kpi_rollup",
@@ -30,6 +35,7 @@ __all__ = [
     "kb_reindex",
     "objection_extraction",
     "reactivate_dormant_leads",
+    "template_status_sync",
 ]
 
 

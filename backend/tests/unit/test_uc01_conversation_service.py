@@ -162,6 +162,9 @@ def service(
         async def touch_last_message(self, conversation_id):
             return None
 
+        async def touch_last_inbound(self, conversation_id):
+            return None
+
     class FakeMsgRepo:
         def __init__(self, session):
             self.user_calls: list = []
@@ -350,6 +353,9 @@ async def test_inbound_persisted_even_when_reply_fails(
         async def touch_last_message(self, conversation_id):
             return None
 
+        async def touch_last_inbound(self, conversation_id):
+            return None
+
     class FakeMsgRepo:
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
@@ -446,6 +452,9 @@ async def test_inbound_idempotent_on_redelivery(
             return conv
 
         async def touch_last_message(self, conversation_id):
+            return None
+
+        async def touch_last_inbound(self, conversation_id):
             return None
 
     class FakeMsgRepo:

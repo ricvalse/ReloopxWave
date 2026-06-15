@@ -3,11 +3,13 @@ from db.models.analytics import AnalyticsEvent
 from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
 from db.models.conversation import Conversation, Message
+from db.models.flow import Flow, FlowStep
 from db.models.ft import FTModel
 from db.models.integration import Integration
 from db.models.kb import KBChunk, KnowledgeBaseDoc
 from db.models.lead import Lead, Objection
 from db.models.tenant import Merchant, Tenant, User
+from db.models.whatsapp_template import WhatsAppTemplate
 
 __all__ = [
     "ABAssignment",
@@ -18,6 +20,8 @@ __all__ = [
     "BotTemplate",
     "Conversation",
     "FTModel",
+    "Flow",
+    "FlowStep",
     "Integration",
     "KBChunk",
     "KnowledgeBaseDoc",
@@ -29,4 +33,5 @@ __all__ = [
     "Tenant",
     "TimestampMixin",
     "User",
+    "WhatsAppTemplate",
 ]
