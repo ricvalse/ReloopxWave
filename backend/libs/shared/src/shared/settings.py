@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     ghl_webhook_secret: str = ""
     ghl_oauth_state_secret: str = ""
     ghl_redirect_uri: str = ""
+    # PEM public key GHL uses to sign marketplace INSTALL/UNINSTALL webhooks
+    # (RSA-SHA256). Distinct from `ghl_webhook_secret` (HMAC, data webhooks).
+    # Without it the marketplace webhook drops every event.
+    ghl_marketplace_public_key: str = ""
 
     # WhatsApp is mediated by the Wave Marketing router (a 360dialog Partner
     # owned by the platform team). Wave Marketing no longer holds a Partner
@@ -115,6 +119,7 @@ class Settings(BaseSettings):
     _PROD_RECOMMENDED: ClassVar[tuple[str, ...]] = (
         "ghl_client_id",
         "ghl_client_secret",
+        "ghl_marketplace_public_key",
         "router_base_url",
         "router_shared_secret",
         "sentry_dsn_backend",

@@ -1,12 +1,16 @@
 """GoHighLevel OAuth2 helpers — state signing + authorization code exchange.
 
-Flow (section 7.1):
-1. Merchant clicks "Connect GHL" → backend mints a signed state tying merchant_id
-   and an expiry to the caller, returns the GHL authorize URL with that state.
+Marketplace agency-install flow (ADR 0007):
+1. An agency admin clicks "Collega Agenzia GHL" in web-admin → backend mints a
+   signed state tying the `tenant_id` and an expiry to the caller, returns the
+   GHL authorize URL with that state.
 2. GHL redirects back to `/integrations/crm/oauth/callback?code=...&state=...`
    (path avoids the "ghl" substring — GHL rejects branded redirect URIs).
-3. Backend verifies the state, extracts merchant_id, exchanges the code for a
-   token bundle, encrypts with the KEK, and upserts the integrations row.
+3. Backend verifies the state, extracts `tenant_id`, exchanges the code with
+   `user_type="Company"` for an Agency token, encrypts it with the KEK, and
+   stores the `ghl_agency_installs` row.
+4. GHL fires an INSTALL webhook per selected sub-account; the worker mints a
+   per-location token via `mint_location_token` using the Agency token.
 
 Keeping state signing in-library (rather than in the router) so the
 contract + rotation story lives with the provider code.
@@ -30,6 +34,7 @@ from shared import IntegrationError
 
 GHL_MARKETPLACE_BASE = "https://marketplace.gohighlevel.com"
 GHL_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token"  # noqa: S105 — public OAuth endpoint, not a secret
+GHL_LOCATION_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/locationToken"  # noqa: S105 — public OAuth endpoint, not a secret
 
 DEFAULT_SCOPES = (
     "contacts.readonly",
@@ -53,8 +58,8 @@ STATE_TTL_SECONDS = 600  # 10 min — oauth round-trip must finish inside this w
 # ---- State signing ----------------------------------------------------------
 
 
-def sign_oauth_state(*, merchant_id: UUID, secret: str, now: int | None = None) -> str:
-    """Serialize `{merchant_id, nonce, exp}` + HMAC-SHA256 → `<payload_b64>.<sig_hex>`."""
+def sign_oauth_state(*, tenant_id: UUID, secret: str, now: int | None = None) -> str:
+    """Serialize `{tenant_id, nonce, exp}` + HMAC-SHA256 → `<payload_b64>.<sig_hex>`."""
     if not secret:
         raise IntegrationError(
             "OAuth state secret not configured",
@@ -62,7 +67,7 @@ def sign_oauth_state(*, merchant_id: UUID, secret: str, now: int | None = None) 
         )
     issued = int(now if now is not None else time.time())
     payload = {
-        "m": str(merchant_id),
+        "t": str(tenant_id),
         "n": _rand_nonce(),
         "e": issued + STATE_TTL_SECONDS,
     }
@@ -73,7 +78,7 @@ def sign_oauth_state(*, merchant_id: UUID, secret: str, now: int | None = None) 
 
 @dataclass(slots=True, frozen=True)
 class VerifiedState:
-    merchant_id: UUID
+    tenant_id: UUID
     expires_at: int
 
 
@@ -100,7 +105,7 @@ def verify_oauth_state(state: str, *, secret: str, now: int | None = None) -> Ve
 
     try:
         payload = json.loads(_b64url_decode(payload_b64))
-        merchant_id = UUID(payload["m"])
+        tenant_id = UUID(payload["t"])
         expires_at = int(payload["e"])
     except (KeyError, ValueError, json.JSONDecodeError) as e:
         raise IntegrationError(
@@ -115,7 +120,7 @@ def verify_oauth_state(state: str, *, secret: str, now: int | None = None) -> Ve
             error_code="oauth_state_expired",
         )
 
-    return VerifiedState(merchant_id=merchant_id, expires_at=expires_at)
+    return VerifiedState(tenant_id=tenant_id, expires_at=expires_at)
 
 
 # ---- Authorize URL + token exchange ----------------------------------------
@@ -144,6 +149,8 @@ class ExchangedTokens:
     refresh_token: str
     expires_at: int
     location_id: str | None
+    company_id: str | None
+    user_type: str | None
     raw: dict[str, Any]
 
 
@@ -153,9 +160,14 @@ async def exchange_authorization_code(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
+    user_type: str = "Company",
     http: httpx.AsyncClient | None = None,
 ) -> ExchangedTokens:
-    """POST the auth code to GHL's token endpoint. Returns a decoded bundle."""
+    """POST the auth code to GHL's token endpoint. Returns a decoded bundle.
+
+    `user_type="Company"` yields an Agency-level token (marketplace agency
+    install); `"Location"` yields a sub-account token.
+    """
     owns_http = http is None
     client = http or httpx.AsyncClient(timeout=15.0)
     try:
@@ -167,7 +179,7 @@ async def exchange_authorization_code(
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": redirect_uri,
-                "user_type": "Location",
+                "user_type": user_type,
             },
             headers={"Accept": "application/json"},
         )
@@ -202,12 +214,93 @@ async def exchange_authorization_code(
     # GHL returns `expires_in` (seconds). Normalize to an absolute epoch.
     expires_at = int(time.time()) + int(data.get("expires_in", 0))
     location_id = data.get("locationId") or data.get("location_id")
+    company_id = data.get("companyId") or data.get("company_id")
+    resp_user_type = data.get("userType") or data.get("user_type")
 
     return ExchangedTokens(
         access_token=str(access),
         refresh_token=str(refresh),
         expires_at=expires_at,
         location_id=str(location_id) if location_id else None,
+        company_id=str(company_id) if company_id else None,
+        user_type=str(resp_user_type) if resp_user_type else None,
+        raw=data,
+    )
+
+
+@dataclass(slots=True, frozen=True)
+class MintedLocationToken:
+    access_token: str
+    refresh_token: str
+    expires_at: int
+    location_id: str
+    company_id: str
+    raw: dict[str, Any]
+
+
+async def mint_location_token(
+    *,
+    agency_access_token: str,
+    company_id: str,
+    location_id: str,
+    http: httpx.AsyncClient | None = None,
+) -> MintedLocationToken:
+    """Mint a Location-level token from an Agency token.
+
+    `POST /oauth/locationToken` with the agency bearer token and the
+    `companyId`/`locationId` pair. 401/403 means the agency token is stale — the
+    caller should refresh it and retry. Returns a sub-account token bundle.
+    """
+    owns_http = http is None
+    client = http or httpx.AsyncClient(timeout=15.0)
+    try:
+        resp = await client.post(
+            GHL_LOCATION_TOKEN_URL,
+            data={"companyId": company_id, "locationId": location_id},
+            headers={
+                "Authorization": f"Bearer {agency_access_token}",
+                "Version": "2021-07-28",
+                "Accept": "application/json",
+            },
+        )
+    except httpx.HTTPError as e:
+        raise IntegrationError(
+            "GHL location token transport failure",
+            error_code="ghl_location_mint_transport",
+            reason=str(e),
+        ) from e
+    finally:
+        if owns_http:
+            await client.aclose()
+
+    if resp.status_code >= 400:
+        raise IntegrationError(
+            "GHL rejected location token mint",
+            error_code="ghl_location_mint_rejected",
+            status_code=resp.status_code,
+            body=resp.text[:500],
+        )
+    data: dict[str, Any] = resp.json()
+
+    access = data.get("access_token")
+    refresh = data.get("refresh_token")
+    if not access or not refresh:
+        raise IntegrationError(
+            "GHL location token response missing tokens",
+            error_code="ghl_location_mint_incomplete",
+            body=data,
+        )
+
+    expires_at = int(time.time()) + int(data.get("expires_in", 0))
+    resp_location = data.get("locationId") or data.get("location_id") or location_id
+    resp_company = data.get("companyId") or data.get("company_id") or company_id
+
+    return MintedLocationToken(
+        access_token=str(access),
+        refresh_token=str(refresh),
+        expires_at=expires_at,
+        location_id=str(resp_location),
+        company_id=str(resp_company),
         raw=data,
     )
 

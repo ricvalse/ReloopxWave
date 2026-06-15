@@ -22,6 +22,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_signature
 from integrations.ghl.signatures import verify_ghl_signature
 from integrations.router import SIGNATURE_HEADER, verify_router_signature
 from integrations.whatsapp.webhook import (
@@ -179,6 +180,67 @@ async def whatsapp_inbound(
         "accepted": len(events) + len(echoes) + len(statuses) + len(template_events),
         "enqueued": (enqueued_msgs + enqueued_echoes + enqueued_statuses + enqueued_templates),
     }
+
+
+@router.post("/ghl/marketplace")
+async def ghl_marketplace_webhook(
+    request: Request,
+    x_wh_signature: str = Header(default=""),
+) -> dict[str, Any]:
+    """GHL marketplace lifecycle events (INSTALL / UNINSTALL).
+
+    Sent to the app's Default Webhook URL and signed with GHL's RSA public key
+    (not the HMAC used for per-location data webhooks). `locationId`/`companyId`
+    arrive in the payload, not the URL. Declared BEFORE `/ghl/{merchant_id}` so
+    the literal "marketplace" segment isn't swallowed by the UUID path param.
+    """
+    settings = get_settings()
+    body = await request.body()
+    if not verify_ghl_marketplace_signature(
+        payload=body,
+        signature_header=x_wh_signature,
+        public_key_pem=settings.ghl_marketplace_public_key,
+    ):
+        logger.warning("webhook.ghl.marketplace.signature_rejected", bytes=len(body))
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+
+    event_type = str(payload.get("type") or "").upper()
+    location_id = payload.get("locationId") or payload.get("location_id")
+    arq = request.app.state.arq
+
+    if event_type == "INSTALL" and location_id:
+        await arq.enqueue_job(
+            "handle_ghl_install",
+            payload,
+            _queue_name="ghl:events",
+            _job_id=f"ghl:install:{location_id}",
+        )
+    elif event_type == "UNINSTALL" and location_id:
+        await arq.enqueue_job(
+            "handle_ghl_uninstall",
+            str(location_id),
+            _queue_name="ghl:events",
+            _job_id=f"ghl:uninstall:{location_id}",
+        )
+    else:
+        logger.info(
+            "webhook.ghl.marketplace.ignored",
+            event_type=event_type,
+            has_location=bool(location_id),
+        )
+        return {"accepted": False, "event_type": event_type}
+
+    logger.info(
+        "webhook.ghl.marketplace.enqueued",
+        event_type=event_type,
+        location_id=str(location_id),
+    )
+    return {"accepted": True, "event_type": event_type}
 
 
 @router.post("/ghl/{merchant_id}")

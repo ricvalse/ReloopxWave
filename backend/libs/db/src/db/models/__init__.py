@@ -5,6 +5,7 @@ from db.models.bot import BotConfig, BotTemplate, PromptTemplate
 from db.models.conversation import Conversation, Message
 from db.models.flow import Flow, FlowStep
 from db.models.ft import FTModel
+from db.models.ghl import GHLAgencyInstall, GHLLocationToken
 from db.models.integration import Integration
 from db.models.kb import KBChunk, KnowledgeBaseDoc
 from db.models.lead import Lead, Objection
@@ -22,6 +23,8 @@ __all__ = [
     "FTModel",
     "Flow",
     "FlowStep",
+    "GHLAgencyInstall",
+    "GHLLocationToken",
     "Integration",
     "KBChunk",
     "KnowledgeBaseDoc",

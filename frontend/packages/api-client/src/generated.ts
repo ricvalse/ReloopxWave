@@ -675,7 +675,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/integrations/ghl/oauth/start": {
+    "/integrations/ghl/agency/oauth/start": {
         parameters: {
             query?: never;
             header?: never;
@@ -684,8 +684,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Ghl Oauth Start */
-        post: operations["ghl_oauth_start_integrations_ghl_oauth_start_post"];
+        /** Ghl Agency Oauth Start */
+        post: operations["ghl_agency_oauth_start_integrations_ghl_agency_oauth_start_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -703,15 +703,82 @@ export interface paths {
          * Ghl Oauth Callback
          * @description Public callback — no JWT. This is a browser redirect from GHL, so it
          *     carries no Supabase Authorization header; the signed `state` is what ties
-         *     the round-trip back to a merchant. We therefore must NOT use the
-         *     tenant-scoped `DBSession` dependency (it runs JWT verification and would
-         *     403 every merchant). The state validates first, then we persist the
-         *     integration through an unscoped service-role session — the merchant
-         *     identity comes from the verified state, not from RLS.
+         *     the round-trip back to a tenant. We therefore must NOT use the tenant-scoped
+         *     `DBSession` dependency (it runs JWT verification and would 403). The state
+         *     validates first, then we exchange the code for an Agency (Company) token and
+         *     persist it through an unscoped service-role session.
          */
         get: operations["ghl_oauth_callback_integrations_crm_oauth_callback_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/ghl/agency/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ghl Agency Status */
+        get: operations["ghl_agency_status_integrations_ghl_agency_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/ghl/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ghl Locations */
+        get: operations["ghl_locations_integrations_ghl_locations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/ghl/locations/{location_id}/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ghl Link Location */
+        post: operations["ghl_link_location_integrations_ghl_locations__location_id__link_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/ghl/locations/{location_id}/unlink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ghl Unlink Location */
+        post: operations["ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -948,6 +1015,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/webhooks/ghl/marketplace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ghl Marketplace Webhook
+         * @description GHL marketplace lifecycle events (INSTALL / UNINSTALL).
+         *
+         *     Sent to the app's Default Webhook URL and signed with GHL's RSA public key
+         *     (not the HMAC used for per-location data webhooks). `locationId`/`companyId`
+         *     arrive in the payload, not the URL. Declared BEFORE `/ghl/{merchant_id}` so
+         *     the literal "marketplace" segment isn't swallowed by the UUID path param.
+         */
+        post: operations["ghl_marketplace_webhook_webhooks_ghl_marketplace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/ghl/{merchant_id}": {
         parameters: {
             query?: never;
@@ -1012,6 +1104,17 @@ export interface components {
             merchants_ranking: {
                 [key: string]: unknown;
             }[];
+        };
+        /** AgencyStatusOut */
+        AgencyStatusOut: {
+            /** Connected */
+            connected: boolean;
+            /** Company Id */
+            company_id: string | null;
+            /** Company Name */
+            company_name: string | null;
+            /** Expires At */
+            expires_at: number | null;
         };
         /** BookingConfig */
         BookingConfig: {
@@ -1349,6 +1452,32 @@ export interface components {
             status: string;
             /** Chunk Count */
             chunk_count: number;
+        };
+        /** LinkLocationIn */
+        LinkLocationIn: {
+            /**
+             * Merchant Id
+             * Format: uuid
+             */
+            merchant_id: string;
+        };
+        /** LocationOut */
+        LocationOut: {
+            /** Location Id */
+            location_id: string;
+            /** Location Name */
+            location_name: string | null;
+            /** Status */
+            status: string;
+            /** Merchant Id */
+            merchant_id: string | null;
+            /** Company Id */
+            company_id: string;
+        };
+        /** LocationsOut */
+        LocationsOut: {
+            /** Locations */
+            locations: components["schemas"]["LocationOut"][];
         };
         /** MerchantIn */
         MerchantIn: {
@@ -3312,7 +3441,7 @@ export interface operations {
             };
         };
     };
-    ghl_oauth_start_integrations_ghl_oauth_start_post: {
+    ghl_agency_oauth_start_integrations_ghl_agency_oauth_start_post: {
         parameters: {
             query?: never;
             header?: {
@@ -3363,6 +3492,134 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ghl_agency_status_integrations_ghl_agency_status_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgencyStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ghl_locations_integrations_ghl_locations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ghl_link_location_integrations_ghl_locations__location_id__link_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                location_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkLocationIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                location_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -3812,6 +4069,39 @@ export interface operations {
             };
         };
     };
+    ghl_marketplace_webhook_webhooks_ghl_marketplace_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-wh-signature"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ghl_inbound_webhooks_ghl__merchant_id__post: {
         parameters: {
             query?: never;
@@ -3923,8 +4213,12 @@ export enum ApiPaths {
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",
     run_fine_tune_fine_tuning_run_post = "/fine-tuning/run",
     list_ft_models_fine_tuning_models_get = "/fine-tuning/models",
-    ghl_oauth_start_integrations_ghl_oauth_start_post = "/integrations/ghl/oauth/start",
+    ghl_agency_oauth_start_integrations_ghl_agency_oauth_start_post = "/integrations/ghl/agency/oauth/start",
     ghl_oauth_callback_integrations_crm_oauth_callback_get = "/integrations/crm/oauth/callback",
+    ghl_agency_status_integrations_ghl_agency_status_get = "/integrations/ghl/agency/status",
+    ghl_locations_integrations_ghl_locations_get = "/integrations/ghl/locations",
+    ghl_link_location_integrations_ghl_locations__location_id__link_post = "/integrations/ghl/locations/{location_id}/link",
+    ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post = "/integrations/ghl/locations/{location_id}/unlink",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
@@ -3938,6 +4232,7 @@ export enum ApiPaths {
     export_lead_dsar_leads__lead_id__export_get = "/dsar/leads/{lead_id}/export",
     erase_lead_dsar_leads__lead_id__erase_post = "/dsar/leads/{lead_id}/erase",
     whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",
+    ghl_marketplace_webhook_webhooks_ghl_marketplace_post = "/webhooks/ghl/marketplace",
     ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}",
     whatsapp_connected_internal_whatsapp_connected_post = "/internal/whatsapp-connected"
 }

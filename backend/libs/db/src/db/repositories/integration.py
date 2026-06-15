@@ -6,9 +6,7 @@ from both workers (no JWT) and JWT-authenticated request paths.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -16,6 +14,7 @@ from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Integration, Merchant
+from db.repositories.ghl_marketplace import GHLMarketplaceRepository
 from shared import (
     EncryptedSecret,
     decrypt_secret,
@@ -126,28 +125,24 @@ class IntegrationRepository:
         )
 
     async def resolve_ghl(self, merchant_id: UUID) -> ResolvedGHLIntegration | None:
-        stmt = (
-            select(Integration, Merchant.tenant_id)
-            .join(Merchant, Merchant.id == Integration.merchant_id)
-            .where(
-                Integration.merchant_id == merchant_id,
-                Integration.provider == "ghl",
-                Integration.status == "active",
-            )
-        )
-        row = (await self._session.execute(stmt)).one_or_none()
-        if row is None:
+        """Resolve the active GHL location token linked to a merchant.
+
+        Reads from `ghl_location_tokens` (marketplace agency-install model). The
+        return shape is unchanged so booking/pipeline consumers don't change.
+        """
+        loc = await GHLMarketplaceRepository(
+            self._session, kek_base64=self._kek
+        ).resolve_location_by_merchant(merchant_id)
+        if loc is None:
             return None
-        integration, tenant_id = row
-        bundle = json.loads(self._decrypt(integration))
         return ResolvedGHLIntegration(
-            merchant_id=integration.merchant_id,
-            tenant_id=tenant_id,
-            access_token=bundle["access_token"],
-            refresh_token=bundle["refresh_token"],
-            expires_at=int(bundle.get("expires_at", 0)),
-            location_id=bundle.get("location_id"),
-            meta=dict(integration.meta or {}),
+            merchant_id=loc.merchant_id or merchant_id,
+            tenant_id=loc.tenant_id,
+            access_token=loc.access_token,
+            refresh_token=loc.refresh_token,
+            expires_at=loc.expires_at,
+            location_id=loc.location_id,
+            meta=loc.meta,
         )
 
     def _decrypt(self, integration: Integration) -> str:
@@ -162,62 +157,6 @@ class IntegrationRepository:
         )
 
     # ---- Writes ----------------------------------------------------------
-
-    async def upsert_ghl(
-        self,
-        *,
-        merchant_id: UUID,
-        access_token: str,
-        refresh_token: str,
-        expires_at: int,
-        location_id: str | None,
-        extra_meta: dict[str, Any] | None = None,
-    ) -> Integration:
-        """Encrypt the whole GHL token bundle as a single AES-GCM blob and upsert
-        the `(merchant_id, provider='ghl')` row. Resolver reads expect this JSON
-        shape, so don't split fields across columns.
-        """
-        payload = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_at": int(expires_at),
-            "location_id": location_id,
-        }
-        aad = f"ghl:{merchant_id}".encode()
-        secret = encrypt_secret(json.dumps(payload), kek_base64=self._kek, aad=aad)
-
-        integration = await self._get("ghl", merchant_id)
-        expires_ts = datetime.fromtimestamp(expires_at, tz=UTC) if expires_at else None
-        meta = {**(integration.meta if integration else {}), **(extra_meta or {})}
-        if location_id:
-            meta["location_id"] = location_id
-
-        if integration is None:
-            integration = Integration(
-                merchant_id=merchant_id,
-                provider="ghl",
-                status="active",
-                external_account_id=location_id,
-                secret_ciphertext=secret.ciphertext,
-                secret_nonce=secret.nonce,
-                secret_aad=secret.aad,
-                kek_version=secret.kek_version,
-                expires_at=expires_ts,
-                meta=meta,
-            )
-            self._session.add(integration)
-        else:
-            integration.status = "active"
-            integration.external_account_id = location_id
-            integration.secret_ciphertext = secret.ciphertext
-            integration.secret_nonce = secret.nonce
-            integration.secret_aad = secret.aad
-            integration.kek_version = secret.kek_version
-            integration.expires_at = expires_ts
-            integration.meta = meta
-
-        await self._session.flush()
-        return integration
 
     async def upsert_whatsapp(
         self,

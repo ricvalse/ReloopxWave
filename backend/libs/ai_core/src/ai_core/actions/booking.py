@@ -25,6 +25,7 @@ from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
+    GHLMarketplaceRepository,
     IntegrationRepository,
     LeadRepository,
     TenantContext,
@@ -120,20 +121,21 @@ class BookSlotHandler:
                     )
 
                     async def _persist_tokens(bundle: GHLTokenBundle) -> None:
-                        # Persist the rotated bundle in its OWN committed
+                        # Persist the rotated location bundle in its OWN committed
                         # transaction. The handler's `session` rolls back if a
                         # later GHL call raises — but GHL has already invalidated
                         # the old refresh token, so the new one must survive that
                         # rollback or the integration breaks permanently.
+                        if not bundle.location_id:
+                            return
                         async with session_scope() as token_session:
-                            await IntegrationRepository(
+                            await GHLMarketplaceRepository(
                                 token_session, kek_base64=self._kek
-                            ).upsert_ghl(
-                                merchant_id=turn_ctx.merchant_id,
+                            ).set_location_token(
+                                location_id=bundle.location_id,
                                 access_token=bundle.access_token,
                                 refresh_token=bundle.refresh_token,
                                 expires_at=bundle.expires_at,
-                                location_id=bundle.location_id,
                             )
 
                     outcome = await self._try_book(

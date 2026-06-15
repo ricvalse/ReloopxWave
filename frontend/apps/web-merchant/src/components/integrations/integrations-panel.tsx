@@ -2,9 +2,9 @@
 
 import { useSearchParams } from 'next/navigation';
 import { useEffect } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { ConnectWhatsAppButton } from './connect-whatsapp-button';
 
@@ -24,21 +24,6 @@ export function IntegrationsPanel() {
       const { data, error } = await api.GET('/integrations/status' as never, {} as never);
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Status;
-    },
-  });
-
-  const startGHL = useMutation({
-    mutationFn: async () => {
-      const api = getApiClient();
-      const { data, error } = await api.POST(
-        '/integrations/ghl/oauth/start' as never,
-        {} as never,
-      );
-      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
-      return data as { authorize_url: string };
-    },
-    onSuccess: (d) => {
-      window.location.href = d.authorize_url;
     },
   });
 
@@ -83,12 +68,7 @@ export function IntegrationsPanel() {
         </div>
       ) : null}
 
-      <GhlCard
-        connection={ghl}
-        onConnect={() => startGHL.mutate()}
-        pending={startGHL.isPending}
-        error={startGHL.error instanceof Error ? startGHL.error.message : null}
-      />
+      <GhlCard connection={ghl} />
 
       <WhatsAppCard
         connection={wa}
@@ -100,17 +80,10 @@ export function IntegrationsPanel() {
   );
 }
 
-function GhlCard({
-  connection,
-  onConnect,
-  pending,
-  error,
-}: {
-  connection: Connection | undefined;
-  onConnect: () => void;
-  pending: boolean;
-  error: string | null;
-}) {
+function GhlCard({ connection }: { connection: Connection | undefined }) {
+  // GHL is agency-managed (marketplace install): the agency connects GoHighLevel
+  // and links this merchant's location from the admin portal. The merchant sees
+  // a read-only status, not a self-service connect button.
   const connected = connection?.connected ?? false;
   return (
     <Card>
@@ -118,34 +91,22 @@ function GhlCard({
         <div>
           <CardTitle>GoHighLevel</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            CRM, pipeline opportunità, calendario. Connettiti via OAuth.
+            CRM, pipeline opportunità, calendario. Gestito dalla tua agenzia.
           </p>
         </div>
         <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
       </CardHeader>
-      <CardContent className="flex items-center justify-between gap-4">
-        <div className="text-sm text-muted-foreground">
-          {connected ? (
-            <>
-              Location:{' '}
-              <span className="font-mono text-xs">
-                {connection?.external_account_id ?? '—'}
-              </span>
-            </>
-          ) : (
-            'Nessuna location collegata.'
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {error ? <span className="text-sm text-destructive">{error}</span> : null}
-          <Button
-            variant={connected ? 'outline' : 'default'}
-            onClick={onConnect}
-            disabled={pending}
-          >
-            {connected ? 'Riconnetti' : 'Connetti GHL'}
-          </Button>
-        </div>
+      <CardContent className="text-sm text-muted-foreground">
+        {connected ? (
+          <>
+            Collegato tramite agenzia · Location:{' '}
+            <span className="font-mono text-xs">
+              {connection?.external_account_id ?? '—'}
+            </span>
+          </>
+        ) : (
+          'Gestito dall’agenzia — nessuna location ancora collegata. Contatta la tua agenzia per attivare il collegamento.'
+        )}
       </CardContent>
     </Card>
   );

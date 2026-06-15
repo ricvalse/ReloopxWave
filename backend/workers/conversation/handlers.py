@@ -23,9 +23,15 @@ from typing import Any
 from sqlalchemy import select, update
 
 from ai_core import ConversationService
-from db import session_scope
+from db import GHLMarketplaceRepository, ResolvedAgencyInstall, session_scope
 from db.models.conversation import Conversation, Message
 from db.repositories.integration import IntegrationRepository
+from integrations import (
+    GHLClient,
+    GHLTokenBundle,
+    MintedLocationToken,
+    mint_location_token,
+)
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import IntegrationError, get_logger, get_settings
 from workers.runtime import Runtime
@@ -117,6 +123,185 @@ async def handle_ghl_event(
         keys=sorted(payload.keys()),
     )
     return {"merchant_id": merchant_id, "event_type": event_type}
+
+
+async def handle_ghl_install(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Marketplace INSTALL event — record the location and mint its token.
+
+    Resolves the tenant from `companyId` (set when the agency connected from
+    web-admin), records a `pending_link` location, mints a Location-level token
+    from the agency token, and stores it. Idempotent on re-delivery.
+    """
+    settings = get_settings()
+    location_id = str(payload.get("locationId") or payload.get("location_id") or "")
+    company_id = str(payload.get("companyId") or payload.get("company_id") or "")
+    user_id = payload.get("userId") or payload.get("user_id")
+    if not location_id or not company_id:
+        logger.warning("ghl.install.missing_ids", payload_keys=sorted(payload.keys()))
+        return {"installed": False, "reason": "missing_ids"}
+
+    async with session_scope() as session:
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        agency = await repo.resolve_agency_by_company_id(company_id)
+        if agency is None:
+            # INSTALL arrived before the agency connected from web-admin. Drop it
+            # (200) rather than retry-storm; the agency-connect path is the
+            # expected ordering, and a re-install after connect recovers cleanly.
+            logger.warning("ghl.install.no_agency", company_id=company_id, location_id=location_id)
+            return {"installed": False, "reason": "no_agency_install"}
+        await repo.upsert_location_install(
+            tenant_id=agency.tenant_id,
+            company_id=company_id,
+            location_id=location_id,
+            installed_by_user_id=str(user_id) if user_id else None,
+        )
+
+    try:
+        minted, agency = await _mint_location_token_with_retry(
+            settings, agency, company_id, location_id
+        )
+    except IntegrationError as exc:
+        logger.warning(
+            "ghl.install.mint_failed", location_id=location_id, error_code=exc.error_code
+        )
+        return {"installed": False, "reason": "mint_failed", "location_id": location_id}
+
+    location_name = await _fetch_location_name(settings, minted.access_token, location_id)
+
+    async with session_scope() as session:
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        if location_name:
+            await repo.upsert_location_install(
+                tenant_id=agency.tenant_id,
+                company_id=company_id,
+                location_id=location_id,
+                location_name=location_name,
+            )
+        await repo.set_location_token(
+            location_id=location_id,
+            access_token=minted.access_token,
+            refresh_token=minted.refresh_token,
+            expires_at=minted.expires_at,
+        )
+
+    logger.info(
+        "ghl.install.completed",
+        location_id=location_id,
+        company_id=company_id,
+        tenant_id=str(agency.tenant_id),
+        named=bool(location_name),
+    )
+    return {"installed": True, "location_id": location_id}
+
+
+async def handle_ghl_uninstall(ctx: dict[str, Any], location_id: str) -> dict[str, Any]:
+    """Marketplace UNINSTALL event — revoke the location token (soft delete).
+
+    Keeps the merchant link for audit/re-install; clears the dead token.
+    Idempotent on re-delivery.
+    """
+    settings = get_settings()
+    async with session_scope() as session:
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        revoked = await repo.revoke_location(str(location_id))
+    logger.info("ghl.uninstall.handled", location_id=str(location_id), revoked=revoked)
+    return {"revoked": revoked, "location_id": str(location_id)}
+
+
+async def _mint_location_token_with_retry(
+    settings: Any,
+    agency: ResolvedAgencyInstall,
+    company_id: str,
+    location_id: str,
+) -> tuple[MintedLocationToken, ResolvedAgencyInstall]:
+    """Mint a location token; on a rejected (stale) agency token, refresh it once
+    and retry. Returns the minted token and the (possibly refreshed) agency."""
+    try:
+        minted = await mint_location_token(
+            agency_access_token=agency.access_token,
+            company_id=company_id,
+            location_id=location_id,
+        )
+        return minted, agency
+    except IntegrationError as exc:
+        if exc.error_code != "ghl_location_mint_rejected":
+            raise
+        agency = await _refresh_agency_token(settings, agency)
+        minted = await mint_location_token(
+            agency_access_token=agency.access_token,
+            company_id=company_id,
+            location_id=location_id,
+        )
+        return minted, agency
+
+
+async def _refresh_agency_token(
+    settings: Any, agency: ResolvedAgencyInstall
+) -> ResolvedAgencyInstall:
+    """Refresh + persist the agency (Company) token, return the fresh install."""
+    client = GHLClient(
+        token_bundle=GHLTokenBundle(
+            access_token=agency.access_token,
+            refresh_token=agency.refresh_token,
+            expires_at=agency.expires_at,
+            company_id=agency.company_id,
+            user_type="Company",
+        ),
+        client_id=settings.ghl_client_id,
+        client_secret=settings.ghl_client_secret,
+    )
+    try:
+        new_bundle = await client.refresh_now()
+    finally:
+        await client.close()
+
+    async with session_scope() as session:
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        await repo.upsert_agency_install(
+            tenant_id=agency.tenant_id,
+            company_id=agency.company_id,
+            access_token=new_bundle.access_token,
+            refresh_token=new_bundle.refresh_token,
+            expires_at=new_bundle.expires_at,
+            company_name=agency.company_name,
+        )
+    return ResolvedAgencyInstall(
+        tenant_id=agency.tenant_id,
+        company_id=agency.company_id,
+        access_token=new_bundle.access_token,
+        refresh_token=new_bundle.refresh_token,
+        expires_at=new_bundle.expires_at,
+        status="active",
+        company_name=agency.company_name,
+    )
+
+
+async def _fetch_location_name(
+    settings: Any, location_access_token: str, location_id: str
+) -> str | None:
+    """Best-effort sub-account name for the linking UI. Never raises."""
+    client = GHLClient(
+        token_bundle=GHLTokenBundle(
+            access_token=location_access_token,
+            refresh_token="",
+            expires_at=0,
+            location_id=location_id,
+            user_type="Location",
+        ),
+        client_id=settings.ghl_client_id,
+        client_secret=settings.ghl_client_secret,
+    )
+    try:
+        resp = await client.get_location(location_id)
+    except Exception as exc:  # pragma: no cover — name is cosmetic, never block
+        logger.info("ghl.install.location_name_failed", location_id=location_id, error=str(exc))
+        return None
+    finally:
+        await client.close()
+    raw_loc = resp.get("location")
+    loc = raw_loc if isinstance(raw_loc, dict) else resp
+    name = loc.get("name") if isinstance(loc, dict) else None
+    return str(name) if name else None
 
 
 async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[str, Any]:

@@ -29,6 +29,10 @@ class GHLTokenBundle:
     refresh_token: str
     expires_at: int  # epoch seconds
     location_id: str | None = None
+    company_id: str | None = None
+    # "Location" (sub-account token) or "Company" (agency token). GHL requires
+    # the refresh grant to carry the matching user_type.
+    user_type: str = "Location"
 
 
 class GHLClient:
@@ -69,6 +73,13 @@ class GHLClient:
 
     async def get_contact(self, contact_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/contacts/{contact_id}")
+
+    # ---- Locations ----
+
+    async def get_location(self, location_id: str) -> dict[str, Any]:
+        """Fetch a sub-account's details (name, timezone, …) — used to label a
+        freshly-installed location in the linking UI."""
+        return await self._request("GET", f"/locations/{location_id}")
 
     # ---- Opportunities / pipelines (UC-04) ----
 
@@ -158,6 +169,17 @@ class GHLClient:
             body["locationId"] = self._tokens.location_id
         return await self._request("POST", "/calendars/events/appointments", json=body)
 
+    # ---- Token ----
+
+    async def refresh_now(self) -> GHLTokenBundle:
+        """Force a token refresh and return the rotated bundle.
+
+        Used to refresh an agency (Company) token outside the lazy 401-retry path
+        — e.g. before minting a location token from a near-expired agency token.
+        """
+        await self._refresh_token()
+        return self._tokens
+
     # ---- Internals ----
 
     @retry(
@@ -195,6 +217,7 @@ class GHLClient:
                 "client_secret": self._client_secret,
                 "grant_type": "refresh_token",
                 "refresh_token": self._tokens.refresh_token,
+                "user_type": self._tokens.user_type,
             },
         )
         if resp.status_code >= 400:
@@ -215,6 +238,8 @@ class GHLClient:
             location_id=data.get("locationId")
             or data.get("location_id")
             or self._tokens.location_id,
+            company_id=data.get("companyId") or data.get("company_id") or self._tokens.company_id,
+            user_type=data.get("userType") or self._tokens.user_type,
         )
         logger.info("ghl.token_refreshed")
         if self._on_refresh is not None:

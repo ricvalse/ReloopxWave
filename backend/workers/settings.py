@@ -16,6 +16,8 @@ from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
 from workers.conversation.handlers import (
     handle_ghl_event,
+    handle_ghl_install,
+    handle_ghl_uninstall,
     handle_inbound_message,
     handle_phone_app_echo,
     send_outbound_whatsapp,
@@ -69,6 +71,8 @@ class WorkerSettings:
         update_outbound_status,
         # queue: ghl:events
         handle_ghl_event,
+        handle_ghl_install,
+        handle_ghl_uninstall,
         # queue: scheduler:jobs
         followup_no_answer,
         reactivate_dormant_leads,

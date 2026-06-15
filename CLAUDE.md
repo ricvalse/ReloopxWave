@@ -56,6 +56,7 @@ The **UC → component map is `reloop-ai-architettura.md` section 10** (lines ~6
 ## Deviations from the spec (know these before editing)
 
 - **WhatsApp uses 360dialog, not Meta Cloud API direct.** `integrations/whatsapp/d360_client.py` + `factory.py` + a `integrations/router/` BSP layer, with 360dialog Coexistence (mirrors phone-app messages). The spec still says "Meta BSP diretto" — treat 360dialog as the production reality.
+- **GHL is a marketplace agency-install app (ADR 0007), CRM/calendar only.** The agency (= tenant) connects once from web-admin (`POST /integrations/ghl/agency/oauth/start`, `user_type="Company"`); locations arrive as `INSTALL` webhooks at `POST /webhooks/ghl/marketplace` (RSA-signed) and are minted into `ghl_location_tokens` (per-`locationId`) + linked to existing merchants from the admin UI. There is **no** per-merchant self-service GHL flow. Tokens live in the dedicated `ghl_agency_installs` / `ghl_location_tokens` tables, **not** `integrations` (WhatsApp only). The messaging channel stays 360dialog; GHL is contacts/opportunities/calendar. `IntegrationRepository.resolve_ghl(merchant_id)` reads the linked location token.
 - **Sentry + PostHog are both wired** in `shared.observability` (`init_sentry`/`init_posthog`, called from `main.py` and the worker startup). Log aggregation is structlog → Railway logs.
 - The 13-UC completion work landed on branch `feat/complete-use-cases` (see `docs/completion-plan.md` for the per-task status table). Net effect on what used to be gaps: A/B variants now run distinct prompts via `PromptManager` + `prompt_templates`; `SentimentAnalyzer` populates `lead.sentiment`; scoring is always-on/cumulative; `analytics_events` is published to Realtime (migration 0013); objection extraction auto-fires via the `close_idle_conversations` cron; the fine-tuning pipeline is chained end-to-end (`fine_tune_run`) with presidio NER + a real evaluator + FT routing via `FtModelResolver`.
 - **Still partial:** unit coverage for DB-bound UCs (04/06/08/10/11/12/13) leans on the CI integration tests; the admin **templates** editor (UC-10) is still a JSON textarea (the merchant `bot-config-panel.tsx` has the full Inherited/Customized/Locked UI); FT pipeline + presidio + live conversation flow are only partially verifiable without external services (OpenAI FT, spaCy model, Supabase/Redis/360dialog).
@@ -66,12 +67,12 @@ The **UC → component map is `reloop-ai-architettura.md` section 10** (lines ~6
 - Every new table needs RLS policies keyed on `auth.jwt() ->> 'tenant_id'` and `merchant_id`. Isolation tests with two tenants live in `backend/tests/integration/test_isolation*.py` — keep them passing and extend them for new tables.
 - The backend may use the Supabase **service role** only for explicit admin operations (merchant creation, FT runs, etc.), and every such call must be logged with `actor_id`. Don't reach for it as a convenience.
 - External credentials (GHL, WhatsApp) are encrypted at rest with AES-256-GCM in `integrations`; the KEK is an env var (rotation runbook: `docs/runbooks/rotate-kek.md`).
-- WhatsApp/360dialog webhooks validate HMAC-SHA256 before enqueue; GHL webhooks use OAuth2 + signature. Drop unsigned events.
+- WhatsApp/360dialog webhooks validate HMAC-SHA256 before enqueue; GHL data webhooks (`/webhooks/ghl/{merchant_id}`) use HMAC, GHL marketplace INSTALL/UNINSTALL (`/webhooks/ghl/marketplace`) use an RSA public-key signature (`GHL_MARKETPLACE_PUBLIC_KEY`). Drop unsigned events.
 - Fine-tuning datasets must pass `data_anonymizer` before reaching OpenAI (contractual, Art. 5.2). **Currently regex-only — presidio NER is required and not yet added** (plan 2.2).
 
 ## Where decisions and procedures live
 
-- ADRs in `docs/decisions/` (0001 monorepo, 0002 pgvector, 0003 consolidated worker, 0004 all-Railway deploy, 0005 360dialog channel creation). Make a non-obvious call during implementation → write an ADR, don't bury it in a commit.
+- ADRs in `docs/decisions/` (0001 monorepo, 0002 pgvector, 0003 consolidated worker, 0004 all-Railway deploy, 0005 360dialog channel creation, 0006 whatsapp templates + flows, 0007 GHL marketplace agency-install). Make a non-obvious call during implementation → write an ADR, don't bury it in a commit.
 - Operational procedures in `docs/runbooks/` (ECIRCUITBREAKER recovery, migration rollback, KEK rotation, Supabase restore drill).
 - The path to V1 100% is `docs/completion-plan.md` — keep it current as items ship.
 

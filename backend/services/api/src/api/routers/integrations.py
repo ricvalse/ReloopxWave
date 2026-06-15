@@ -1,13 +1,21 @@
-"""Per-merchant external integrations — GHL (OAuth2) + WhatsApp (router-mediated).
+"""External integrations — GHL marketplace (agency OAuth2) + WhatsApp (router-mediated).
+
+GHL is wired as the marketplace agency-install model (ADR 0007): the *agency*
+(= tenant) connects once, then locations arrive via INSTALL webhooks and are
+linked to merchants. There is no per-merchant GHL self-service flow.
 
 Scope:
-- `POST /integrations/ghl/oauth/start` — mints a signed state, returns the
-  GHL marketplace URL. Merchant user opens it in a new tab.
-- `GET /integrations/crm/oauth/callback` — verifies state, exchanges code,
-  encrypts + persists the token bundle, redirects to the merchant portal.
-  NOTE: the path deliberately avoids the substring "ghl" — GoHighLevel rejects
-  any OAuth redirect URI that contains a HighLevel brand reference (highlevel /
-  gohighlevel / ghl). The `start` path keeps "ghl" since GHL never validates it.
+- `POST /integrations/ghl/agency/oauth/start` — agency admin only. Mints a
+  signed state (tenant_id), returns the GHL marketplace URL.
+- `GET /integrations/crm/oauth/callback` — verifies state, exchanges the code
+  for an Agency (Company) token, persists `ghl_agency_installs`, redirects to
+  the admin portal. NOTE: the path deliberately avoids the substring "ghl" —
+  GoHighLevel rejects any OAuth redirect URI that contains a HighLevel brand
+  reference (highlevel / gohighlevel / ghl). The `start` path keeps "ghl" since
+  GHL never validates it.
+- `GET /integrations/ghl/agency/status` — agency token connection status.
+- `GET /integrations/ghl/locations` + `POST .../{location_id}/link` — list the
+  installed locations and link each to an existing merchant.
 - `POST /integrations/whatsapp/onboard/start` — server-to-server proxy to
   the router's `/onboard/start`. Mints a one-shot state token tied to the
   caller's merchant_id and returns the assembled 360dialog Embedded Signup
@@ -28,7 +36,12 @@ from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
-from db import IntegrationRepository, MerchantRepository, session_scope
+from db import (
+    GHLMarketplaceRepository,
+    IntegrationRepository,
+    MerchantRepository,
+    session_scope,
+)
 from integrations import (
     RouterClient,
     build_authorize_url,
@@ -89,12 +102,35 @@ class StatusOut(BaseModel):
     connections: list[ConnectionOut]
 
 
-# ---- GHL OAuth -------------------------------------------------------------
+class AgencyStatusOut(BaseModel):
+    connected: bool
+    company_id: str | None
+    company_name: str | None
+    expires_at: int | None
 
 
-@router.post("/ghl/oauth/start", response_model=OAuthStartResponse)
-async def ghl_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStartResponse:
-    merchant_id = _require_merchant_scope(ctx)
+class LocationOut(BaseModel):
+    location_id: str
+    location_name: str | None
+    status: str
+    merchant_id: UUID | None
+    company_id: str
+
+
+class LocationsOut(BaseModel):
+    locations: list[LocationOut]
+
+
+class LinkLocationIn(BaseModel):
+    merchant_id: UUID
+
+
+# ---- GHL marketplace (agency OAuth + location linking) ---------------------
+
+
+@router.post("/ghl/agency/oauth/start", response_model=OAuthStartResponse)
+async def ghl_agency_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStartResponse:
+    tenant_id = _require_agency_scope(ctx)
     settings = get_settings()
 
     if not settings.ghl_client_id:
@@ -105,16 +141,16 @@ async def ghl_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStart
     redirect_uri = _ghl_redirect_uri(settings)
     state_secret = settings.ghl_oauth_state_secret or settings.ghl_client_secret
 
-    state = sign_oauth_state(merchant_id=merchant_id, secret=state_secret)
+    state = sign_oauth_state(tenant_id=tenant_id, secret=state_secret)
     url = build_authorize_url(
         client_id=settings.ghl_client_id,
         redirect_uri=redirect_uri,
         state=state,
     )
     logger.info(
-        "integrations.ghl.oauth.started",
+        "integrations.ghl.agency.oauth.started",
         actor_id=str(ctx.actor_id),
-        merchant_id=str(merchant_id),
+        tenant_id=str(tenant_id),
     )
     return OAuthStartResponse(authorize_url=url)
 
@@ -123,11 +159,10 @@ async def ghl_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStart
 async def ghl_oauth_callback(code: str, state: str) -> Response:
     """Public callback — no JWT. This is a browser redirect from GHL, so it
     carries no Supabase Authorization header; the signed `state` is what ties
-    the round-trip back to a merchant. We therefore must NOT use the
-    tenant-scoped `DBSession` dependency (it runs JWT verification and would
-    403 every merchant). The state validates first, then we persist the
-    integration through an unscoped service-role session — the merchant
-    identity comes from the verified state, not from RLS.
+    the round-trip back to a tenant. We therefore must NOT use the tenant-scoped
+    `DBSession` dependency (it runs JWT verification and would 403). The state
+    validates first, then we exchange the code for an Agency (Company) token and
+    persist it through an unscoped service-role session.
     """
     settings = get_settings()
     state_secret = settings.ghl_oauth_state_secret or settings.ghl_client_secret
@@ -139,29 +174,112 @@ async def ghl_oauth_callback(code: str, state: str) -> Response:
         client_id=settings.ghl_client_id,
         client_secret=settings.ghl_client_secret,
         redirect_uri=_ghl_redirect_uri(settings),
+        user_type="Company",
     )
+    if not tokens.company_id:
+        raise IntegrationError(
+            "GHL agency token response missing companyId",
+            error_code="ghl_company_missing",
+        )
 
+    company_name = tokens.raw.get("companyName") or tokens.raw.get("company_name")
     async with session_scope() as session:
-        repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
-        await repo.upsert_ghl(
-            merchant_id=verified.merchant_id,
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        await repo.upsert_agency_install(
+            tenant_id=verified.tenant_id,
+            company_id=tokens.company_id,
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
             expires_at=tokens.expires_at,
-            location_id=tokens.location_id,
+            company_name=str(company_name) if company_name else None,
         )
 
     logger.info(
-        "integrations.ghl.oauth.completed",
-        merchant_id=str(verified.merchant_id),
-        location_id=tokens.location_id,
+        "integrations.ghl.agency.oauth.completed",
+        tenant_id=str(verified.tenant_id),
+        company_id=tokens.company_id,
     )
 
-    redirect_target = _merchant_redirect(settings, status="connected", provider="ghl")
-    return Response(
-        status_code=302,
-        headers={"Location": redirect_target},
+    redirect_target = _admin_redirect(settings, status="connected", provider="ghl_agency")
+    return Response(status_code=302, headers={"Location": redirect_target})
+
+
+@router.get("/ghl/agency/status", response_model=AgencyStatusOut)
+async def ghl_agency_status(ctx: CurrentContext, session: DBSession) -> AgencyStatusOut:
+    tenant_id = _require_agency_scope(ctx)
+    settings = get_settings()
+    repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+    install = await repo.resolve_agency_by_tenant(tenant_id)
+    if install is None:
+        return AgencyStatusOut(connected=False, company_id=None, company_name=None, expires_at=None)
+    return AgencyStatusOut(
+        connected=True,
+        company_id=install.company_id,
+        company_name=install.company_name,
+        expires_at=install.expires_at,
     )
+
+
+@router.get("/ghl/locations", response_model=LocationsOut)
+async def ghl_locations(ctx: CurrentContext, session: DBSession) -> LocationsOut:
+    tenant_id = _require_agency_scope(ctx)
+    settings = get_settings()
+    repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+    rows = await repo.list_locations(tenant_id)
+    return LocationsOut(
+        locations=[
+            LocationOut(
+                location_id=r.location_id,
+                location_name=r.location_name,
+                status=r.status,
+                merchant_id=r.merchant_id,
+                company_id=r.company_id,
+            )
+            for r in rows
+        ]
+    )
+
+
+@router.post("/ghl/locations/{location_id}/link", status_code=204)
+async def ghl_link_location(
+    location_id: str,
+    payload: LinkLocationIn,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> Response:
+    tenant_id = _require_agency_scope(ctx)
+    settings = get_settings()
+    # The target merchant must belong to the caller's tenant (RLS enforces this
+    # too; we want a crisp 404 for the UI).
+    merchant = await MerchantRepository(session).get(payload.merchant_id)
+    if merchant is None or merchant.tenant_id != tenant_id:
+        raise NotFoundError("Merchant not found", merchant_id=str(payload.merchant_id))
+    repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+    linked = await repo.link_location(location_id=location_id, merchant_id=payload.merchant_id)
+    if not linked:
+        raise NotFoundError("GHL location not found", location_id=location_id)
+    logger.info(
+        "integrations.ghl.location.linked",
+        tenant_id=str(tenant_id),
+        location_id=location_id,
+        merchant_id=str(payload.merchant_id),
+    )
+    return Response(status_code=204)
+
+
+@router.post("/ghl/locations/{location_id}/unlink", status_code=204)
+async def ghl_unlink_location(
+    location_id: str,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> Response:
+    _require_agency_scope(ctx)
+    settings = get_settings()
+    repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+    unlinked = await repo.unlink_location(location_id=location_id)
+    if not unlinked:
+        raise NotFoundError("GHL location not found", location_id=location_id)
+    return Response(status_code=204)
 
 
 # ---- WhatsApp router-mediated onboarding ----------------------------------
@@ -260,34 +378,67 @@ async def integration_status(
 
     settings = get_settings()
     repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
-    rows = await repo.list_status(target)
-    by_provider = {r.provider: r for r in rows}
+    by_provider = {r.provider: r for r in await repo.list_status(target)}
 
     connections: list[ConnectionOut] = []
-    for provider in ("ghl", "whatsapp"):
-        row = by_provider.get(provider)
-        if row is None:
-            connections.append(
-                ConnectionOut(
-                    provider=provider,
-                    connected=False,
-                    status="disconnected",
-                    external_account_id=None,
-                    expires_at=None,
-                    meta={},
-                )
+
+    # GHL is the marketplace agency-install model: the link lives in
+    # ghl_location_tokens (agency-managed), not in integrations. Surface it as a
+    # read-only card so the merchant sees "managed by agency" rather than a
+    # self-service connect button.
+    ghl_repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+    ghl_loc = await ghl_repo.resolve_location_summary_by_merchant(target)
+    if ghl_loc is None:
+        connections.append(
+            ConnectionOut(
+                provider="ghl",
+                connected=False,
+                status="disconnected",
+                external_account_id=None,
+                expires_at=None,
+                meta={"created_via": "agency_install"},
             )
-        else:
-            connections.append(
-                ConnectionOut(
-                    provider=row.provider,
-                    connected=row.status == "active",
-                    status=row.status,
-                    external_account_id=row.external_account_id,
-                    expires_at=row.expires_at,
-                    meta=row.meta,
-                )
+        )
+    else:
+        meta: dict[str, Any] = {"created_via": "agency_install"}
+        if ghl_loc.location_name:
+            meta["location_name"] = ghl_loc.location_name
+        connections.append(
+            ConnectionOut(
+                provider="ghl",
+                connected=ghl_loc.status == "active",
+                status=ghl_loc.status,
+                external_account_id=ghl_loc.location_id,
+                expires_at=ghl_loc.expires_at,
+                meta=meta,
             )
+        )
+
+    # WhatsApp stays in the integrations table (merchant self-service onboarding).
+    wa = by_provider.get("whatsapp")
+    if wa is None:
+        connections.append(
+            ConnectionOut(
+                provider="whatsapp",
+                connected=False,
+                status="disconnected",
+                external_account_id=None,
+                expires_at=None,
+                meta={},
+            )
+        )
+    else:
+        connections.append(
+            ConnectionOut(
+                provider=wa.provider,
+                connected=wa.status == "active",
+                status=wa.status,
+                external_account_id=wa.external_account_id,
+                expires_at=wa.expires_at,
+                meta=wa.meta,
+            )
+        )
+
     return StatusOut(merchant_id=target, connections=connections)
 
 
@@ -301,6 +452,17 @@ def _require_merchant_scope(ctx: CurrentContext) -> UUID:
             error_code="no_merchant_context",
         )
     return ctx.merchant_id
+
+
+def _require_agency_scope(ctx: CurrentContext) -> UUID:
+    """GHL marketplace actions are agency-level — the tenant connects, not a
+    single merchant. Require an agency role and return the tenant_id."""
+    if not ctx.role.startswith("agency"):
+        raise PermissionDeniedError(
+            "Agency context required for GHL marketplace actions",
+            error_code="not_agency_scope",
+        )
+    return ctx.tenant_id
 
 
 def _resolve_status_merchant(ctx: CurrentContext, override: UUID | None) -> UUID:
@@ -360,10 +522,10 @@ def _default_return_url(settings: Any) -> str:
     return "about:blank?integrations_whatsapp=connected"
 
 
-def _merchant_redirect(settings: Any, *, status: str, provider: str) -> str:
-    if not settings.public_web_merchant_url:
+def _admin_redirect(settings: Any, *, status: str, provider: str) -> str:
+    if not settings.public_web_admin_url:
         # Fall back to a JSON-friendly response if no web URL is configured —
         # don't hard-fail the OAuth callback just because the portal URL is unset.
         return f"about:blank?integrations_{provider}={status}"
-    base = settings.public_web_merchant_url.rstrip("/")
+    base = settings.public_web_admin_url.rstrip("/")
     return f"{base}/integrations?provider={provider}&status={status}"

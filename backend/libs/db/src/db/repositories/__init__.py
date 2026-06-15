@@ -10,6 +10,12 @@ from db.repositories.flow import (
     FlowRepository,
     ResolvedFlowStep,
 )
+from db.repositories.ghl_marketplace import (
+    GHLLocationSummary,
+    GHLMarketplaceRepository,
+    ResolvedAgencyInstall,
+    ResolvedLocationToken,
+)
 from db.repositories.integration import (
     IntegrationRepository,
     IntegrationStatus,
@@ -37,6 +43,8 @@ __all__ = [
     "CategoryCount",
     "ConversationRepository",
     "FlowRepository",
+    "GHLLocationSummary",
+    "GHLMarketplaceRepository",
     "IntegrationRepository",
     "IntegrationStatus",
     "KnowledgeBaseRepository",
@@ -47,8 +55,10 @@ __all__ = [
     "PromptRepository",
     "ReactivationCandidate",
     "ReminderCandidate",
+    "ResolvedAgencyInstall",
     "ResolvedFlowStep",
     "ResolvedGHLIntegration",
+    "ResolvedLocationToken",
     "ResolvedWhatsAppIntegration",
     "TenantRepository",
     "UserRepository",
