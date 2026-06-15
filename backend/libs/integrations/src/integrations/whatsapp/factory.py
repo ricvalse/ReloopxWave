@@ -21,6 +21,15 @@ from integrations.whatsapp.d360_client import D360WhatsAppClient
 class WhatsAppSender(Protocol):
     async def send_text(self, *, to_phone: str, text: str) -> dict[str, Any]: ...
 
+    async def send_template(
+        self,
+        *,
+        to_phone: str,
+        template_name: str,
+        language: str = "it",
+        components: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
+
     async def close(self) -> None: ...
 
 

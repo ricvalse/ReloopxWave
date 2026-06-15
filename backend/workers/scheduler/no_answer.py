@@ -21,8 +21,10 @@ from redis.asyncio import Redis
 
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
+    FLOW_NO_ANSWER,
     AnalyticsRepository,
     ConversationRepository,
+    FlowRepository,
     IntegrationRepository,
     ReminderCandidate,
     TenantContext,
@@ -31,6 +33,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
+from workers.outbound import MODE_SKIP, decide_outbound, is_within_24h, send_decision
 
 logger = get_logger(__name__)
 
@@ -104,17 +107,13 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
         if now - reference < timedelta(minutes=threshold_min):
             return False
 
-        # Redis dedup — one worker wins the send even if the scan returned dupes.
-        dedup_key = f"noanswer:{cand.conversation_id}:{next_attempt}"
-        acquired = await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS)
-        if not acquired:
-            return False
-
-        integrations = IntegrationRepository(session, kek_base64=kek)
-        wa = await integrations.resolve_whatsapp(cand.wa_phone_number_id)
-        if wa is None:
-            logger.info("uc03.no_wa_integration", conversation_id=str(cand.conversation_id))
-            return False
+        # Decide free-text vs template based on the 24h window + optional flow
+        # step. Decide BEFORE consuming the dedup key so a skip (e.g. no approved
+        # template yet) can be retried once a template lands.
+        step = await FlowRepository(session).resolve_step(
+            merchant_id=cand.merchant_id, key=FLOW_NO_ANSWER, step_index=next_attempt - 1
+        )
+        within_window = is_within_24h(cand.last_inbound_at, now)
 
         text_key = (
             ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT
@@ -122,11 +121,51 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             else ConfigKey.NO_ANSWER_SECOND_REMINDER_TEXT
         )
         override = await config.resolve(text_key, merchant_id=cand.merchant_id)
-        text = (
+        fallback_text = (
             override
             if isinstance(override, str) and override.strip()
             else REMINDER_TEXTS.get(next_attempt, REMINDER_TEXTS[max(REMINDER_TEXTS)])
         )
+
+        analytics = AnalyticsRepository(session)
+        decision = decide_outbound(
+            within_window=within_window,
+            fallback_text=fallback_text,
+            step=step,
+            context={"contact.phone": cand.wa_contact_phone},
+        )
+        if decision.mode == MODE_SKIP:
+            logger.info(
+                "uc03.skipped",
+                conversation_id=str(cand.conversation_id),
+                reason=decision.reason,
+                within_window=within_window,
+            )
+            await analytics.emit(
+                tenant_id=cand.tenant_id,
+                merchant_id=cand.merchant_id,
+                event_type="reminder.skipped",
+                subject_type="conversation",
+                subject_id=cand.conversation_id,
+                properties={"attempt": next_attempt, "reason": decision.reason},
+            )
+            return False
+
+        # Resolve the integration BEFORE consuming the dedup key — a missing or
+        # not-yet-provisioned channel must not burn the attempt's key for the
+        # full TTL (which would silently lose the reminder even after the channel
+        # is fixed minutes later).
+        integrations = IntegrationRepository(session, kek_base64=kek)
+        wa = await integrations.resolve_whatsapp(cand.wa_phone_number_id)
+        if wa is None:
+            logger.info("uc03.no_wa_integration", conversation_id=str(cand.conversation_id))
+            return False
+
+        # Redis dedup — one worker wins the send even if the scan returned dupes.
+        dedup_key = f"noanswer:{cand.conversation_id}:{next_attempt}"
+        acquired = await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS)
+        if not acquired:
+            return False
 
         # Send first, then persist — if the provider fails, we'd rather retry
         # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
@@ -137,14 +176,13 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             waba_base_url=wa.waba_base_url,
         )
         try:
-            await client.send_text(to_phone=cand.wa_contact_phone, text=text)
+            await send_decision(client, to_phone=cand.wa_contact_phone, decision=decision)
         finally:
             await client.close()
 
         convs = ConversationRepository(session)
         await convs.record_reminder_sent(cand.conversation_id)
 
-        analytics = AnalyticsRepository(session)
         await analytics.emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
@@ -154,6 +192,7 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             properties={
                 "attempt": next_attempt,
                 "idle_minutes": int((now - reference).total_seconds() / 60),
+                "mode": decision.mode,
             },
         )
         return True

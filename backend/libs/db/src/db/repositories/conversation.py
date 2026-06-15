@@ -20,6 +20,9 @@ class ReminderCandidate:
     last_message_at: datetime
     reminders_sent: int
     last_reminder_at: datetime | None
+    # Last inbound (customer) message — drives the 24h window decision. May be
+    # None on legacy rows created before migration 0014.
+    last_inbound_at: datetime | None = None
 
 
 class ConversationRepository:
@@ -73,6 +76,20 @@ class ConversationRepository:
             .values(last_message_at=now, message_count=Conversation.message_count + 1)
         )
 
+    async def touch_last_inbound(self, conversation_id: UUID) -> None:
+        """Stamp the time of the last customer message — drives the 24h window.
+
+        Called only when a genuinely new inbound message is persisted (not on
+        outbound sends), so `last_inbound_at` reflects the start of the current
+        customer-service window.
+        """
+        now = datetime.now(tz=UTC)
+        await self._session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(last_inbound_at=now)
+        )
+
     async def list_reminder_candidates(
         self, *, max_followups: int, min_idle_minutes: int = 30
     ) -> list[ReminderCandidate]:
@@ -97,6 +114,7 @@ class ConversationRepository:
                 Conversation.wa_phone_number_id,
                 Conversation.wa_contact_phone,
                 Conversation.last_message_at,
+                Conversation.last_inbound_at,
                 reminders_sent_expr.label("reminders_sent"),
                 Conversation.meta["last_reminder_at"].astext.label("last_reminder_at"),
             )
@@ -131,6 +149,7 @@ class ConversationRepository:
                     last_message_at=row["last_message_at"],
                     reminders_sent=int(row["reminders_sent"]),
                     last_reminder_at=last_reminder_at,
+                    last_inbound_at=row["last_inbound_at"],
                 )
             )
         return results

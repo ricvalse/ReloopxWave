@@ -4,10 +4,12 @@ import {
   Database,
   FileWarning,
   FlaskConical,
+  LayoutTemplate,
   MessageSquare,
   Play,
   Plug,
   Settings,
+  Workflow,
 } from 'lucide-react';
 import type { NavSection } from '@reloop/ui';
 
@@ -25,6 +27,13 @@ export const merchantNav: NavSection[] = [
       { href: '/bot/knowledge-base', label: 'Knowledge base', icon: Database },
       { href: '/bot/playground', label: 'Playground', icon: Play },
       { href: '/bot/ab-testing', label: 'A/B testing', icon: FlaskConical },
+    ],
+  },
+  {
+    title: 'Messaggistica',
+    items: [
+      { href: '/whatsapp-templates', label: 'Template WhatsApp', icon: LayoutTemplate },
+      { href: '/flussi', label: 'Flussi', icon: Workflow },
     ],
   },
   {

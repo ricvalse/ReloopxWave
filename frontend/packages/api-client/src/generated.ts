@@ -790,6 +790,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/whatsapp-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Templates */
+        get: operations["list_templates_whatsapp_templates_get"];
+        put?: never;
+        /** Create Template */
+        post: operations["create_template_whatsapp_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/whatsapp-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Template */
+        get: operations["get_template_whatsapp_templates__template_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Template */
+        delete: operations["delete_template_whatsapp_templates__template_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/whatsapp-templates/{template_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Template
+         * @description Force a status refresh from 360dialog for one template.
+         */
+        post: operations["sync_template_whatsapp_templates__template_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Flows */
+        get: operations["list_flows_flows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/flows/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Upsert Flow */
+        put: operations["upsert_flow_flows__key__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dsar/leads/{lead_id}/export": {
         parameters: {
             query?: never;
@@ -1126,6 +1216,86 @@ export interface components {
              * @default 30
              */
             since_days: number;
+        };
+        /** FlowOut */
+        FlowOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Steps */
+            steps: components["schemas"]["FlowStepOut"][];
+        };
+        /** FlowStepIn */
+        FlowStepIn: {
+            /** Step Index */
+            step_index: number;
+            /**
+             * Delay Minutes
+             * @default 0
+             */
+            delay_minutes: number;
+            /** Template Id */
+            template_id?: string | null;
+            /** Variable Mapping */
+            variable_mapping?: {
+                [key: string]: string;
+            };
+            /**
+             * Window Policy
+             * @default auto
+             */
+            window_policy: string;
+            /** Free Text */
+            free_text?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /** FlowStepOut */
+        FlowStepOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Step Index */
+            step_index: number;
+            /** Delay Minutes */
+            delay_minutes: number;
+            /** Template Id */
+            template_id: string | null;
+            /** Variable Mapping */
+            variable_mapping: {
+                [key: string]: string;
+            };
+            /** Window Policy */
+            window_policy: string;
+            /** Free Text */
+            free_text: string | null;
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** FlowUpsertIn */
+        FlowUpsertIn: {
+            /** Name */
+            name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Steps */
+            steps?: components["schemas"]["FlowStepIn"][];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1628,6 +1798,19 @@ export interface components {
             /** Prompt Body */
             prompt_body?: string | null;
         };
+        /** WhatsAppButtonIn */
+        WhatsAppButtonIn: {
+            /** Type */
+            type: string;
+            /** Text */
+            text: string;
+            /** Url */
+            url?: string | null;
+            /** Phone Number */
+            phone_number?: string | null;
+            /** Url Example */
+            url_example?: string | null;
+        };
         /**
          * WhatsAppOnboardStartIn
          * @description Optional override for where the browser lands after the router's
@@ -1646,6 +1829,101 @@ export interface components {
             state: string;
             /** Expires In */
             expires_in: number;
+        };
+        /** WhatsAppTemplateCreateIn */
+        WhatsAppTemplateCreateIn: {
+            /**
+             * Purpose
+             * @default custom
+             */
+            purpose: string;
+            /**
+             * Category
+             * @default UTILITY
+             */
+            category: string;
+            /**
+             * Language
+             * @default it
+             */
+            language: string;
+            /** Body */
+            body: string;
+            /**
+             * Header Type
+             * @default NONE
+             */
+            header_type: string;
+            /** Header Text */
+            header_text?: string | null;
+            /** Header Image Url */
+            header_image_url?: string | null;
+            /** Footer */
+            footer?: string | null;
+            /** Buttons */
+            buttons?: components["schemas"]["WhatsAppButtonIn"][] | null;
+            /** Variable Sources */
+            variable_sources?: {
+                [key: string]: string;
+            } | null;
+            /** Body Examples */
+            body_examples?: string[] | null;
+        };
+        /** WhatsAppTemplateOut */
+        WhatsAppTemplateOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Purpose */
+            purpose: string;
+            /** Category */
+            category: string;
+            /** Language */
+            language: string;
+            /** Status */
+            status: string;
+            /** Meta Status */
+            meta_status: string | null;
+            /** Meta Quality */
+            meta_quality: string | null;
+            /** Rejection Reason */
+            rejection_reason: string | null;
+            /** Body */
+            body: string;
+            /** Header Type */
+            header_type: string;
+            /** Header Text */
+            header_text: string | null;
+            /** Header Image Url */
+            header_image_url: string | null;
+            /** Footer */
+            footer: string | null;
+            /** Buttons */
+            buttons: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Variables */
+            variables: string[];
+            /** Variable Sources */
+            variable_sources: {
+                [key: string]: string;
+            };
+            /** Whatsapp Template Id */
+            whatsapp_template_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
     };
     responses: never;
@@ -3195,6 +3473,242 @@ export interface operations {
             };
         };
     };
+    list_templates_whatsapp_templates_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by lifecycle purpose */
+                purpose?: string | null;
+                /** @description Filter by local status */
+                status?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_template_whatsapp_templates_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WhatsAppTemplateCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_template_whatsapp_templates__template_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_template_whatsapp_templates__template_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_template_whatsapp_templates__template_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_flows_flows_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlowOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upsert_flow_flows__key__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FlowUpsertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlowOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     export_lead_dsar_leads__lead_id__export_get: {
         parameters: {
             query?: never;
@@ -3414,6 +3928,13 @@ export enum ApiPaths {
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
+    list_templates_whatsapp_templates_get = "/whatsapp-templates",
+    create_template_whatsapp_templates_post = "/whatsapp-templates",
+    get_template_whatsapp_templates__template_id__get = "/whatsapp-templates/{template_id}",
+    delete_template_whatsapp_templates__template_id__delete = "/whatsapp-templates/{template_id}",
+    sync_template_whatsapp_templates__template_id__sync_post = "/whatsapp-templates/{template_id}/sync",
+    list_flows_flows_get = "/flows",
+    upsert_flow_flows__key__put = "/flows/{key}",
     export_lead_dsar_leads__lead_id__export_get = "/dsar/leads/{lead_id}/export",
     erase_lead_dsar_leads__lead_id__erase_post = "/dsar/leads/{lead_id}/erase",
     whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",

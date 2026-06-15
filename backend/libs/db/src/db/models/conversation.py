@@ -36,6 +36,10 @@ class Conversation(Base, TimestampMixin):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Timestamp of the last *customer* (inbound) message. Drives the WhatsApp
+    # 24h session window: free text inside, approved template outside. Unlike
+    # last_message_at (bumped by outbound too), this only moves on inbound.
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Per-thread bot takeover. AND-ed with bot_configs.overrides.bot.auto_reply_enabled
     # in ConversationService.handle_inbound — either off → no assistant turn.

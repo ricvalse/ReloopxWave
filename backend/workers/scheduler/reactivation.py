@@ -17,7 +17,9 @@ from redis.asyncio import Redis
 
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
+    FLOW_REACTIVATION,
     AnalyticsRepository,
+    FlowRepository,
     IntegrationRepository,
     LeadRepository,
     ReactivationCandidate,
@@ -27,6 +29,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
+from workers.outbound import MODE_SKIP, decide_outbound, send_decision
 
 logger = get_logger(__name__)
 
@@ -112,10 +115,48 @@ async def _maybe_send(
             return False
 
         next_attempt = cand.attempts_sent + 1
-        dedup_key = f"reactivate:{cand.lead_id}:{next_attempt}"
-        if not await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS):
+
+        # Dormant leads are by definition outside the 24h window, so reactivation
+        # requires an approved template. Decide before the dedup so a skip (no
+        # template yet) can be retried once one is approved.
+        step = await FlowRepository(session).resolve_step(
+            merchant_id=cand.merchant_id, key=FLOW_REACTIVATION, step_index=next_attempt - 1
+        )
+        override = await config.resolve(
+            ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id
+        )
+        fallback_text = (
+            override
+            if isinstance(override, str) and override.strip()
+            else REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
+        )
+
+        analytics = AnalyticsRepository(session)
+        decision = decide_outbound(
+            within_window=False,
+            fallback_text=fallback_text,
+            step=step,
+            context={"contact.phone": cand.phone},
+        )
+        if decision.mode == MODE_SKIP:
+            logger.info(
+                "uc06.skipped",
+                lead_id=str(cand.lead_id),
+                reason=decision.reason,
+            )
+            await analytics.emit(
+                tenant_id=cand.tenant_id,
+                merchant_id=cand.merchant_id,
+                event_type="lead_reactivation.skipped",
+                subject_type="lead",
+                subject_id=cand.lead_id,
+                properties={"attempt": next_attempt, "reason": decision.reason},
+            )
             return False
 
+        # Resolve the integration BEFORE consuming the dedup key — a missing
+        # channel must not burn the attempt's key for the full TTL (14 days here)
+        # and silently lose the reactivation.
         integrations = IntegrationRepository(session, kek_base64=kek)
         wa = await integrations.resolve_whatsapp(cand.wa_phone_number_id)
         if wa is None:
@@ -126,14 +167,9 @@ async def _maybe_send(
             )
             return False
 
-        override = await config.resolve(
-            ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id
-        )
-        text = (
-            override
-            if isinstance(override, str) and override.strip()
-            else REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
-        )
+        dedup_key = f"reactivate:{cand.lead_id}:{next_attempt}"
+        if not await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS):
+            return False
 
         client = build_whatsapp_sender(
             phone_number_id=wa.phone_number_id,
@@ -141,12 +177,12 @@ async def _maybe_send(
             waba_base_url=wa.waba_base_url,
         )
         try:
-            await client.send_text(to_phone=cand.phone, text=text)
+            await send_decision(client, to_phone=cand.phone, decision=decision)
         finally:
             await client.close()
 
         await LeadRepository(session).record_reactivation_sent(cand.lead_id)
-        await AnalyticsRepository(session).emit(
+        await analytics.emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
             event_type="lead_reactivation.sent",
@@ -155,6 +191,7 @@ async def _maybe_send(
             properties={
                 "attempt": next_attempt,
                 "days_dormant": int((now - cand.last_interaction_at).total_seconds() / 86400),
+                "mode": decision.mode,
             },
         )
         return True
