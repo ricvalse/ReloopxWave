@@ -2,17 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import {
-  IMP_COOKIE,
   IMP_META_COOKIE,
   type ImpMeta,
+  clearImpCookiesBrowser,
   readCookieBrowser,
 } from '@/lib/impersonation';
-
-function clearImpCookies() {
-  const expire = 'path=/; max-age=0; samesite=lax';
-  document.cookie = `${IMP_COOKIE}=; ${expire}`;
-  document.cookie = `${IMP_META_COOKIE}=; ${expire}`;
-}
 
 function formatRemaining(seconds: number): string {
   if (seconds <= 0) return '00:00';
@@ -55,7 +49,7 @@ export function ImpersonationBanner() {
   const expired = remaining <= 0;
 
   const onExit = () => {
-    clearImpCookies();
+    clearImpCookiesBrowser();
     if (window.opener) {
       window.close();
     } else {

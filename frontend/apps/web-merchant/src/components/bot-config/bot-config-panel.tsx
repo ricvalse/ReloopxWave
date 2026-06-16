@@ -349,6 +349,20 @@ const SECTIONS: SectionDef[] = [
   },
 ];
 
+// Sezioni temporaneamente nascoste dal pannello Configurazione (richiesta
+// "per ora"). Le definizioni restano in SECTIONS sopra: per riattivarle basta
+// togliere la chiave da questo set.
+const HIDDEN_SECTIONS = new Set<string>([
+  'no_answer', // No answer (UC-03)
+  'reactivation', // Reactivation (UC-06)
+  'scoring', // Scoring (UC-05)
+  'rag', // RAG (UC-07)
+  'pipeline', // Pipeline (UC-04)
+  'booking', // Booking (UC-02)
+]);
+
+const VISIBLE_SECTIONS = SECTIONS.filter((s) => !HIDDEN_SECTIONS.has(s.section));
+
 export function BotConfigPanel() {
   const queryClient = useQueryClient();
   const [formError, setFormError] = useState<string | null>(null);
@@ -491,7 +505,7 @@ export function BotConfigPanel() {
         ) : null}
       </div>
 
-      {SECTIONS.map((s) => (
+      {VISIBLE_SECTIONS.map((s) => (
         <SectionCard
           key={s.section}
           section={s}

@@ -94,6 +94,15 @@ export function impSessionFromClaims(claims: ImpClaims): MerchantSession {
   };
 }
 
+/** Clear both impersonation cookies — ends the impersonation session. No-op on
+ * the server. The caller decides where to navigate afterwards. */
+export function clearImpCookiesBrowser(): void {
+  if (typeof document === 'undefined') return;
+  const expire = 'path=/; max-age=0; samesite=lax';
+  document.cookie = `${IMP_COOKIE}=; ${expire}`;
+  document.cookie = `${IMP_META_COOKIE}=; ${expire}`;
+}
+
 /** Read a cookie value in the browser. Returns null on the server. */
 export function readCookieBrowser(name: string): string | null {
   if (typeof document === 'undefined') return null;
