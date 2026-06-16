@@ -6,6 +6,10 @@ const publicEnvSchema = z.object({
   NEXT_PUBLIC_API_BASE_URL: z.string().url(),
   NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
   NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+  // web-admin only: base URL of the merchant portal, used to open the
+  // impersonation handoff. Optional — the backend also returns it in the
+  // impersonation response as a fallback.
+  NEXT_PUBLIC_WEB_MERCHANT_URL: z.string().url().optional(),
 });
 
 export type PublicEnv = z.infer<typeof publicEnvSchema>;

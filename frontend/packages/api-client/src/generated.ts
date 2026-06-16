@@ -237,6 +237,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/impersonation/{merchant_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Impersonate Merchant */
+        post: operations["impersonate_merchant_admin_impersonation__merchant_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bot-config/templates": {
         parameters: {
             query?: never;
@@ -325,6 +342,31 @@ export interface paths {
         put?: never;
         /** Create Doc */
         post: operations["create_doc_knowledge_base__merchant_id__docs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/knowledge-base/{merchant_id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Doc
+         * @description Server-side proxy for KB uploads (used by the agency impersonation flow).
+         *
+         *     The file goes up via the Supabase **service role** (a privileged admin op,
+         *     logged with the actor), scoped to `{merchant_id}/...` — the same path layout
+         *     the direct-from-browser path uses, so the indexer is agnostic to which one
+         *     ran. The merchant's own portal keeps uploading direct-to-Storage under RLS.
+         */
+        post: operations["upload_doc_knowledge_base__merchant_id__upload_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1116,6 +1158,13 @@ export interface components {
             /** Expires At */
             expires_at: number | null;
         };
+        /** Body_upload_doc_knowledge_base__merchant_id__upload_post */
+        Body_upload_doc_knowledge_base__merchant_id__upload_post: {
+            /** File */
+            file: string;
+            /** Title */
+            title: string;
+        };
         /** BookingConfig */
         BookingConfig: {
             /** Default Calendar Id */
@@ -1405,6 +1454,39 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** ImpersonationOut */
+        ImpersonationOut: {
+            /** Access Token */
+            access_token: string;
+            /**
+             * Token Type
+             * @default bearer
+             */
+            token_type: string;
+            /** Expires At */
+            expires_at: number;
+            /** Expires In */
+            expires_in: number;
+            /**
+             * Merchant Id
+             * Format: uuid
+             */
+            merchant_id: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Merchant Name */
+            merchant_name: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Web Merchant Url */
+            web_merchant_url: string;
+        };
         /** InviteIn */
         InviteIn: {
             /** Email */
@@ -1642,6 +1724,11 @@ export interface components {
             };
             /** Locked Keys */
             locked_keys: string[];
+            /**
+             * Is Impersonation
+             * @default false
+             */
+            is_impersonation: boolean;
         };
         /** PipelineConfig */
         PipelineConfig: {
@@ -2539,6 +2626,39 @@ export interface operations {
             };
         };
     };
+    impersonate_merchant_admin_impersonation__merchant_id__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpersonationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_templates_bot_config_templates_get: {
         parameters: {
             query?: never;
@@ -2794,6 +2914,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["KbDocIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbDocOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_doc_knowledge_base__merchant_id__upload_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_doc_knowledge_base__merchant_id__upload_post"];
             };
         };
         responses: {
@@ -4187,6 +4344,7 @@ export enum ApiPaths {
     resume_merchant_merchants__merchant_id__resume_post = "/merchants/{merchant_id}/resume",
     list_users_users__get = "/users/",
     invite_user_users_invite_post = "/users/invite",
+    impersonate_merchant_admin_impersonation__merchant_id__post = "/admin/impersonation/{merchant_id}",
     list_templates_bot_config_templates_get = "/bot-config/templates",
     create_template_bot_config_templates_post = "/bot-config/templates",
     update_template_bot_config_templates__template_id__put = "/bot-config/templates/{template_id}",
@@ -4195,6 +4353,7 @@ export enum ApiPaths {
     update_overrides_bot_config__merchant_id__overrides_put = "/bot-config/{merchant_id}/overrides",
     create_doc_knowledge_base__merchant_id__docs_post = "/knowledge-base/{merchant_id}/docs",
     list_docs_knowledge_base__merchant_id__docs_get = "/knowledge-base/{merchant_id}/docs",
+    upload_doc_knowledge_base__merchant_id__upload_post = "/knowledge-base/{merchant_id}/upload",
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",

@@ -7,6 +7,7 @@ import { Upload } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
+import { IMP_COOKIE, isImpersonatingBrowser, readCookieBrowser } from '@/lib/impersonation';
 
 type UploadArgs = { file: File; title: string };
 
@@ -21,6 +22,32 @@ export function KnowledgeBaseUploader() {
   const mutation = useMutation({
     mutationFn: async ({ file, title }: UploadArgs) => {
       if (!merchantId) throw new Error('No merchant context');
+
+      // Under agency impersonation there is no supabase-js session, so the
+      // direct-to-Storage upload (RLS-scoped) can't authenticate. Route the
+      // file through the FastAPI proxy, which uploads server-side.
+      if (isImpersonatingBrowser()) {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('title', title);
+        const token = readCookieBrowser(IMP_COOKIE);
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_BASE_URL}/knowledge-base/${merchantId}/upload`,
+          {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            body: form,
+          },
+        );
+        if (!res.ok) {
+          const body = (await res.json().catch(() => null)) as
+            | { error?: { message?: string } }
+            | null;
+          throw new Error(body?.error?.message ?? 'Upload fallito');
+        }
+        return res.json();
+      }
+
       const supabase = getBrowserSupabase();
       const storagePath = `${merchantId}/${Date.now()}-${slugify(file.name)}`;
 

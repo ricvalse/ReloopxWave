@@ -7,6 +7,7 @@ from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ai_core import (
@@ -28,6 +29,7 @@ from api.routers import (
     dsar,
     fine_tuning,
     flows,
+    impersonation,
     integrations,
     internal,
     knowledge_base,
@@ -39,6 +41,7 @@ from api.routers import (
     webhooks,
     whatsapp_templates,
 )
+from config_resolver import set_shared_redis
 from shared import Settings, configure_logging, get_logger, get_settings, init_posthog, init_sentry
 
 logger = get_logger(__name__)
@@ -61,6 +64,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ARQ pool for enqueueing from webhook handlers. One shared pool per process.
     app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
 
+    # Shared Redis client backing the config-cascade cache. Registered globally
+    # so every ConfigResolver (routers, playground) caches + invalidates against
+    # the same store the worker uses.
+    app.state.redis = Redis.from_url(settings.redis_url)
+    set_shared_redis(app.state.redis)
+
     # AI wiring for synchronous paths (UC-08 playground).
     router = ModelRouter(settings, ft_model_provider=FtModelResolver())
     orchestrator = ConversationOrchestrator(router)
@@ -74,6 +83,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        set_shared_redis(None)
+        await app.state.redis.aclose()
         await app.state.arq.close()
 
 
@@ -131,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(tenants.router, prefix="/tenants", tags=["tenants"])
     app.include_router(merchants.router, prefix="/merchants", tags=["merchants"])
     app.include_router(users.router, prefix="/users", tags=["users"])
+    app.include_router(impersonation.router, prefix="/admin/impersonation", tags=["impersonation"])
     app.include_router(bot_config.router, prefix="/bot-config", tags=["bot-config"])
     app.include_router(knowledge_base.router, prefix="/knowledge-base", tags=["knowledge-base"])
     app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])

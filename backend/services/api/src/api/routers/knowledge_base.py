@@ -11,18 +11,27 @@ URL-based docs don't need Storage at all — just the URL.
 from __future__ import annotations
 
 import time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from pydantic import BaseModel
 
 from api.dependencies.session import CurrentContext, DBSession
 from db import KnowledgeBaseRepository
 from db.session import TenantContext
-from shared import PermissionDeniedError
+from integrations import SupabaseStorage
+from shared import PermissionDeniedError, get_logger, get_settings
+
+logger = get_logger(__name__)
 
 router = APIRouter()
+
+# Direct-to-Storage uploads from the browser are scoped by Storage RLS on the
+# `merchant_id` claim. That works for a real merchant session but NOT for an
+# agency impersonation token if the Supabase data-plane rejects it — so the
+# impersonation flow uploads through this server-side proxy instead.
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB, mirrors the frontend cap.
 
 
 class KbDocIn(BaseModel):
@@ -57,6 +66,71 @@ async def create_doc(
         source=payload.source,
         storage_path=payload.storage_path,
         url=payload.url,
+    )
+
+    arq = request.app.state.arq
+    await arq.enqueue_job("kb_reindex", str(doc.id), _job_id=f"kb:reindex:{doc.id}")
+
+    return KbDocOut(
+        id=doc.id,
+        title=doc.title,
+        source=doc.source,
+        status=doc.status,
+        chunk_count=doc.chunk_count,
+    )
+
+
+@router.post("/{merchant_id}/upload", response_model=KbDocOut)
+async def upload_doc(
+    merchant_id: UUID,
+    request: Request,
+    session: DBSession,
+    ctx: CurrentContext,
+    file: Annotated[UploadFile, File()],
+    title: Annotated[str, Form()],
+) -> KbDocOut:
+    """Server-side proxy for KB uploads (used by the agency impersonation flow).
+
+    The file goes up via the Supabase **service role** (a privileged admin op,
+    logged with the actor), scoped to `{merchant_id}/...` — the same path layout
+    the direct-from-browser path uses, so the indexer is agnostic to which one
+    ran. The merchant's own portal keeps uploading direct-to-Storage under RLS.
+    """
+    _assert_merchant_scope(ctx, merchant_id)
+
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise PermissionDeniedError("File too large (max 20 MB)", error_code="kb_file_too_large")
+
+    settings = get_settings()
+    storage = SupabaseStorage(
+        project_url=settings.supabase_url,
+        service_role_key=settings.supabase_service_role_key,
+        bucket=settings.supabase_kb_bucket,
+    )
+    filename = file.filename or "documento"
+    storage_path = f"{merchant_id}/{int(time.time())}-{_slugify(filename)}"
+    await storage.upload_bytes(
+        storage_path,
+        data,
+        content_type=file.content_type or "application/octet-stream",
+    )
+
+    logger.info(
+        "kb.upload.proxied",
+        actor_id=str(ctx.actor_id),
+        impersonator_id=str(ctx.impersonator_id) if ctx.impersonator_id else None,
+        merchant_id=str(merchant_id),
+        storage_path=storage_path,
+    )
+
+    repo = KnowledgeBaseRepository(session)
+    doc = await repo.create_doc(
+        merchant_id=merchant_id,
+        title=title,
+        source=_infer_source(filename, file.content_type),
+        storage_path=storage_path,
+        url=None,
     )
 
     arq = request.app.state.arq
@@ -114,3 +188,18 @@ def _assert_merchant_scope(ctx: TenantContext, merchant_id: UUID) -> None:
         raise PermissionDeniedError(
             "Cannot act on another merchant", error_code="cross_merchant_access"
         )
+
+
+def _slugify(name: str) -> str:
+    keep = "".join(c if c.isalnum() or c in ".-" else "-" for c in name.lower())
+    return keep.strip("-") or "documento"
+
+
+def _infer_source(filename: str, content_type: str | None) -> Literal["pdf", "docx", "txt"]:
+    lower = filename.lower()
+    if (content_type or "") == "application/pdf" or lower.endswith(".pdf"):
+        return "pdf"
+    docx_ct = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if (content_type or "") == docx_ct or lower.endswith(".docx"):
+        return "docx"
+    return "txt"

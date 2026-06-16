@@ -16,27 +16,48 @@ logger = get_logger(__name__)
 
 CACHE_TTL_SECONDS = 60
 
+# Process-wide Redis client, set once at startup (API lifespan / worker
+# startup) via `set_shared_redis`. Any `ConfigResolver` built without an
+# explicit `redis` picks this up, so caching + invalidation work uniformly
+# across routers, the conversation pipeline, and action handlers without
+# threading a client through every layer. Stays None in tests (no Redis) —
+# the resolver then reads straight from the DB, which is always fresh.
+_shared_redis: Redis | None = None
+
+
+def set_shared_redis(redis: Redis | None) -> None:
+    global _shared_redis
+    _shared_redis = redis
+
+
+def get_shared_redis() -> Redis | None:
+    return _shared_redis
+
 
 class ConfigResolver:
     """Three-level cascade: merchant override → agency default → system default.
 
     Every lookup round-trips through Redis with a short TTL. Cache invalidation
     happens on write at the matching level. The TTL is a safety net, not the
-    primary correctness mechanism.
+    primary correctness mechanism — every Redis op is best-effort and degrades
+    to a direct DB read if Redis is unreachable.
     """
 
     def __init__(self, session: AsyncSession, redis: Redis | None = None) -> None:
         self._session = session
-        self._redis = redis
+        self._redis = redis if redis is not None else _shared_redis
 
     async def resolve(self, key: ConfigKey | str, *, merchant_id: UUID) -> Any:
         key_str = key.value if isinstance(key, ConfigKey) else key
         cache_key = f"cfg:{merchant_id}:{key_str}"
 
         if self._redis is not None:
-            cached = await self._redis.get(cache_key)
-            if cached is not None:
-                return json.loads(cached)
+            try:
+                cached = await self._redis.get(cache_key)
+                if cached is not None:
+                    return json.loads(cached)
+            except Exception as e:  # Redis down / network blip → fall back to DB.
+                logger.warning("config.cache.get_failed", key=cache_key, error=str(e))
 
         # 1. Merchant override
         cfg = await self._session.execute(
@@ -82,17 +103,25 @@ class ConfigResolver:
     async def invalidate(self, merchant_id: UUID, *, keys: list[str] | None = None) -> None:
         if self._redis is None:
             return
-        if keys is None:
-            pattern = f"cfg:{merchant_id}:*"
-            async for raw in self._redis.scan_iter(match=pattern):
-                await self._redis.delete(raw)
-        else:
-            await self._redis.delete(*[f"cfg:{merchant_id}:{k}" for k in keys])
+        try:
+            if keys is None:
+                pattern = f"cfg:{merchant_id}:*"
+                async for raw in self._redis.scan_iter(match=pattern):
+                    await self._redis.delete(raw)
+            else:
+                await self._redis.delete(*[f"cfg:{merchant_id}:{k}" for k in keys])
+        except Exception as e:  # never let a cache miss break a write.
+            logger.warning(
+                "config.cache.invalidate_failed", merchant_id=str(merchant_id), error=str(e)
+            )
 
     async def _cache(self, key: str, value: Any) -> None:
         if self._redis is None:
             return
-        await self._redis.set(key, json.dumps(value), ex=CACHE_TTL_SECONDS)
+        try:
+            await self._redis.set(key, json.dumps(value), ex=CACHE_TTL_SECONDS)
+        except Exception as e:
+            logger.warning("config.cache.set_failed", key=key, error=str(e))
 
 
 def _lookup(bag: dict[str, Any], dotted_key: str) -> Any:

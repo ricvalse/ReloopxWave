@@ -315,9 +315,15 @@ class ConversationService:
             kb_chunks = []
             if self._embedder is not None:
                 try:
+                    top_k = await self._resolve_int(
+                        session, resolved.merchant_id, ConfigKey.RAG_TOP_K, default=5
+                    )
+                    min_score = await self._resolve_float(
+                        session, resolved.merchant_id, ConfigKey.RAG_MIN_SCORE, default=0.7
+                    )
                     rag = RAGEngine(session, self._embedder)
                     kb_chunks = await rag.retrieve(
-                        text, merchant_id=resolved.merchant_id, top_k=5, min_score=0.7
+                        text, merchant_id=resolved.merchant_id, top_k=top_k, min_score=min_score
                     )
                 except Exception as e:
                     logger.warning("uc01.rag_failed", error=str(e))
@@ -645,6 +651,18 @@ class ConversationService:
             return default
         if isinstance(value, int):
             return value
+        return default
+
+    async def _resolve_float(
+        self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: float
+    ) -> float:
+        try:
+            resolver = ConfigResolver(session)
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return default
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
         return default
 
     async def _resolve_bool(

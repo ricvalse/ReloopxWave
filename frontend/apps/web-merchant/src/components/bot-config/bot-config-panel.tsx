@@ -15,6 +15,8 @@ type FormState = Record<string, unknown>; // flat, dotted keys
 
 type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea';
 
+type BadgeKind = 'inherited' | 'customized' | 'locked' | 'lock-override';
+
 type FieldDef = {
   key: string; // dotted path, e.g. "no_answer.first_reminder_min"
   label: string;
@@ -252,6 +254,9 @@ export function BotConfigPanel() {
     () => new Set(overridesQuery.data?.locked_keys ?? []),
     [overridesQuery.data],
   );
+  // When the agency impersonates the merchant it owns the locks, so locked
+  // fields become editable (the backend skips the lock-strip too).
+  const isImpersonation = overridesQuery.data?.is_impersonation ?? false;
 
   // Form state holds current input values (flat dotted keys). Starts as
   // resolved values; user edits flow into it. Separate dirty set marks keys
@@ -335,6 +340,12 @@ export function BotConfigPanel() {
           (§9). Modifica solo i campi che vuoi personalizzare; i campi bloccati
           dall&apos;agenzia non sono modificabili.
         </p>
+        {isImpersonation ? (
+          <p className="mt-2 text-violet-900">
+            Stai configurando come agenzia: puoi modificare anche i campi bloccati
+            (badge <span className="font-medium">🔓 Override agenzia</span>).
+          </p>
+        ) : null}
       </div>
 
       {SECTIONS.map((s) => (
@@ -345,6 +356,7 @@ export function BotConfigPanel() {
           overridesFlat={overridesFlat}
           resolvedFlat={resolvedFlat}
           lockedSet={lockedSet}
+          isImpersonation={isImpersonation}
           dirty={dirty}
           onChange={(key, value) => {
             setForm((prev) => ({ ...prev, [key]: value }));
@@ -375,6 +387,7 @@ function SectionCard({
   overridesFlat,
   resolvedFlat,
   lockedSet,
+  isImpersonation,
   dirty,
   onChange,
   onReset,
@@ -384,6 +397,7 @@ function SectionCard({
   overridesFlat: FormState;
   resolvedFlat: FormState;
   lockedSet: Set<string>;
+  isImpersonation: boolean;
   dirty: Set<string>;
   onChange: (key: string, value: unknown) => void;
   onReset: (key: string) => void;
@@ -396,14 +410,18 @@ function SectionCard({
       </CardHeader>
       <CardContent className="space-y-4">
         {section.fields.map((f) => {
-          const locked = lockedSet.has(f.key);
+          const lockedForMerchant = lockedSet.has(f.key);
+          // The agency (impersonation) may edit locked fields; the merchant can't.
+          const disabled = lockedForMerchant && !isImpersonation;
           const hasOverride = Object.prototype.hasOwnProperty.call(overridesFlat, f.key);
           const isDirty = dirty.has(f.key);
-          const badge = locked
-            ? ('locked' as const)
+          const badge: BadgeKind = lockedForMerchant
+            ? isImpersonation
+              ? 'lock-override'
+              : 'locked'
             : hasOverride || isDirty
-              ? ('customized' as const)
-              : ('inherited' as const);
+              ? 'customized'
+              : 'inherited';
           return (
             <FieldRow
               key={f.key}
@@ -411,7 +429,7 @@ function SectionCard({
               value={form[f.key]}
               inheritedValue={resolvedFlat[f.key]}
               badge={badge}
-              locked={locked}
+              locked={disabled}
               isDirty={isDirty}
               onChange={(v) => onChange(f.key, v)}
               onReset={() => onReset(f.key)}
@@ -436,7 +454,7 @@ function FieldRow({
   field: FieldDef;
   value: unknown;
   inheritedValue: unknown;
-  badge: 'inherited' | 'customized' | 'locked';
+  badge: BadgeKind;
   locked: boolean;
   isDirty: boolean;
   onChange: (v: unknown) => void;
@@ -551,11 +569,18 @@ function FieldInput({
   );
 }
 
-function Badge({ kind }: { kind: 'inherited' | 'customized' | 'locked' }) {
+function Badge({ kind }: { kind: BadgeKind }) {
   if (kind === 'locked') {
     return (
       <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 ring-1 ring-inset ring-amber-200">
         🔒 Locked
+      </span>
+    );
+  }
+  if (kind === 'lock-override') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-900 ring-1 ring-inset ring-violet-200">
+        🔓 Override agenzia
       </span>
     );
   }

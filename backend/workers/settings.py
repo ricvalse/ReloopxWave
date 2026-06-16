@@ -11,7 +11,9 @@ from typing import Any, ClassVar
 
 from arq.connections import RedisSettings
 from arq.cron import cron
+from redis.asyncio import Redis
 
+from config_resolver import set_shared_redis
 from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
 from workers.conversation.handlers import (
@@ -51,12 +53,19 @@ async def startup(ctx: dict[str, Any]) -> None:
     settings.ensure_production_ready()  # fail fast on missing prod secrets
     init_sentry(settings, component="worker")
     get_engine(settings.supabase_db_url)  # initialise session factory
+    # Shared Redis for the config-cascade cache (same store the API invalidates
+    # against on config writes). Best-effort: a Redis blip degrades to DB reads.
+    ctx["config_redis"] = Redis.from_url(settings.redis_url)
+    set_shared_redis(ctx["config_redis"])
     ctx["settings"] = settings
     ctx["runtime"] = build_runtime(settings)
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
-    pass
+    set_shared_redis(None)
+    redis = ctx.get("config_redis")
+    if redis is not None:
+        await redis.aclose()
 
 
 class WorkerSettings:

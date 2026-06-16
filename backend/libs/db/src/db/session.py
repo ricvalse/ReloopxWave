@@ -23,12 +23,26 @@ class TenantContext:
 
     Applied via `SET LOCAL` so Postgres RLS policies see the tenant on every
     query within the session's transaction.
+
+    `impersonator_id` is set only when the JWT is an agency→merchant
+    impersonation token (carries an `act` claim, see
+    `integrations.impersonation`). In that case `actor_id`/`role`/`merchant_id`
+    describe the *impersonated merchant* (so RLS and the app behave exactly as
+    the merchant would), while `impersonator_id` records the agency admin who
+    minted the session — used for audit and to let the agency bypass its own
+    `locked_keys` (UC-10).
     """
 
     tenant_id: UUID
     merchant_id: UUID | None
     role: str
     actor_id: UUID
+    impersonator_id: UUID | None = None
+    impersonation_session_id: UUID | None = None
+
+    @property
+    def is_impersonation(self) -> bool:
+        return self.impersonator_id is not None
 
 
 def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:

@@ -198,11 +198,28 @@ async def get_tenant_context(
     if actor_id is None:
         raise PermissionDeniedError("Token missing sub claim", error_code="missing_sub_claim")
 
+    # Impersonation marker: tokens minted by `integrations.impersonation` carry an
+    # RFC 8693 `act` claim with `type == "impersonation"`. When present, the
+    # context still scopes to the merchant (RLS + app behaviour), but we record
+    # the agency admin behind it so the lock-bypass + audit paths can react.
+    impersonator_id: UUID | None = None
+    impersonation_session_id: UUID | None = None
+    act = claims.get("act")
+    if isinstance(act, dict) and act.get("type") == "impersonation":
+        act_sub = act.get("sub")
+        if act_sub:
+            impersonator_id = UUID(str(act_sub))
+        session_id = claims.get("session_id")
+        if session_id:
+            impersonation_session_id = UUID(str(session_id))
+
     return TenantContext(
         tenant_id=UUID(tenant_id),
         merchant_id=UUID(merchant_id_raw) if merchant_id_raw else None,
         role=str(role),
         actor_id=UUID(actor_id),
+        impersonator_id=impersonator_id,
+        impersonation_session_id=impersonation_session_id,
     )
 
 

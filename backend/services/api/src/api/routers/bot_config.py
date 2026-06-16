@@ -13,11 +13,13 @@ from sqlalchemy import select
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
-from config_resolver import BotConfigSchema, ConfigKey
-from db import BotTemplateRepository
+from config_resolver import BotConfigSchema, ConfigKey, ConfigResolver
+from db import BotTemplateRepository, MerchantRepository
 from db.models import BotConfig
 from db.session import TenantContext
-from shared import NotFoundError, PermissionDeniedError
+from shared import NotFoundError, PermissionDeniedError, get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -74,6 +76,7 @@ async def create_template(
         locked_keys=payload.locked_keys,
         is_default=payload.is_default,
     )
+    await _invalidate_tenant_merchants(session, ctx.tenant_id)
     return _tmpl_out(tmpl)
 
 
@@ -103,6 +106,7 @@ async def update_template(
         is_default=payload.is_default,
     )
     assert updated is not None
+    await _invalidate_tenant_merchants(session, ctx.tenant_id)
     return _tmpl_out(updated)
 
 
@@ -132,6 +136,10 @@ class OverridesOut(BaseModel):
     merchant_id: UUID
     overrides: dict[str, Any]
     locked_keys: list[str]
+    # True when the caller is an agency admin impersonating this merchant. The
+    # merchant portal uses it to render locked fields as editable (the agency
+    # owns the lock and may override it — see `update_overrides`).
+    is_impersonation: bool = False
 
 
 @router.get("/{merchant_id}/overrides", response_model=OverridesOut)
@@ -156,6 +164,7 @@ async def get_overrides(merchant_id: UUID, session: DBSession, ctx: CurrentConte
         merchant_id=merchant_id,
         overrides=overrides,
         locked_keys=locked,
+        is_impersonation=ctx.is_impersonation,
     )
 
 
@@ -170,12 +179,26 @@ async def update_overrides(
     _validate_defaults(payload.overrides)
 
     # Enforce agency lock: find the tenant's default template, drop any overrides
-    # whose key the agency has locked.
+    # whose key the agency has locked — UNLESS the caller is the agency itself
+    # impersonating the merchant, in which case it owns the lock and may
+    # override it (the agency configures the merchant in full autonomy).
     repo = BotTemplateRepository(session)
     templates = await repo.list_for_tenant(ctx.tenant_id)
     default_tmpl = next((t for t in templates if t.is_default), None)
     locked = set(default_tmpl.locked_keys or []) if default_tmpl else set()
-    _strip_locked_keys(payload.overrides, locked)
+
+    if ctx.is_impersonation:
+        skipped: list[str] = []
+        if locked:
+            logger.info(
+                "bot_config.lock_bypass",
+                impersonator_id=str(ctx.impersonator_id),
+                merchant_id=str(merchant_id),
+                locked_keys=sorted(locked),
+            )
+    else:
+        _strip_locked_keys(payload.overrides, locked)
+        skipped = sorted(locked)
 
     # Upsert the bot_configs row.
     row = (
@@ -187,10 +210,28 @@ async def update_overrides(
     else:
         row.overrides = payload.overrides
 
-    return {"updated": True, "locked_keys_skipped": sorted(locked)}
+    # Invalidate the config cache for this merchant so the new values take
+    # effect immediately instead of after the ~60s TTL.
+    await session.flush()
+    await ConfigResolver(session).invalidate(merchant_id)
+
+    return {"updated": True, "locked_keys_skipped": skipped}
 
 
 # ---- helpers -------------------------------------------------------------
+
+
+async def _invalidate_tenant_merchants(session: Any, tenant_id: UUID) -> None:
+    """Drop the config cache for every merchant of a tenant.
+
+    A change to the agency's default template shifts the cascade for any
+    merchant that doesn't override the affected key, so we can't target a
+    single merchant — we clear all of them.
+    """
+    merchants = await MerchantRepository(session).list_for_tenant(tenant_id)
+    resolver = ConfigResolver(session)
+    for m in merchants:
+        await resolver.invalidate(m.id)
 
 
 def _tmpl_out(t: Any) -> TemplateOut:

@@ -78,6 +78,38 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
     onError: (err) => setMutationError(err instanceof Error ? err.message : 'Errore eliminazione'),
   });
 
+  const impersonate = useMutation({
+    mutationFn: async () => {
+      const api = getApiClient();
+      const { data, error } = await api.POST('/admin/impersonation/{merchant_id}' as never, {
+        params: { path: { merchant_id: merchantId } },
+      } as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as {
+        access_token: string;
+        expires_at: number;
+        merchant_name: string;
+        web_merchant_url: string;
+        session_id: string;
+      };
+    },
+    onSuccess: (res) => {
+      const base = (process.env.NEXT_PUBLIC_WEB_MERCHANT_URL ?? res.web_merchant_url ?? '').replace(
+        /\/$/,
+        '',
+      );
+      if (!base) {
+        setMutationError('URL del portale merchant non configurato.');
+        return;
+      }
+      const url = `${base}/impersonate#token=${encodeURIComponent(res.access_token)}&exp=${res.expires_at}`;
+      // New tab, no opener handle (anti reverse-tabnabbing).
+      window.open(url, '_blank', 'noopener');
+    },
+    onError: (err) =>
+      setMutationError(err instanceof Error ? err.message : 'Errore impersonazione'),
+  });
+
   const saveName = useMutation({
     mutationFn: async (name: string) => {
       const api = getApiClient();
@@ -111,7 +143,11 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const m = query.data;
   const isSuspended = m.status === 'suspended';
   const pending =
-    suspend.isPending || resume.isPending || saveName.isPending || remove.isPending;
+    suspend.isPending ||
+    resume.isPending ||
+    saveName.isPending ||
+    remove.isPending ||
+    impersonate.isPending;
 
   return (
     <div className="space-y-4 p-6">
@@ -163,6 +199,16 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
           </div>
           <div className="flex items-center gap-2">
             <StatusBadge status={m.status} />
+            <Button
+              size="sm"
+              onClick={() => {
+                setMutationError(null);
+                impersonate.mutate();
+              }}
+              disabled={pending}
+            >
+              Entra come merchant
+            </Button>
             {isSuspended ? (
               <Button
                 size="sm"

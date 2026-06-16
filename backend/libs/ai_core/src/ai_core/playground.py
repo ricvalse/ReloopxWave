@@ -19,6 +19,7 @@ from uuid import UUID
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext, ConversationOrchestrator, OrchestratorResponse
 from ai_core.rag import Embedder, RAGEngine
+from config_resolver import ConfigKey, ConfigResolver
 from db import TenantContext, tenant_session
 from shared import get_logger
 
@@ -76,9 +77,26 @@ class PlaygroundRunner:
             kb_chunks = []
             if req.use_kb and self._embedder is not None:
                 try:
+                    resolver = ConfigResolver(session)
+                    top_k_raw = await resolver.resolve(
+                        ConfigKey.RAG_TOP_K, merchant_id=req.merchant_id
+                    )
+                    min_score_raw = await resolver.resolve(
+                        ConfigKey.RAG_MIN_SCORE, merchant_id=req.merchant_id
+                    )
+                    top_k = top_k_raw if isinstance(top_k_raw, int) else 5
+                    min_score = (
+                        float(min_score_raw)
+                        if isinstance(min_score_raw, int | float)
+                        and not isinstance(min_score_raw, bool)
+                        else 0.7
+                    )
                     rag = RAGEngine(session, self._embedder)
                     kb_chunks = await rag.retrieve(
-                        req.user_message, merchant_id=req.merchant_id, top_k=5, min_score=0.65
+                        req.user_message,
+                        merchant_id=req.merchant_id,
+                        top_k=top_k,
+                        min_score=min_score,
                     )
                     retrieved = [
                         {"chunk_id": str(c.chunk_id), "score": c.score, "snippet": c.content[:280]}

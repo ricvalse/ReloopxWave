@@ -11,6 +11,7 @@ from integrations.ghl.oauth import (
     verify_oauth_state,
 )
 from integrations.ghl.signatures import verify_ghl_signature
+from integrations.impersonation import ImpersonationToken, mint_impersonation_token
 from integrations.router import (
     SIGNATURE_HEADER,
     OnboardStartResult,
@@ -52,6 +53,7 @@ __all__ = [
     "ExchangedTokens",
     "GHLClient",
     "GHLTokenBundle",
+    "ImpersonationToken",
     "InvitedUser",
     "LintError",
     "MintedLocationToken",
@@ -72,6 +74,7 @@ __all__ = [
     "extract_variables",
     "lint_template",
     "map_meta_status_to_local",
+    "mint_impersonation_token",
     "mint_location_token",
     "parse_inbound_payload",
     "parse_template_status_payload",
