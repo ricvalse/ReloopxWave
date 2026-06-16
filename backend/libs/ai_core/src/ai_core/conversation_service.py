@@ -14,12 +14,14 @@ Downstream UCs (02/04/05/…) plug in by registering an ActionHandler in the
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
 
+from ai_core.delivery import compute_typing_delay_s, split_into_bubbles
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import (
     ConversationContext,
@@ -148,6 +150,45 @@ class PhoneEchoResult:
     reason: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class PersistOutcome:
+    """Result of phase 1 (durable persistence + auto-reply gate). The worker
+    uses `auto_reply_on` + `debounce_window_s` to decide whether to reply now,
+    buffer for debounce, or stay silent."""
+
+    handled: bool
+    auto_reply_on: bool
+    conversation_id: UUID | None = None
+    merchant_id: UUID | None = None
+    reason: str | None = None
+    debounce_window_s: int = 0
+    # Captured phase-1 context for the inline (no re-load) reply path. None when
+    # auto-reply is off. The debounce-flush path ignores this and re-loads fresh.
+    reply_context: _ReplyContext | None = None
+
+
+@dataclass(slots=True)
+class _ReplyContext:
+    """Everything phase 2/3 needs to generate, deliver and score a reply.
+
+    Built either inline (during `handle_inbound`, from phase-1 scalars) or by
+    re-loading at debounce-flush time (`generate_and_send_reply`)."""
+
+    resolved: ResolvedWhatsAppIntegration
+    conv_id: UUID
+    conv_variant_id: str | None
+    lead_id: UUID
+    lead_score: int
+    lead_name: str | None
+    lead_email: str | None
+    lead_sentiment: str | None
+    chat_history: list[ChatMessage]
+    from_phone: str
+    phone_number_id: str
+    text: str
+    latest_wa_message_id: str | None = None
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "Sei un assistente conversazionale italiano per l'azienda. Rispondi in modo "
     "cortese, breve e professionale. Se la richiesta riguarda prenotazioni, proponi "
@@ -155,6 +196,45 @@ DEFAULT_SYSTEM_PROMPT = (
     "chiedile in modo naturale, una alla volta. Non inventare fatti sull'azienda: "
     "se non sai qualcosa, dillo e offri di far contattare una persona."
 )
+
+# Deterministic persona fragments: each structured enum value maps to a constant
+# Italian instruction. Pure value→string so the prompt is snapshot-testable.
+_FORMALITY_FRAGMENTS: dict[str, str] = {
+    "dai-del-tu": "Rivolgiti sempre al cliente dando del tu, con tono cordiale e diretto.",
+    "dai-del-lei": "Rivolgiti sempre al cliente dando del Lei, con tono cortese e rispettoso.",
+}
+_VERBOSITY_FRAGMENTS: dict[str, str] = {
+    "conciso": "Mantieni risposte molto brevi: una o due frasi, vai dritto al punto.",
+    "equilibrato": (
+        "Mantieni risposte di lunghezza equilibrata: chiare e complete ma senza dilungarti."
+    ),
+    "dettagliato": (
+        "Puoi fornire risposte più articolate e dettagliate quando serve, "
+        "restando comunque leggibile su WhatsApp."
+    ),
+}
+_EMOJI_FRAGMENTS: dict[str, str] = {
+    "mai": "Non usare mai emoji.",
+    "sobrio": (
+        "Usa le emoji con parsimonia, al massimo una per messaggio e solo quando aggiungono calore."
+    ),
+    "libero": (
+        "Puoi usare le emoji liberamente per rendere il tono più amichevole, senza esagerare."
+    ),
+}
+# Sentiment adaptation: keyed on the PRIOR turn's lead.sentiment. "neutral"/None
+# inject nothing (absent from the dict).
+_SENTIMENT_FRAGMENTS: dict[str, str] = {
+    "negative": (
+        "Nota: nel messaggio precedente il cliente sembrava insoddisfatto o irritato. "
+        "Apri con empatia, riconosci esplicitamente il problema, evita toni commerciali "
+        "o di vendita e cerca prima di tutto di rassicurarlo."
+    ),
+    "positive": (
+        "Nota: il cliente sembra ben disposto e soddisfatto. Mantieni l'entusiasmo, "
+        "asseconda l'apertura e, se opportuno, proponi il passo successivo (es. prenotazione)."
+    ),
+}
 
 
 class ConversationService:
@@ -187,25 +267,60 @@ class ConversationService:
         text: str,
         wa_message_id: str | None,
     ) -> InboundResult:
-        # 1. Resolve tenant/merchant from phone_number_id. Uses an unscoped session
-        #    because the integrations row is needed before we have a tenant context.
+        """All-in-one entry: durably persist the inbound, then (if auto-reply is
+        on) generate and deliver the reply using the captured phase-1 context.
+
+        This is the synchronous path used by tests and by the worker when
+        debounce is disabled. The worker enables debounce by calling
+        `handle_inbound_persist` + `generate_and_send_reply` directly.
+        """
+        outcome = await self.handle_inbound_persist(
+            phone_number_id=phone_number_id,
+            from_phone=from_phone,
+            text=text,
+            wa_message_id=wa_message_id,
+        )
+        if not outcome.handled:
+            return InboundResult(handled=False, reason=outcome.reason)
+        if not outcome.auto_reply_on or outcome.reply_context is None:
+            return InboundResult(
+                handled=True,
+                conversation_id=outcome.conversation_id,
+                reply_text=None,
+                reason=outcome.reason,
+            )
+        return await self._generate_and_deliver(outcome.reply_context)
+
+    async def handle_inbound_persist(
+        self,
+        *,
+        phone_number_id: str,
+        from_phone: str,
+        text: str,
+        wa_message_id: str | None,
+    ) -> PersistOutcome:
+        """Phase 1: durably persist the inbound and evaluate the auto-reply gate.
+
+        Always synchronous. The inbound row, the lead/conversation upsert, the
+        24h-window touch and the `message.received` event commit here, so a
+        delayed or failed reply can never lose the customer's message. Returns
+        the gate result, the per-merchant debounce window, and (when auto-reply
+        is on) the captured context for the inline reply path. Idempotent on
+        `wa_message_id`: a redelivered webhook reuses the existing row.
+        """
+        # Resolve tenant/merchant from phone_number_id. Uses an unscoped session
+        # because the integrations row is needed before we have a tenant context.
         resolved = await self._resolve_integration(phone_number_id)
         if resolved is None:
             logger.info("uc01.no_integration", phone_number_id=phone_number_id)
-            return InboundResult(handled=False, reason="no_integration")
+            return PersistOutcome(handled=False, auto_reply_on=False, reason="no_integration")
 
-        # 2-6. Do the rest under a tenant-scoped session so RLS applies.
         worker_ctx = TenantContext(
             tenant_id=resolved.tenant_id,
             merchant_id=resolved.merchant_id,
             role="worker",
             actor_id=resolved.merchant_id,  # worker-owned operation
         )
-        # Phase 1: persist the inbound message in its OWN transaction, so it is
-        # durable regardless of what happens to the reply. A failure while
-        # generating the reply (LLM 400/timeout, RAG, network) must never lose
-        # the customer's message. Idempotent on `wa_message_id`: a redelivered
-        # webhook / retried job reuses the existing row instead of duplicating.
         async with tenant_session(worker_ctx) as session:
             leads = LeadRepository(session)
             convs = ConversationRepository(session)
@@ -281,7 +396,17 @@ class ConversationService:
             lead_score = lead.score
             lead_name = lead.name
             lead_email = lead.email
+            # Prior turn's sentiment — drives empathy/upsell adaptation this turn
+            # (zero added latency; the current turn's sentiment is computed later
+            # and updates the lead for the NEXT turn).
+            lead_sentiment = lead.sentiment
             chat_history = _to_chat_history(history)
+
+            # Per-merchant debounce window (0 = off). Resolved here so the worker
+            # can decide to reply now or buffer, without another round-trip.
+            debounce_window_s = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_DEBOUNCE_WINDOW_S, default=0
+            )
 
             if not auto_reply_on:
                 logger.info(
@@ -293,24 +418,117 @@ class ConversationService:
                 )
             # Exit of `async with` commits the inbound (and the skip-path analytics).
 
-        if not auto_reply_on:
-            return InboundResult(
-                handled=True,
-                conversation_id=conv_id,
-                reply_text=None,
-                reason="auto_reply_off",
+        reply_context = None
+        if auto_reply_on:
+            reply_context = _ReplyContext(
+                resolved=resolved,
+                conv_id=conv_id,
+                conv_variant_id=conv_variant_id,
+                lead_id=lead_id,
+                lead_score=lead_score,
+                lead_name=lead_name,
+                lead_email=lead_email,
+                lead_sentiment=lead_sentiment,
+                chat_history=chat_history,
+                from_phone=from_phone,
+                phone_number_id=phone_number_id,
+                text=text,
+                latest_wa_message_id=wa_message_id,
             )
 
-        # Phase 2: generate + persist the reply in a SEPARATE transaction. If the
-        # LLM or any step here fails, only the reply rolls back — the inbound
-        # above is already committed and the job can be retried safely.
+        return PersistOutcome(
+            handled=True,
+            auto_reply_on=auto_reply_on,
+            conversation_id=conv_id,
+            merchant_id=resolved.merchant_id,
+            reason=None if auto_reply_on else "auto_reply_off",
+            debounce_window_s=debounce_window_s,
+            reply_context=reply_context,
+        )
+
+    async def generate_and_send_reply(
+        self,
+        *,
+        phone_number_id: str,
+        from_phone: str,
+        text: str,
+        wa_message_id: str | None,
+        exclude_wa_message_ids: list[str] | None = None,
+    ) -> InboundResult:
+        """Phase 2/3 for the worker: re-resolve fresh context for `from_phone`
+        and generate + deliver a reply to `text` (which may be several coalesced
+        inbound messages joined by the debounce flush). Used by the debounce
+        flush and the inline no-debounce worker path. `exclude_wa_message_ids`
+        are dropped from the LLM history so the just-received inbound(s) aren't
+        fed twice (once as history, once as the current turn).
+        """
+        resolved = await self._resolve_integration(phone_number_id)
+        if resolved is None:
+            return InboundResult(handled=False, reason="no_integration")
+
+        exclude = set(exclude_wa_message_ids or [])
+        worker_ctx = TenantContext(
+            tenant_id=resolved.tenant_id,
+            merchant_id=resolved.merchant_id,
+            role="worker",
+            actor_id=resolved.merchant_id,
+        )
+        async with tenant_session(worker_ctx) as session:
+            leads = LeadRepository(session)
+            convs = ConversationRepository(session)
+            msgs = MessageRepository(session)
+
+            conv = await convs.get_active(
+                merchant_id=resolved.merchant_id, wa_contact_phone=from_phone
+            )
+            if conv is None:
+                return InboundResult(handled=False, reason="no_conversation")
+            lead = await leads.upsert_by_phone(merchant_id=resolved.merchant_id, phone=from_phone)
+
+            history = await msgs.list_history(conv.id, limit=30)
+            history = [m for m in history if m.wa_message_id not in exclude]
+
+            rc = _ReplyContext(
+                resolved=resolved,
+                conv_id=conv.id,
+                conv_variant_id=conv.variant_id,
+                lead_id=lead.id,
+                lead_score=lead.score,
+                lead_name=lead.name,
+                lead_email=lead.email,
+                lead_sentiment=lead.sentiment,
+                chat_history=_to_chat_history(history),
+                from_phone=from_phone,
+                phone_number_id=phone_number_id,
+                text=text,
+                latest_wa_message_id=wa_message_id,
+            )
+        return await self._generate_and_deliver(rc)
+
+    async def _generate_and_deliver(self, rc: _ReplyContext) -> InboundResult:
+        """Phase 2 (LLM + persist) and phase 3 (typing indicator, human-paced
+        multi-bubble send, scoring, action dispatch). Shared by the inline and
+        debounce-flush paths. Re-opens its own session; on an LLM/persist error
+        only the reply rolls back — the inbound is already durable from phase 1.
+        """
+        resolved = rc.resolved
+        worker_ctx = TenantContext(
+            tenant_id=resolved.tenant_id,
+            merchant_id=resolved.merchant_id,
+            role="worker",
+            actor_id=resolved.merchant_id,
+        )
+
         async with tenant_session(worker_ctx) as session:
             convs = ConversationRepository(session)
             msgs = MessageRepository(session)
             analytics = AnalyticsRepository(session)
 
             system_prompt = await self._resolve_system_prompt(
-                session=session, merchant_id=resolved.merchant_id, variant_id=conv_variant_id
+                session=session,
+                merchant_id=resolved.merchant_id,
+                variant_id=rc.conv_variant_id,
+                prior_sentiment=rc.lead_sentiment,
             )
             kb_chunks = []
             if self._embedder is not None:
@@ -323,7 +541,7 @@ class ConversationService:
                     )
                     rag = RAGEngine(session, self._embedder)
                     kb_chunks = await rag.retrieve(
-                        text, merchant_id=resolved.merchant_id, top_k=top_k, min_score=min_score
+                        rc.text, merchant_id=resolved.merchant_id, top_k=top_k, min_score=min_score
                     )
                 except Exception as e:
                     logger.warning("uc01.rag_failed", error=str(e))
@@ -335,48 +553,49 @@ class ConversationService:
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
                 tenant_id=resolved.tenant_id,
-                lead_id=lead_id,
-                lead_score=lead_score,
+                lead_id=rc.lead_id,
+                lead_score=rc.lead_score,
                 hot_threshold=hot_threshold,
                 system_prompt=system_prompt,
-                history=chat_history,
+                history=rc.chat_history,
                 kb_chunks=kb_chunks,
-                variant_id=conv_variant_id,
+                variant_id=rc.conv_variant_id,
             )
 
-            response: OrchestratorResponse = await self._orchestrator.run(ctx, text)
+            response: OrchestratorResponse = await self._orchestrator.run(ctx, rc.text)
 
             # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
-            # inbound text. Best-effort — never blocks the reply.
+            # inbound text. Best-effort — never blocks the reply. Updates the lead
+            # so the NEXT turn can adapt (this turn used the prior value).
             sentiment: str | None = None
             if self._sentiment is not None:
                 sentiment = await self._sentiment.analyze(
                     merchant_id=resolved.merchant_id,
                     tenant_id=resolved.tenant_id,
-                    text=text,
+                    text=rc.text,
                 )
-                if lead_id is not None and sentiment:
-                    await LeadRepository(session).update_sentiment(lead_id, sentiment=sentiment)
+                if rc.lead_id is not None and sentiment:
+                    await LeadRepository(session).update_sentiment(rc.lead_id, sentiment=sentiment)
 
             await msgs.persist_assistant_message(
-                conversation_id=conv_id,
+                conversation_id=rc.conv_id,
                 merchant_id=resolved.merchant_id,
                 content=response.reply_text,
                 model=response.model,
                 tokens_in=response.tokens_in,
                 tokens_out=response.tokens_out,
                 latency_ms=response.latency_ms,
-                variant_id=conv_variant_id,
+                variant_id=rc.conv_variant_id,
             )
-            await convs.touch_last_message(conv_id)
+            await convs.touch_last_message(rc.conv_id)
 
             await analytics.emit(
                 tenant_id=resolved.tenant_id,
                 merchant_id=resolved.merchant_id,
                 event_type="message.replied",
                 subject_type="conversation",
-                subject_id=conv_id,
-                variant_id=conv_variant_id,
+                subject_id=rc.conv_id,
+                variant_id=rc.conv_variant_id,
                 properties={
                     "role": "assistant",
                     "model": response.model,
@@ -386,25 +605,79 @@ class ConversationService:
                     "actions": [a.kind for a in response.actions],
                 },
             )
+
+            # Resolve delivery knobs while the session is open; applied below.
+            multi_bubble_max = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_MULTI_BUBBLE_MAX, default=1
+            )
+            bubble_max_chars = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_BUBBLE_MAX_CHARS, default=600
+            )
+            typing_indicator_enabled = await self._resolve_bool(
+                session,
+                resolved.merchant_id,
+                ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED,
+                default=False,
+            )
+            delay_base = await self._resolve_float(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_TYPING_DELAY_BASE_S, default=0.0
+            )
+            delay_per_char = await self._resolve_float(
+                session,
+                resolved.merchant_id,
+                ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S,
+                default=0.0,
+            )
+            delay_min = await self._resolve_float(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_TYPING_DELAY_MIN_S, default=0.0
+            )
+            delay_max = await self._resolve_float(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_TYPING_DELAY_MAX_S, default=0.0
+            )
+            jitter = await self._resolve_float(
+                session, resolved.merchant_id, ConfigKey.DELIVERY_TYPING_JITTER_FRAC, default=0.0
+            )
             # Exit of `async with` commits the reply.
 
-        # Phase 3: external sends, with their own sessions where needed.
+        # Phase 3: typing indicator + human-paced multi-bubble delivery. The
+        # assistant Message row stays single (clean history); we split only on
+        # the wire. All bubbles go out within seconds — well inside the 24h
+        # window already opened by the inbound.
+        bubbles = split_into_bubbles(
+            response.reply_text, max_bubbles=multi_bubble_max, max_chars=bubble_max_chars
+        ) or [response.reply_text]
+
+        if typing_indicator_enabled and rc.latest_wa_message_id:
+            await self._maybe_send_typing(rc, rc.latest_wa_message_id)
+
+        for i, bubble in enumerate(bubbles):
+            delay = compute_typing_delay_s(
+                bubble,
+                base_s=delay_base,
+                per_char_s=delay_per_char,
+                min_s=delay_min,
+                max_s=delay_max,
+                jitter_frac=jitter,
+                seed=f"{rc.conv_id}:{i}",
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self._sender.send(
+                phone_number_id=rc.phone_number_id,
+                api_key=resolved.api_key,
+                to_phone=rc.from_phone,
+                text=bubble,
+                waba_base_url=resolved.waba_base_url,
+            )
+
         turn_ctx = TurnContext(
             tenant_id=resolved.tenant_id,
             merchant_id=resolved.merchant_id,
-            lead_id=lead_id,
-            conversation_id=conv_id,
-            lead_phone=from_phone,
-            phone_number_id=phone_number_id,
+            lead_id=rc.lead_id,
+            conversation_id=rc.conv_id,
+            lead_phone=rc.from_phone,
+            phone_number_id=rc.phone_number_id,
             api_key=resolved.api_key,
-            waba_base_url=resolved.waba_base_url,
-        )
-
-        await self._sender.send(
-            phone_number_id=phone_number_id,
-            api_key=resolved.api_key,
-            to_phone=from_phone,
-            text=response.reply_text,
             waba_base_url=resolved.waba_base_url,
         )
 
@@ -419,9 +692,9 @@ class ConversationService:
             if a.kind == "update_score":
                 llm_signals.update(derive_signals_from_llm_payload(a.payload))
         merged_signals = derive_conversation_signals(
-            has_name=bool(lead_name),
-            has_email=bool(lead_email),
-            turn_count=len(chat_history) + 1,
+            has_name=bool(rc.lead_name),
+            has_email=bool(rc.lead_email),
+            turn_count=len(rc.chat_history) + 1,
             sentiment=sentiment,
             asked_for_booking=any(a.kind == "book_slot" for a in response.actions),
             llm_signals=llm_signals,
@@ -434,9 +707,26 @@ class ConversationService:
 
         return InboundResult(
             handled=True,
-            conversation_id=conv_id,
+            conversation_id=rc.conv_id,
             reply_text=response.reply_text,
         )
+
+    async def _maybe_send_typing(self, rc: _ReplyContext, message_id: str) -> None:
+        """Best-effort WhatsApp read receipt + "typing…" indicator. Never blocks
+        the reply: a sender without the capability (e.g. a test fake) or an API
+        error is swallowed. The indicator auto-dismisses after ~25s or on send."""
+        send_typing = getattr(self._sender, "send_typing_indicator", None)
+        if send_typing is None:
+            return
+        try:
+            await send_typing(
+                phone_number_id=rc.phone_number_id,
+                api_key=rc.resolved.api_key,
+                message_id=message_id,
+                waba_base_url=rc.resolved.waba_base_url,
+            )
+        except Exception as e:  # pragma: no cover - best effort
+            logger.warning("uc01.typing_indicator_failed", error=str(e))
 
     async def handle_phone_app_echo(
         self,
@@ -536,15 +826,21 @@ class ConversationService:
             return await repo.resolve_whatsapp(phone_number_id)
 
     async def _resolve_system_prompt(
-        self, *, session: Any, merchant_id: UUID, variant_id: str | None = None
+        self,
+        *,
+        session: Any,
+        merchant_id: UUID,
+        variant_id: str | None = None,
+        prior_sentiment: str | None = None,
     ) -> str:
         """Resolve the system prompt for this turn (UC-09 aware).
 
         Delegates to `PromptManager`: when the conversation is enrolled in an
         A/B experiment and the assigned variant has an authored `system`
         template, that template's body is used — this is what makes the two
-        arms behave differently. Otherwise the config-cascade prompt below is
-        used as the fallback.
+        arms behave differently (the persona/sentiment block below is
+        deliberately bypassed for variant prompts, to keep experiments clean).
+        Otherwise the config-cascade prompt below is used as the fallback.
         """
         from ai_core.prompt_manager import PromptManager
 
@@ -552,14 +848,23 @@ class ConversationService:
         return await manager.resolve_system_prompt(
             merchant_id=merchant_id,
             variant_id=variant_id,
-            fallback=lambda: self._cascade_system_prompt(session=session, merchant_id=merchant_id),
+            fallback=lambda: self._cascade_system_prompt(
+                session=session, merchant_id=merchant_id, prior_sentiment=prior_sentiment
+            ),
         )
 
-    async def _cascade_system_prompt(self, *, session: Any, merchant_id: UUID) -> str:
+    async def _cascade_system_prompt(
+        self, *, session: Any, merchant_id: UUID, prior_sentiment: str | None = None
+    ) -> str:
         """Build the per-merchant system prompt from the config cascade.
 
         Falls back to `DEFAULT_SYSTEM_PROMPT` when nothing is configured — so
         a brand-new merchant still gets a working bot, it just sounds generic.
+        Structured persona knobs (register/verbosity/emoji/greeting/signature/
+        do/dont/examples) map to deterministic Italian fragments; `register ==
+        "auto"` falls back to the freeform legacy `bot.tone`. `prior_sentiment`
+        (the previous turn's lead.sentiment) optionally injects an empathy/
+        upsell hint, gated by `bot.sentiment_adaptation_enabled`.
         """
         resolver = ConfigResolver(session)
 
@@ -571,6 +876,37 @@ class ConversationService:
             if isinstance(value, str) and value.strip():
                 return value.strip()
             return None
+
+        async def _list(key: ConfigKey) -> list[str]:
+            try:
+                value = await resolver.resolve(key, merchant_id=merchant_id)
+            except Exception:
+                return []
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            return []
+
+        async def _examples(key: ConfigKey) -> list[tuple[str, str]]:
+            try:
+                value = await resolver.resolve(key, merchant_id=merchant_id)
+            except Exception:
+                return []
+            out: list[tuple[str, str]] = []
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        q = str(item.get("q", "")).strip()
+                        a = str(item.get("a", "")).strip()
+                        if q and a:
+                            out.append((q, a))
+            return out
+
+        async def _bool(key: ConfigKey, *, default: bool) -> bool:
+            try:
+                value = await resolver.resolve(key, merchant_id=merchant_id)
+            except Exception:
+                return default
+            return value if isinstance(value, bool) else default
 
         business_name = await _str(ConfigKey.BUSINESS_NAME)
         industry = await _str(ConfigKey.BUSINESS_INDUSTRY)
@@ -584,6 +920,20 @@ class ConversationService:
         language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
         extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
 
+        formality = await _str(ConfigKey.BOT_FORMALITY) or "auto"
+        verbosity = await _str(ConfigKey.BOT_VERBOSITY) or "equilibrato"
+        emoji_policy = await _str(ConfigKey.BOT_EMOJI_POLICY) or "sobrio"
+        greeting = await _str(ConfigKey.BOT_GREETING_STYLE)
+        signature = await _str(ConfigKey.BOT_SIGNATURE)
+        do_phrases = await _list(ConfigKey.BOT_DO_PHRASES)
+        dont_phrases = await _list(ConfigKey.BOT_DONT_PHRASES)
+        examples = await _examples(ConfigKey.BOT_EXAMPLES)
+        sentiment_adaptation = await _bool(ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED, default=True)
+
+        # `has_profile` keys off content the merchant actually provided — NOT the
+        # always-defaulted enums — so a truly empty merchant keeps the generic
+        # DEFAULT_SYSTEM_PROMPT (today's behavior). Any real content opts into
+        # the assembled prompt (with the persona fragments applied).
         has_profile = any(
             [
                 business_name,
@@ -595,6 +945,11 @@ class ConversationService:
                 pricing_notes,
                 website,
                 extras,
+                greeting,
+                signature,
+                do_phrases,
+                dont_phrases,
+                examples,
             ]
         )
         if not has_profile:
@@ -628,12 +983,38 @@ class ConversationService:
         if website:
             lines.append(f"Sito web: {website}")
 
-        lines.append(
-            f"Rispondi sempre in lingua {language} e mantieni un tono {tone}. Sii breve, "
-            "cortese e concreto. Se mancano informazioni critiche (nome, email, esigenza), "
-            "chiedile una alla volta. Non inventare fatti sull'attività: se non sai "
-            "qualcosa, dillo e offri di far contattare una persona."
-        )
+        # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
+        tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
+        style_bits = [
+            f"Rispondi sempre in lingua {language}.",
+            tone_clause,
+            _VERBOSITY_FRAGMENTS.get(verbosity, _VERBOSITY_FRAGMENTS["equilibrato"]),
+            _EMOJI_FRAGMENTS.get(emoji_policy, _EMOJI_FRAGMENTS["sobrio"]),
+            "Sii breve, cortese e concreto. Se mancano informazioni critiche "
+            "(nome, email, esigenza), chiedile una alla volta. Non inventare fatti "
+            "sull'attività: se non sai qualcosa, dillo e offri di far contattare una persona.",
+        ]
+        lines.append(" ".join(style_bits))
+
+        if greeting:
+            lines.append(f"Stile di apertura: {greeting}")
+        if signature:
+            lines.append(f"Chiudi i messaggi con questa firma quando appropriato: {signature}")
+        if do_phrases:
+            lines.append("Espressioni e modi di dire da preferire: " + "; ".join(do_phrases) + ".")
+        if dont_phrases:
+            lines.append(
+                "Espressioni, argomenti o toni da evitare: " + "; ".join(dont_phrases) + "."
+            )
+        if examples:
+            ex_lines = ["Esempi di stile (segui il tono, non copiarli alla lettera):"]
+            ex_lines.extend(f"- Cliente: «{q}» → Tu: «{a}»" for q, a in examples)
+            lines.append("\n".join(ex_lines))
+
+        # Sentiment adaptation — uses the PRIOR turn's sentiment (zero added
+        # latency). neutral/None inject nothing.
+        if sentiment_adaptation and prior_sentiment in _SENTIMENT_FRAGMENTS:
+            lines.append(_SENTIMENT_FRAGMENTS[prior_sentiment])
 
         if extras:
             lines.append("Istruzioni aggiuntive dal merchant:")

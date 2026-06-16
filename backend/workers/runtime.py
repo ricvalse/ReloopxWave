@@ -60,6 +60,27 @@ class WhatsAppReplySender:
         finally:
             await sender.close()
 
+    async def send_typing_indicator(
+        self,
+        *,
+        phone_number_id: str,
+        api_key: str,
+        message_id: str,
+        waba_base_url: str | None = None,
+    ) -> None:
+        """Read receipt + "typing…" indicator for the customer's inbound message.
+        Best-effort: the caller swallows failures so a typing hiccup never blocks
+        the reply."""
+        sender = build_whatsapp_sender(
+            phone_number_id=phone_number_id,
+            api_key=api_key,
+            waba_base_url=waba_base_url,
+        )
+        try:
+            await sender.send_typing_indicator(message_id=message_id)
+        finally:
+            await sender.close()
+
 
 @dataclass(slots=True)
 class Runtime:

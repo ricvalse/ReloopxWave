@@ -13,7 +13,7 @@ type OverridesOut = components['schemas']['OverridesOut'];
 type OverrideBag = Record<string, Record<string, unknown>>;
 type FormState = Record<string, unknown>; // flat, dotted keys
 
-type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea';
+type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea' | 'select' | 'tags';
 
 type BadgeKind = 'inherited' | 'customized' | 'locked' | 'lock-override';
 
@@ -27,6 +27,7 @@ type FieldDef = {
   placeholder?: string;
   help?: string;
   rows?: number;
+  options?: { value: string; label: string }[]; // for kind: 'select'
 };
 
 type SectionDef = {
@@ -143,8 +144,9 @@ const SECTIONS: SectionDef[] = [
   },
   {
     section: 'bot',
-    title: 'Bot',
-    description: 'Voce, tono e istruzioni extra per il prompt di sistema.',
+    title: 'Bot — Persona',
+    description:
+      'Come parla il bot: registro, lunghezza, emoji, saluti e frasi tipiche. Questi controlli guidati compongono il prompt di sistema.',
     fields: [
       {
         key: 'bot.auto_reply_enabled',
@@ -154,7 +156,86 @@ const SECTIONS: SectionDef[] = [
           'Quando attivo, il bot risponde automaticamente ai messaggi in arrivo. Disattivandolo metti in pausa il bot per tutti i contatti — i messaggi resteranno in attesa di una tua risposta dal pannello Conversazioni.',
       },
       { key: 'bot.language', label: 'Lingua', kind: 'text', placeholder: 'it' },
-      { key: 'bot.tone', label: 'Tono', kind: 'text', placeholder: 'professionale-amichevole' },
+      {
+        key: 'bot.formality',
+        label: 'Come rivolgersi al cliente',
+        kind: 'select',
+        options: [
+          { value: 'auto', label: 'Automatico (usa il tono)' },
+          { value: 'dai-del-tu', label: 'Dai del tu' },
+          { value: 'dai-del-lei', label: 'Dai del Lei' },
+        ],
+        help: 'Su “Automatico” usa il campo Tono (sezione Avanzate).',
+      },
+      {
+        key: 'bot.verbosity',
+        label: 'Lunghezza risposte',
+        kind: 'select',
+        options: [
+          { value: 'conciso', label: 'Conciso' },
+          { value: 'equilibrato', label: 'Equilibrato' },
+          { value: 'dettagliato', label: 'Dettagliato' },
+        ],
+      },
+      {
+        key: 'bot.emoji_policy',
+        label: 'Emoji',
+        kind: 'select',
+        options: [
+          { value: 'mai', label: 'Mai' },
+          { value: 'sobrio', label: 'Sobrio' },
+          { value: 'libero', label: 'Libero' },
+        ],
+      },
+      {
+        key: 'bot.greeting_style',
+        label: 'Stile di apertura',
+        kind: 'text',
+        placeholder: 'es. saluta col nome se disponibile',
+      },
+      {
+        key: 'bot.signature',
+        label: 'Firma',
+        kind: 'text',
+        placeholder: 'es. — Il team di Studio Rossi',
+      },
+      {
+        key: 'bot.do_phrases',
+        label: 'Espressioni da preferire',
+        kind: 'tags',
+        rows: 3,
+        help: 'Una per riga.',
+      },
+      {
+        key: 'bot.dont_phrases',
+        label: 'Espressioni / toni da evitare',
+        kind: 'tags',
+        rows: 3,
+        help: 'Una per riga.',
+      },
+      {
+        key: 'bot.sentiment_adaptation_enabled',
+        label: 'Adatta il tono al sentiment',
+        kind: 'bool',
+        help:
+          'Se il cliente sembrava insoddisfatto nel messaggio precedente, il bot apre con empatia; se ben disposto, propone il passo successivo.',
+      },
+      {
+        key: 'bot.first_message',
+        label: 'Messaggio di benvenuto',
+        kind: 'textarea',
+        rows: 2,
+        placeholder: 'Primo messaggio quando scriviamo a un nuovo lead.',
+      },
+    ],
+  },
+  {
+    section: 'bot_advanced',
+    title: 'Bot — Avanzate',
+    description:
+      'Controlli liberi per casi particolari. Il “Tono” è usato solo quando “Come rivolgersi al cliente” è su Automatico; le istruzioni aggiuntive hanno priorità sul resto.',
+    fields: [
+      { key: 'bot.tone', label: 'Tono (libero)', kind: 'text', placeholder: 'professionale-amichevole' },
       {
         key: 'bot.system_prompt_additions',
         label: 'Istruzioni aggiuntive',
@@ -163,12 +244,82 @@ const SECTIONS: SectionDef[] = [
         placeholder:
           'Regole aggiuntive che vuoi dare al bot (stile, argomenti da evitare, script particolari).',
       },
+    ],
+  },
+  {
+    section: 'delivery',
+    title: 'Consegna (tono umano)',
+    description:
+      'Fa sembrare le risposte più umane su WhatsApp. Tutto disattivo di default: attiva ciò che vuoi. La finestra raggruppa messaggi ravvicinati in un’unica risposta.',
+    fields: [
       {
-        key: 'bot.first_message',
-        label: 'Messaggio di benvenuto',
-        kind: 'textarea',
-        rows: 2,
-        placeholder: 'Primo messaggio quando scriviamo a un nuovo lead.',
+        key: 'delivery.debounce_window_s',
+        label: 'Finestra di attesa (s)',
+        kind: 'int',
+        min: 0,
+        max: 30,
+        help: '0 = risposta immediata. Es. 5 = aspetta 5s di silenzio prima di rispondere, unendo i messaggi.',
+      },
+      {
+        key: 'delivery.typing_indicator_enabled',
+        label: 'Mostra “sta scrivendo…”',
+        kind: 'bool',
+      },
+      {
+        key: 'delivery.typing_delay_max_s',
+        label: 'Ritardo max “digitazione” (s)',
+        kind: 'float',
+        min: 0,
+        max: 20,
+        step: 0.5,
+        help: '0 = nessun ritardo. Tetto al tempo di “digitazione” simulato.',
+      },
+      {
+        key: 'delivery.typing_delay_base_s',
+        label: 'Ritardo base (s)',
+        kind: 'float',
+        min: 0,
+        max: 10,
+        step: 0.1,
+      },
+      {
+        key: 'delivery.typing_delay_per_char_s',
+        label: 'Ritardo per carattere (s)',
+        kind: 'float',
+        min: 0,
+        max: 0.2,
+        step: 0.01,
+      },
+      {
+        key: 'delivery.typing_delay_min_s',
+        label: 'Ritardo minimo (s)',
+        kind: 'float',
+        min: 0,
+        max: 20,
+        step: 0.5,
+      },
+      {
+        key: 'delivery.typing_jitter_frac',
+        label: 'Variabilità (0–1)',
+        kind: 'float',
+        min: 0,
+        max: 1,
+        step: 0.05,
+      },
+      {
+        key: 'delivery.multi_bubble_max',
+        label: 'Max bolle per risposta',
+        kind: 'int',
+        min: 1,
+        max: 4,
+        help: '1 = una sola bolla. >1 spezza le risposte lunghe come farebbe una persona.',
+      },
+      {
+        key: 'delivery.bubble_max_chars',
+        label: 'Caratteri max per bolla',
+        kind: 'int',
+        min: 80,
+        max: 1000,
       },
     ],
   },
@@ -550,6 +701,45 @@ function FieldInput({
         disabled={disabled}
         value={value === null || value === undefined ? '' : String(value)}
         onChange={(e) => onChange(e.target.value || null)}
+        placeholder={placeholder ?? field.placeholder}
+        rows={field.rows ?? 3}
+        className="w-full min-w-[18rem] max-w-xl rounded-md border border-input bg-background px-3 py-2 text-sm md:w-[32rem]"
+      />
+    );
+  }
+  if (field.kind === 'select') {
+    return (
+      <select
+        id={field.key}
+        disabled={disabled}
+        value={value === null || value === undefined ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
+      >
+        {field.options?.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field.kind === 'tags') {
+    // Value is a string[]; render one item per line. Emit null when empty so
+    // `inflate` drops it and the field reads as Inherited (not an empty override).
+    const arr = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+    return (
+      <textarea
+        id={field.key}
+        disabled={disabled}
+        value={arr.join('\n')}
+        onChange={(e) => {
+          const lines = e.target.value
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          onChange(lines.length ? lines : null);
+        }}
         placeholder={placeholder ?? field.placeholder}
         rows={field.rows ?? 3}
         className="w-full min-w-[18rem] max-w-xl rounded-md border border-input bg-background px-3 py-2 text-sm md:w-[32rem]"

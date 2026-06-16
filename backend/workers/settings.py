@@ -17,6 +17,7 @@ from config_resolver import set_shared_redis
 from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
 from workers.conversation.handlers import (
+    flush_inbound_reply,
     handle_ghl_event,
     handle_ghl_install,
     handle_ghl_uninstall,
@@ -72,6 +73,8 @@ class WorkerSettings:
     functions: ClassVar[list[Any]] = [
         # queue: wa:inbound
         handle_inbound_message,
+        # debounce flush — coalesces rapid inbound messages into one reply
+        flush_inbound_reply,
         # queue: wa:echo (360dialog Coexistence — messages typed in the phone app)
         handle_phone_app_echo,
         # queue: wa:outbound (composer-driven human replies)

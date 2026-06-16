@@ -1220,6 +1220,17 @@ export interface components {
             privacy?: components["schemas"]["PrivacyConfig"];
             booking?: components["schemas"]["BookingConfig"];
             business?: components["schemas"]["BusinessConfig"];
+            delivery?: components["schemas"]["DeliveryConfig"];
+        };
+        /**
+         * BotExample
+         * @description One few-shot style example. Guides the bot's voice, not its facts.
+         */
+        BotExample: {
+            /** Q */
+            q: string;
+            /** A */
+            a: string;
         };
         /** BotSurfaceConfig */
         BotSurfaceConfig: {
@@ -1233,6 +1244,39 @@ export interface components {
              * @default professionale-amichevole
              */
             tone: string;
+            /**
+             * Formality
+             * @default auto
+             * @enum {string}
+             */
+            formality: "dai-del-tu" | "dai-del-lei" | "auto";
+            /**
+             * Verbosity
+             * @default equilibrato
+             * @enum {string}
+             */
+            verbosity: "conciso" | "equilibrato" | "dettagliato";
+            /**
+             * Emoji Policy
+             * @default sobrio
+             * @enum {string}
+             */
+            emoji_policy: "mai" | "sobrio" | "libero";
+            /** Greeting Style */
+            greeting_style?: string | null;
+            /** Signature */
+            signature?: string | null;
+            /** Do Phrases */
+            do_phrases?: string[];
+            /** Dont Phrases */
+            dont_phrases?: string[];
+            /** Examples */
+            examples?: components["schemas"]["BotExample"][];
+            /**
+             * Sentiment Adaptation Enabled
+             * @default true
+             */
+            sentiment_adaptation_enabled: boolean;
             /** System Prompt Additions */
             system_prompt_additions?: string | null;
             /** First Message */
@@ -1292,6 +1336,58 @@ export interface components {
             id: string;
             /** Internal Note */
             internal_note: string | null;
+        };
+        /**
+         * DeliveryConfig
+         * @description Human-feel delivery knobs. All-zero defaults reproduce today's instant,
+         *     single-bubble, no-typing-indicator send.
+         */
+        DeliveryConfig: {
+            /**
+             * Debounce Window S
+             * @default 0
+             */
+            debounce_window_s: number;
+            /**
+             * Typing Indicator Enabled
+             * @default false
+             */
+            typing_indicator_enabled: boolean;
+            /**
+             * Typing Delay Base S
+             * @default 0
+             */
+            typing_delay_base_s: number;
+            /**
+             * Typing Delay Per Char S
+             * @default 0
+             */
+            typing_delay_per_char_s: number;
+            /**
+             * Typing Delay Min S
+             * @default 0
+             */
+            typing_delay_min_s: number;
+            /**
+             * Typing Delay Max S
+             * @default 0
+             */
+            typing_delay_max_s: number;
+            /**
+             * Typing Jitter Frac
+             * @default 0
+             */
+            typing_jitter_frac: number;
+            /**
+             * Multi Bubble Max
+             * @default 1
+             */
+            multi_bubble_max: number;
+            /**
+             * Bubble Max Chars
+             * @default 600
+             */
+            bubble_max_chars: number;
         };
         /** EscalationConfig */
         EscalationConfig: {

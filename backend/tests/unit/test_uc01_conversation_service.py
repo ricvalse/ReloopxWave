@@ -323,7 +323,9 @@ async def test_inbound_persisted_even_when_reply_fails(
     async def fake_resolve_bool(self, session, merchant_id, key, *, default):
         return True
 
-    async def fake_resolve_prompt(self, *, session, merchant_id, variant_id=None):
+    async def fake_resolve_prompt(
+        self, *, session, merchant_id, variant_id=None, prior_sentiment=None
+    ):
         return "system prompt"
 
     monkeypatch.setattr(cs.ConversationService, "_resolve_integration", fake_resolve)
@@ -425,7 +427,9 @@ async def test_inbound_idempotent_on_redelivery(
     async def fake_resolve_bool(self, session, merchant_id, key, *, default):
         return True
 
-    async def fake_resolve_prompt(self, *, session, merchant_id, variant_id=None):
+    async def fake_resolve_prompt(
+        self, *, session, merchant_id, variant_id=None, prior_sentiment=None
+    ):
         return "system prompt"
 
     monkeypatch.setattr(cs.ConversationService, "_resolve_integration", fake_resolve)

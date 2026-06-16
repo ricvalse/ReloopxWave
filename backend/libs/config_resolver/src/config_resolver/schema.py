@@ -8,7 +8,7 @@ run the OpenAPI codegen to sync the frontend.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -88,6 +88,37 @@ class ConfigKey(StrEnum):
     # per-thread `conversations.auto_reply` flag (AND).
     BOT_AUTO_REPLY_ENABLED = "bot.auto_reply_enabled"
 
+    # Bot persona — structured, guided knobs that drive the system prompt.
+    # `formality` is the new primary tone-of-address driver (tu / Lei); when
+    # "auto" the builder falls back to the freeform legacy `bot.tone` string.
+    # The rest are orthogonal (length, emoji, greeting/signature, do/don't
+    # lists, few-shot examples). `system_prompt_additions` stays the advanced
+    # escape hatch.
+    BOT_FORMALITY = "bot.formality"
+    BOT_VERBOSITY = "bot.verbosity"
+    BOT_EMOJI_POLICY = "bot.emoji_policy"
+    BOT_GREETING_STYLE = "bot.greeting_style"
+    BOT_SIGNATURE = "bot.signature"
+    BOT_DO_PHRASES = "bot.do_phrases"
+    BOT_DONT_PHRASES = "bot.dont_phrases"
+    BOT_EXAMPLES = "bot.examples"
+    # When true, the prior turn's lead.sentiment injects an empathy/upsell hint
+    # into the prompt. Uses the previous turn's value (zero added latency).
+    BOT_SENTIMENT_ADAPTATION_ENABLED = "bot.sentiment_adaptation_enabled"
+
+    # Delivery realism — make the WhatsApp reply feel human. All default to a
+    # no-op (today's behavior): instant single send, no typing indicator, no
+    # debounce. Each is per-merchant opt-in via the cascade.
+    DELIVERY_DEBOUNCE_WINDOW_S = "delivery.debounce_window_s"
+    DELIVERY_TYPING_INDICATOR_ENABLED = "delivery.typing_indicator_enabled"
+    DELIVERY_TYPING_DELAY_BASE_S = "delivery.typing_delay_base_s"
+    DELIVERY_TYPING_DELAY_PER_CHAR_S = "delivery.typing_delay_per_char_s"
+    DELIVERY_TYPING_DELAY_MIN_S = "delivery.typing_delay_min_s"
+    DELIVERY_TYPING_DELAY_MAX_S = "delivery.typing_delay_max_s"
+    DELIVERY_TYPING_JITTER_FRAC = "delivery.typing_jitter_frac"
+    DELIVERY_MULTI_BUBBLE_MAX = "delivery.multi_bubble_max"
+    DELIVERY_BUBBLE_MAX_CHARS = "delivery.bubble_max_chars"
+
 
 SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
@@ -130,6 +161,26 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS: None,
     ConfigKey.BOT_FIRST_MESSAGE: None,
     ConfigKey.BOT_AUTO_REPLY_ENABLED: False,
+    # Persona — sensible "on" defaults (mild prompt enrichment for everyone).
+    ConfigKey.BOT_FORMALITY: "auto",
+    ConfigKey.BOT_VERBOSITY: "equilibrato",
+    ConfigKey.BOT_EMOJI_POLICY: "sobrio",
+    ConfigKey.BOT_GREETING_STYLE: None,
+    ConfigKey.BOT_SIGNATURE: None,
+    ConfigKey.BOT_DO_PHRASES: [],
+    ConfigKey.BOT_DONT_PHRASES: [],
+    ConfigKey.BOT_EXAMPLES: [],
+    ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED: True,
+    # Delivery — all no-op defaults (today's instant single send).
+    ConfigKey.DELIVERY_DEBOUNCE_WINDOW_S: 0,
+    ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED: False,
+    ConfigKey.DELIVERY_TYPING_DELAY_BASE_S: 0.0,
+    ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S: 0.0,
+    ConfigKey.DELIVERY_TYPING_DELAY_MIN_S: 0.0,
+    ConfigKey.DELIVERY_TYPING_DELAY_MAX_S: 0.0,
+    ConfigKey.DELIVERY_TYPING_JITTER_FRAC: 0.0,
+    ConfigKey.DELIVERY_MULTI_BUBBLE_MAX: 1,
+    ConfigKey.DELIVERY_BUBBLE_MAX_CHARS: 600,
 }
 
 
@@ -148,6 +199,7 @@ class BotConfigSchema(BaseModel):
     privacy: PrivacyConfig = Field(default_factory=lambda: PrivacyConfig())
     booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
     business: BusinessConfig = Field(default_factory=lambda: BusinessConfig())
+    delivery: DeliveryConfig = Field(default_factory=lambda: DeliveryConfig())
 
 
 class NoAnswerConfig(BaseModel):
@@ -196,9 +248,28 @@ class RagConfig(BaseModel):
     min_score: float = Field(0.7, ge=0.5, le=0.9)
 
 
+class BotExample(BaseModel):
+    """One few-shot style example. Guides the bot's voice, not its facts."""
+
+    q: str = Field(max_length=300)
+    a: str = Field(max_length=600)
+
+
 class BotSurfaceConfig(BaseModel):
     language: str = "it"
+    # Legacy freeform tone. Kept as the fallback when `register == "auto"` so
+    # merchants who customized it keep today's behavior verbatim.
     tone: str = "professionale-amichevole"
+    # Structured persona knobs (the guided UI). `auto` defers to `tone`.
+    formality: Literal["dai-del-tu", "dai-del-lei", "auto"] = "auto"
+    verbosity: Literal["conciso", "equilibrato", "dettagliato"] = "equilibrato"
+    emoji_policy: Literal["mai", "sobrio", "libero"] = "sobrio"
+    greeting_style: str | None = Field(default=None, max_length=200)
+    signature: str | None = Field(default=None, max_length=200)
+    do_phrases: list[str] = Field(default_factory=list, max_length=10)
+    dont_phrases: list[str] = Field(default_factory=list, max_length=10)
+    examples: list[BotExample] = Field(default_factory=list, max_length=5)
+    sentiment_adaptation_enabled: bool = True
     system_prompt_additions: str | None = Field(default=None, max_length=4000)
     first_message: str | None = Field(default=None, max_length=1000)
     # Master kill switch for auto-reply. AND-ed with `conversations.auto_reply`
@@ -233,3 +304,24 @@ class BookingConfig(BaseModel):
     default_calendar_id: str | None = None
     default_duration_min: int = Field(30, ge=15, le=240)
     lookahead_days: int = Field(14, ge=1, le=60)
+
+
+class DeliveryConfig(BaseModel):
+    """Human-feel delivery knobs. All-zero defaults reproduce today's instant,
+    single-bubble, no-typing-indicator send."""
+
+    # Quiet-period seconds: coalesce rapid inbound messages into one reply.
+    # 0 = off (reply synchronously, today's behavior).
+    debounce_window_s: int = Field(0, ge=0, le=30)
+    # Send a WhatsApp read receipt + "typing…" indicator before replying.
+    typing_indicator_enabled: bool = False
+    # Artificial "thinking/typing" pause before sending, as base + per-char,
+    # clamped to [min, max] with +/- jitter. max=0 disables the pause.
+    typing_delay_base_s: float = Field(0.0, ge=0.0, le=10.0)
+    typing_delay_per_char_s: float = Field(0.0, ge=0.0, le=0.2)
+    typing_delay_min_s: float = Field(0.0, ge=0.0, le=20.0)
+    typing_delay_max_s: float = Field(0.0, ge=0.0, le=20.0)
+    typing_jitter_frac: float = Field(0.0, ge=0.0, le=1.0)
+    # Split a long reply into up to N WhatsApp bubbles. 1 = single send.
+    multi_bubble_max: int = Field(1, ge=1, le=4)
+    bubble_max_chars: int = Field(600, ge=80, le=1000)

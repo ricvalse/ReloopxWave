@@ -6,6 +6,13 @@ from ai_core.conversation_service import (
     ReplySender,
     TurnContext,
 )
+from ai_core.delivery import (
+    Flush,
+    RescheduleBy,
+    compute_typing_delay_s,
+    debounce_decision,
+    split_into_bubbles,
+)
 from ai_core.ft_routing import FtModelResolver, should_use_ft
 from ai_core.llm import AnthropicClient, ChatMessage, LLMClient, OpenAIClient
 from ai_core.objections import (
@@ -40,6 +47,7 @@ __all__ = [
     "ConversationOrchestrator",
     "ConversationService",
     "Embedder",
+    "Flush",
     "FtModelResolver",
     "InboundResult",
     "LLMClient",
@@ -55,12 +63,16 @@ __all__ = [
     "PlaygroundRunner",
     "RAGEngine",
     "ReplySender",
+    "RescheduleBy",
     "RetrievedChunk",
     "RoutingRequest",
     "SentimentAnalyzer",
     "TurnContext",
     "classify_objections",
+    "compute_typing_delay_s",
+    "debounce_decision",
     "derive_conversation_signals",
     "score_lead",
     "should_use_ft",
+    "split_into_bubbles",
 ]

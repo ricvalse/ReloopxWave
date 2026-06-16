@@ -81,6 +81,23 @@ class D360WhatsAppClient:
             }
         )
 
+    async def send_typing_indicator(self, *, message_id: str) -> dict[str, Any]:
+        """Mark the customer's inbound message as read AND show a "typing…"
+        indicator, in one call. This is the WhatsApp Cloud API shape that
+        360dialog proxies: POST /messages with `status: read` + a
+        `typing_indicator` block. `message_id` is the inbound customer wamid.
+        The indicator auto-dismisses after ~25s or when the next message is
+        sent, whichever comes first.
+        """
+        return await self._send(
+            {
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": message_id,
+                "typing_indicator": {"type": "text"},
+            }
+        )
+
     async def send_interactive(
         self,
         *,

@@ -72,7 +72,7 @@ The **UC → component map is `reloop-ai-architettura.md` section 10** (lines ~6
 
 ## Where decisions and procedures live
 
-- ADRs in `docs/decisions/` (0001 monorepo, 0002 pgvector, 0003 consolidated worker, 0004 all-Railway deploy, 0005 360dialog channel creation, 0006 whatsapp templates + flows, 0007 GHL marketplace agency-install). Make a non-obvious call during implementation → write an ADR, don't bury it in a commit.
+- ADRs in `docs/decisions/` (0001 monorepo, 0002 pgvector, 0003 consolidated worker, 0004 all-Railway deploy, 0005 360dialog channel creation, 0006 whatsapp templates + flows, 0007 GHL marketplace agency-install, 0008 persona strutturata + consegna "umana"). Make a non-obvious call during implementation → write an ADR, don't bury it in a commit.
 - Operational procedures in `docs/runbooks/` (ECIRCUITBREAKER recovery, migration rollback, KEK rotation, Supabase restore drill).
 - The path to V1 100% is `docs/completion-plan.md` — keep it current as items ship.
 

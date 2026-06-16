@@ -17,12 +17,14 @@ Outbound (composer):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, update
 
-from ai_core import ConversationService
+from ai_core import ConversationService, RescheduleBy, debounce_decision
 from db import GHLMarketplaceRepository, ResolvedAgencyInstall, session_scope
 from db.models.conversation import Conversation, Message
 from db.repositories.integration import IntegrationRepository
@@ -39,6 +41,25 @@ from workers.runtime import Runtime
 logger = get_logger(__name__)
 
 
+def _debounce_keys(merchant_id: str, from_phone: str) -> tuple[str, str, str]:
+    """Buffer list key, due-epoch key, and the stable per-peer flush job id."""
+    buf = f"debounce:wa:buf:{merchant_id}:{from_phone}"
+    due = f"debounce:wa:due:{merchant_id}:{from_phone}"
+    job = f"wa:flush:{merchant_id}:{from_phone}"
+    return buf, due, job
+
+
+def _to_epoch(raw: Any) -> float:
+    if raw is None:
+        return 0.0
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 async def handle_inbound_message(
     ctx: dict[str, Any],
     phone_number_id: str,
@@ -49,13 +70,79 @@ async def handle_inbound_message(
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
 
-    result = await service.handle_inbound(
+    # Phase 1: always persist the inbound durably and read the auto-reply gate +
+    # the per-merchant debounce window. The reply itself is gated below.
+    outcome = await service.handle_inbound_persist(
         phone_number_id=phone_number_id,
         from_phone=from_phone,
         text=text,
         wa_message_id=wa_message_id,
     )
 
+    if not (outcome.handled and outcome.auto_reply_on):
+        logger.info(
+            "uc01.handled",
+            phone_number_id=phone_number_id,
+            handled=outcome.handled,
+            reason=outcome.reason,
+            conversation_id=str(outcome.conversation_id) if outcome.conversation_id else None,
+        )
+        return {
+            "handled": outcome.handled,
+            "reason": outcome.reason,
+            "conversation_id": str(outcome.conversation_id) if outcome.conversation_id else None,
+        }
+
+    config_redis = ctx.get("config_redis")
+    arq = ctx.get("redis")
+    merchant_id = str(outcome.merchant_id)
+
+    # Debounce: coalesce rapid messages from the same peer into one reply. Needs
+    # both Redis handles; without them we degrade to an immediate reply so a
+    # transient Redis blip never drops the response.
+    if outcome.debounce_window_s > 0 and config_redis is not None and arq is not None:
+        window = outcome.debounce_window_s
+        buf_key, due_key, job_id = _debounce_keys(merchant_id, from_phone)
+        entry = json.dumps({"wa_message_id": wa_message_id, "text": text})
+        due = time.time() + window
+        async with config_redis.pipeline(transaction=True) as pipe:
+            await (
+                pipe.rpush(buf_key, entry)
+                .expire(buf_key, window + 60)
+                .set(due_key, due, ex=window + 60)
+                .execute()
+            )
+        # Stable job id → a pending flush is reused; the flush self-reschedules
+        # off the due epoch above until the peer goes quiet for `window`.
+        await arq.enqueue_job(
+            "flush_inbound_reply",
+            merchant_id,
+            from_phone,
+            phone_number_id,
+            _job_id=job_id,
+            _defer_by=timedelta(seconds=window),
+        )
+        logger.info(
+            "uc01.debounced",
+            phone_number_id=phone_number_id,
+            conversation_id=str(outcome.conversation_id),
+            window_s=window,
+        )
+        return {
+            "handled": True,
+            "reason": "debounced",
+            "conversation_id": str(outcome.conversation_id),
+        }
+
+    # No debounce: reply now. Re-resolves fresh context and excludes this inbound
+    # from the LLM history (it's already persisted).
+    result = await service.generate_and_send_reply(
+        phone_number_id=phone_number_id,
+        from_phone=from_phone,
+        text=text,
+        wa_message_id=wa_message_id,
+        exclude_wa_message_ids=[wa_message_id] if wa_message_id else [],
+    )
     logger.info(
         "uc01.handled",
         phone_number_id=phone_number_id,
@@ -66,6 +153,80 @@ async def handle_inbound_message(
     return {
         "handled": result.handled,
         "reason": result.reason,
+        "conversation_id": str(result.conversation_id) if result.conversation_id else None,
+    }
+
+
+async def flush_inbound_reply(
+    ctx: dict[str, Any],
+    merchant_id: str,
+    from_phone: str,
+    phone_number_id: str,
+) -> dict[str, Any]:
+    """Debounce flush: once a peer has been quiet for the window, drain the
+    buffered inbound fragments and generate ONE reply covering them all.
+
+    Self-reschedules while a newer inbound keeps pushing the due epoch out, so
+    the reply always lands after the LAST message. Idempotent: the buffer is
+    drained-and-deleted, so a re-run finds it empty and no-ops (no double reply).
+    """
+    runtime: Runtime = ctx["runtime"]
+    service: ConversationService = runtime.conversation_service
+    config_redis = ctx.get("config_redis")
+    arq = ctx.get("redis")
+    if config_redis is None:  # pragma: no cover — redis is always present in ctx
+        logger.warning("uc01.flush.no_redis", merchant_id=merchant_id)
+        return {"flushed": False, "reason": "no_redis"}
+
+    buf_key, due_key, job_id = _debounce_keys(merchant_id, from_phone)
+
+    # 1. Reschedule if a newer message pushed the deadline into the future.
+    due = _to_epoch(await config_redis.get(due_key))
+    decision = debounce_decision(time.time(), due)
+    if isinstance(decision, RescheduleBy):
+        if arq is not None:
+            await arq.enqueue_job(
+                "flush_inbound_reply",
+                merchant_id,
+                from_phone,
+                phone_number_id,
+                _job_id=job_id,
+                _defer_by=timedelta(seconds=max(decision.seconds, 0.1)),
+            )
+        return {"flushed": False, "reason": "rescheduled"}
+
+    # 2. Drain the buffer atomically (read-all + delete) so a concurrent flush or
+    #    re-run can't reply twice.
+    async with config_redis.pipeline(transaction=True) as pipe:
+        results = await pipe.lrange(buf_key, 0, -1).delete(buf_key).delete(due_key).execute()
+    entries_raw = results[0] or []
+    if not entries_raw:
+        return {"flushed": False, "reason": "empty"}
+
+    entries = [json.loads(e) for e in entries_raw]
+    texts = [e["text"] for e in entries if e.get("text")]
+    wa_ids = [e["wa_message_id"] for e in entries if e.get("wa_message_id")]
+    if not texts:
+        return {"flushed": False, "reason": "empty"}
+
+    result = await service.generate_and_send_reply(
+        phone_number_id=phone_number_id,
+        from_phone=from_phone,
+        text="\n".join(texts),
+        wa_message_id=wa_ids[-1] if wa_ids else None,
+        exclude_wa_message_ids=wa_ids,
+    )
+    logger.info(
+        "uc01.flushed",
+        phone_number_id=phone_number_id,
+        merchant_id=merchant_id,
+        messages=len(texts),
+        handled=result.handled,
+        conversation_id=str(result.conversation_id) if result.conversation_id else None,
+    )
+    return {
+        "flushed": result.handled,
+        "messages": len(texts),
         "conversation_id": str(result.conversation_id) if result.conversation_id else None,
     }
 
