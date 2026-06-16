@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle, Switch } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
-import { getBrowserSupabase } from '@/lib/supabase';
+import { useMerchantId } from '@/hooks/use-merchant-id';
 
 type BotConfig = components['schemas']['BotConfigSchema'];
 type OverridesOut = components['schemas']['OverridesOut'];
@@ -349,23 +349,15 @@ const SECTIONS: SectionDef[] = [
   },
 ];
 
-async function loadMerchantId(): Promise<string | null> {
-  const supabase = getBrowserSupabase();
-  const { data } = await supabase.auth.getSession();
-  const claims = (data.session?.user?.app_metadata as Record<string, unknown> | undefined) ?? {};
-  return typeof claims.merchant_id === 'string' ? claims.merchant_id : null;
-}
-
 export function BotConfigPanel() {
   const queryClient = useQueryClient();
   const [formError, setFormError] = useState<string | null>(null);
 
-  const merchantQuery = useQuery({
-    queryKey: ['auth', 'merchant-id'],
-    queryFn: loadMerchantId,
-    staleTime: 5 * 60_000,
-  });
-  const merchantId = merchantQuery.data ?? null;
+  // Resolved server-side by the (app) layout via requireSession() and provided
+  // through MerchantProvider — so it's populated both for a real merchant login
+  // and for an agency impersonation session (token in the imp cookie, not in
+  // the supabase-js browser session).
+  const { merchantId } = useMerchantId();
 
   const resolvedQuery = useQuery({
     queryKey: ['bot-config', 'resolved', merchantId],
@@ -464,7 +456,7 @@ export function BotConfigPanel() {
     setDirty(new Set());
   };
 
-  if (merchantQuery.isLoading || resolvedQuery.isLoading || overridesQuery.isLoading) {
+  if (resolvedQuery.isLoading || overridesQuery.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Caricamento configurazione…</div>;
   }
   if (!merchantId) {
