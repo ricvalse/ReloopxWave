@@ -22,7 +22,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_signature
+from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_webhook
 from integrations.ghl.signatures import verify_ghl_signature
 from integrations.router import SIGNATURE_HEADER, verify_router_signature
 from integrations.whatsapp.webhook import (
@@ -185,23 +185,31 @@ async def whatsapp_inbound(
 @router.post("/ghl/marketplace")
 async def ghl_marketplace_webhook(
     request: Request,
+    x_ghl_signature: str = Header(default=""),
     x_wh_signature: str = Header(default=""),
 ) -> dict[str, Any]:
     """GHL marketplace lifecycle events (INSTALL / UNINSTALL).
 
-    Sent to the app's Default Webhook URL and signed with GHL's RSA public key
-    (not the HMAC used for per-location data webhooks). `locationId`/`companyId`
-    arrive in the payload, not the URL. Declared BEFORE `/ghl/{merchant_id}` so
-    the literal "marketplace" segment isn't swallowed by the UUID path param.
+    Sent to the app's Default Webhook URL and signed by GHL with Ed25519
+    (`x-ghl-signature`, current) or, on the legacy path, RSA-SHA256
+    (`x-wh-signature`, deprecated 2026-07-01) — not the HMAC used for
+    per-location data webhooks. We verify Ed25519 first and do NOT fall back to
+    RSA when an `x-ghl-signature` is present (downgrade protection).
+    `locationId`/`companyId` arrive in the payload, not the URL. Declared BEFORE
+    `/ghl/{merchant_id}` so the literal "marketplace" segment isn't swallowed by
+    the UUID path param.
     """
     settings = get_settings()
     body = await request.body()
-    if not verify_ghl_marketplace_signature(
+    if not verify_ghl_marketplace_webhook(
         payload=body,
-        signature_header=x_wh_signature,
-        public_key_pem=settings.ghl_marketplace_public_key,
+        ed25519_signature=x_ghl_signature,
+        rsa_signature=x_wh_signature,
+        ed25519_public_key_pem=settings.ghl_marketplace_public_key_ed25519,
+        rsa_public_key_pem=settings.ghl_marketplace_public_key,
     ):
-        logger.warning("webhook.ghl.marketplace.signature_rejected", bytes=len(body))
+        scheme = "ed25519" if x_ghl_signature else "rsa" if x_wh_signature else "none"
+        logger.warning("webhook.ghl.marketplace.signature_rejected", bytes=len(body), scheme=scheme)
         raise HTTPException(status_code=401, detail="invalid signature")
 
     try:

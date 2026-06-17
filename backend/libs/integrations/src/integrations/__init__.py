@@ -1,5 +1,9 @@
 from integrations.ghl.client import GHLClient, GHLTokenBundle
-from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_signature
+from integrations.ghl.marketplace_signatures import (
+    verify_ghl_marketplace_ed25519_signature,
+    verify_ghl_marketplace_signature,
+    verify_ghl_marketplace_webhook,
+)
 from integrations.ghl.oauth import (
     ExchangedTokens,
     MintedLocationToken,
@@ -81,7 +85,9 @@ __all__ = [
     "resolve_body_params",
     "sign_oauth_state",
     "sign_router_payload",
+    "verify_ghl_marketplace_ed25519_signature",
     "verify_ghl_marketplace_signature",
+    "verify_ghl_marketplace_webhook",
     "verify_ghl_signature",
     "verify_oauth_state",
     "verify_router_signature",

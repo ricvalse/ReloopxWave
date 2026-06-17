@@ -4,6 +4,35 @@ from typing import ClassVar, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# GHL marketplace webhook signing keys are GLOBAL published constants (same for
+# every Marketplace app, not secrets), so we ship them as defaults and let env
+# override them if GHL ever rotates. Source: GHL Webhook Integration Guide
+# (marketplace.gohighlevel.com/docs/webhook/WebhookIntegrationGuide).
+#   - Ed25519 → header `x-ghl-signature` (current/preferred).
+#   - RSA-SHA256 → header `x-wh-signature` (legacy, deprecated by GHL 2026-07-01).
+# RSA key SHA-256(DER) fingerprint: 2f62045d413b1b7747e26770ce7f57840cbf86288cd20ceb90d299a62501fd25
+_GHL_MARKETPLACE_ED25519_PUBKEY_PEM = (
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MCowBQYDK2VwAyEAi2HR1srL4o18O8BRa7gVJY7G7bupbN3H9AwJrHCDiOg=\n"
+    "-----END PUBLIC KEY-----\n"
+)
+_GHL_MARKETPLACE_RSA_PUBKEY_PEM = (
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAokvo/r9tVgcfZ5DysOSC"
+    "Frm602qYV0MaAiNnX9O8KxMbiyRKWeL9JpCpVpt4XHIcBOK4u3cLSqJGOLaPuXw6"
+    "dO0t6Q/ZVdAV5Phz+ZtzPL16iCGeK9po6D6JHBpbi989mmzMryUnQJezlYJ3DVfB"
+    "csedpinheNnyYeFXolrJvcsjDtfAeRx5ByHQmTnSdFUzuAnC9/GepgLT9SM4nCpvu"
+    "xmZMxrJt5Rw+VUaQ9B8JSvbMPpez4peKaJPZHBbU3OdeCVx5klVXXZQGNHOs8gF3k"
+    "voV5rTnXV0IknLBXlcKKAQLZcY/Q9rG6Ifi9c+5vqlvHPCUJFT5XUGG5RKgOKUJ06"
+    "2fRtN+rLYZUV+BjafxQauvC8wSWeYja63VSUruvmNj8xkx2zE/Juc+yjLjTXpIocm"
+    "aiFeAO6fUtNjDeFVkhf5LNb59vECyrHD2SQIrhgXpO4Q3dVNA5rw576PwTzNh/AMf"
+    "HKIjE4xQA1SZuYJmNnmVZLIZBlQAF9Ntd03rfadZ+yDiOXCCs9FkHibELhCHULgCs"
+    "nuDJHcrGNd5/Ddm5hxGQ0ASitgHeMZ0kcIOwKDOzOU53lDza6/Y09T7sYJPQe7z0c"
+    "vj7aE4B+Ax1ZoZGPzpJlZtGXCsu9aTEGEnKzmsFqwcSsnw3JB31IGKAykT1hhTiaC"
+    "eIY/OwwwNUY2yvcCAwEAAQ==\n"
+    "-----END PUBLIC KEY-----\n"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -63,10 +92,13 @@ class Settings(BaseSettings):
     ghl_webhook_secret: str = ""
     ghl_oauth_state_secret: str = ""
     ghl_redirect_uri: str = ""
-    # PEM public key GHL uses to sign marketplace INSTALL/UNINSTALL webhooks
-    # (RSA-SHA256). Distinct from `ghl_webhook_secret` (HMAC, data webhooks).
-    # Without it the marketplace webhook drops every event.
-    ghl_marketplace_public_key: str = ""
+    # PEM public keys GHL uses to sign marketplace INSTALL/UNINSTALL webhooks —
+    # global published constants (defaulted above), override via env only if GHL
+    # rotates them. Distinct from `ghl_webhook_secret` (HMAC, data webhooks).
+    #   - ed25519 → header `x-ghl-signature` (current/preferred).
+    #   - rsa → header `x-wh-signature` (legacy, deprecated by GHL 2026-07-01).
+    ghl_marketplace_public_key: str = _GHL_MARKETPLACE_RSA_PUBKEY_PEM
+    ghl_marketplace_public_key_ed25519: str = _GHL_MARKETPLACE_ED25519_PUBKEY_PEM
 
     # WhatsApp is mediated by the Wave Marketing router (a 360dialog Partner
     # owned by the platform team). Wave Marketing no longer holds a Partner
@@ -119,7 +151,8 @@ class Settings(BaseSettings):
     _PROD_RECOMMENDED: ClassVar[tuple[str, ...]] = (
         "ghl_client_id",
         "ghl_client_secret",
-        "ghl_marketplace_public_key",
+        # ghl_marketplace_public_key(_ed25519) ship as built-in defaults, so no
+        # warning is needed — they're never empty unless explicitly overridden.
         "router_base_url",
         "router_shared_secret",
         "sentry_dsn_backend",

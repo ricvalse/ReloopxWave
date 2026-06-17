@@ -16,6 +16,7 @@ from ai_core import (
     FtModelResolver,
     ModelRouter,
     PlaygroundRunner,
+    SentimentAnalyzer,
 )
 from api.core.errors import register_exception_handlers
 from api.core.middleware import RateLimitMiddleware, RequestContextMiddleware
@@ -79,7 +80,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if settings.openai_api_key
         else None
     )
-    app.state.playground = PlaygroundRunner(orchestrator=orchestrator, embedder=embedder)
+    app.state.playground = PlaygroundRunner(
+        orchestrator=orchestrator,
+        embedder=embedder,
+        sentiment=SentimentAnalyzer(router),
+    )
 
     try:
         yield

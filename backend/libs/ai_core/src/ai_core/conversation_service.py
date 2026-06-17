@@ -238,6 +238,219 @@ _SENTIMENT_FRAGMENTS: dict[str, str] = {
 }
 
 
+async def build_cascade_system_prompt(
+    *, session: Any, merchant_id: UUID, prior_sentiment: str | None = None
+) -> str:
+    """Build the per-merchant system prompt from the config cascade.
+
+    This module-level function is the SINGLE source of truth for the default
+    (non-A/B-variant) system prompt. Both the live WhatsApp turn (via
+    `ConversationService._cascade_system_prompt`) and the UC-08 playground call
+    it, so the playground previews the *exact* prompt the bot uses in production.
+
+    Falls back to `DEFAULT_SYSTEM_PROMPT` when nothing is configured — so a
+    brand-new merchant still gets a working bot, it just sounds generic.
+    Structured persona knobs (register/verbosity/emoji/greeting/signature/
+    do/dont/examples) map to deterministic Italian fragments; `register ==
+    "auto"` falls back to the freeform legacy `bot.tone`. `prior_sentiment`
+    (the previous turn's lead.sentiment) optionally injects an empathy/upsell
+    hint, gated by `bot.sentiment_adaptation_enabled`.
+    """
+    resolver = ConfigResolver(session)
+
+    async def _str(key: ConfigKey) -> str | None:
+        try:
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    async def _list(key: ConfigKey) -> list[str]:
+        try:
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        return []
+
+    async def _examples(key: ConfigKey) -> list[tuple[str, str]]:
+        try:
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return []
+        out: list[tuple[str, str]] = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    q = str(item.get("q", "")).strip()
+                    a = str(item.get("a", "")).strip()
+                    if q and a:
+                        out.append((q, a))
+        return out
+
+    async def _bool(key: ConfigKey, *, default: bool) -> bool:
+        try:
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return default
+        return value if isinstance(value, bool) else default
+
+    business_name = await _str(ConfigKey.BUSINESS_NAME)
+    industry = await _str(ConfigKey.BUSINESS_INDUSTRY)
+    description = await _str(ConfigKey.BUSINESS_DESCRIPTION)
+    offer = await _str(ConfigKey.BUSINESS_OFFER)
+    hours = await _str(ConfigKey.BUSINESS_HOURS)
+    location = await _str(ConfigKey.BUSINESS_LOCATION)
+    pricing_notes = await _str(ConfigKey.BUSINESS_PRICING_NOTES)
+    website = await _str(ConfigKey.BUSINESS_WEBSITE)
+    tone = await _str(ConfigKey.BOT_TONE) or "professionale-amichevole"
+    language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
+    extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
+
+    formality = await _str(ConfigKey.BOT_FORMALITY) or "auto"
+    verbosity = await _str(ConfigKey.BOT_VERBOSITY) or "equilibrato"
+    emoji_policy = await _str(ConfigKey.BOT_EMOJI_POLICY) or "sobrio"
+    greeting = await _str(ConfigKey.BOT_GREETING_STYLE)
+    signature = await _str(ConfigKey.BOT_SIGNATURE)
+    do_phrases = await _list(ConfigKey.BOT_DO_PHRASES)
+    dont_phrases = await _list(ConfigKey.BOT_DONT_PHRASES)
+    examples = await _examples(ConfigKey.BOT_EXAMPLES)
+    sentiment_adaptation = await _bool(ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED, default=True)
+
+    # Store policies — short, always-relevant facts injected straight into
+    # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
+    policy_lines = await build_store_policy_lines(session, merchant_id)
+
+    # `has_profile` keys off content the merchant actually provided — NOT the
+    # always-defaulted enums — so a truly empty merchant keeps the generic
+    # DEFAULT_SYSTEM_PROMPT (today's behavior). Any real content opts into
+    # the assembled prompt (with the persona fragments applied).
+    has_profile = any(
+        [
+            business_name,
+            industry,
+            description,
+            offer,
+            hours,
+            location,
+            pricing_notes,
+            website,
+            extras,
+            greeting,
+            signature,
+            do_phrases,
+            dont_phrases,
+            examples,
+            policy_lines,
+        ]
+    )
+    if not has_profile:
+        return DEFAULT_SYSTEM_PROMPT
+
+    lines: list[str] = []
+    if business_name and industry:
+        lines.append(
+            f"Sei un assistente conversazionale che rappresenta {business_name}, "
+            f"un'attività del settore {industry}."
+        )
+    elif business_name:
+        lines.append(f"Sei un assistente conversazionale che rappresenta {business_name}.")
+    elif industry:
+        lines.append(f"Sei un assistente conversazionale per un'attività del settore {industry}.")
+    else:
+        lines.append("Sei un assistente conversazionale per l'azienda.")
+
+    if description:
+        lines.append(f"L'attività si descrive così: {description}")
+    if offer:
+        lines.append(f"Offerta principale: {offer}")
+    if pricing_notes:
+        lines.append(f"Note sui prezzi: {pricing_notes}")
+    if hours:
+        lines.append(f"Orari: {hours}")
+    if location:
+        lines.append(f"Sede / area di copertura: {location}")
+    if website:
+        lines.append(f"Sito web: {website}")
+    if policy_lines:
+        lines.append("Politiche del negozio:\n" + "\n".join(f"- {p}" for p in policy_lines))
+
+    # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
+    tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
+    style_bits = [
+        f"Rispondi sempre in lingua {language}.",
+        tone_clause,
+        _VERBOSITY_FRAGMENTS.get(verbosity, _VERBOSITY_FRAGMENTS["equilibrato"]),
+        _EMOJI_FRAGMENTS.get(emoji_policy, _EMOJI_FRAGMENTS["sobrio"]),
+        "Sii breve, cortese e concreto. Se mancano informazioni critiche "
+        "(nome, email, esigenza), chiedile una alla volta. Non inventare fatti "
+        "sull'attività: se non sai qualcosa, dillo e offri di far contattare una persona.",
+    ]
+    lines.append(" ".join(style_bits))
+
+    if greeting:
+        lines.append(f"Stile di apertura: {greeting}")
+    if signature:
+        lines.append(f"Chiudi i messaggi con questa firma quando appropriato: {signature}")
+    if do_phrases:
+        lines.append("Espressioni e modi di dire da preferire: " + "; ".join(do_phrases) + ".")
+    if dont_phrases:
+        lines.append("Espressioni, argomenti o toni da evitare: " + "; ".join(dont_phrases) + ".")
+    if examples:
+        ex_lines = ["Esempi di stile (segui il tono, non copiarli alla lettera):"]
+        ex_lines.extend(f"- Cliente: «{q}» → Tu: «{a}»" for q, a in examples)
+        lines.append("\n".join(ex_lines))
+
+    # Sentiment adaptation — uses the PRIOR turn's sentiment (zero added
+    # latency). neutral/None inject nothing.
+    if sentiment_adaptation and prior_sentiment in _SENTIMENT_FRAGMENTS:
+        lines.append(_SENTIMENT_FRAGMENTS[prior_sentiment])
+
+    if extras:
+        lines.append("Istruzioni aggiuntive dal merchant:")
+        lines.append(extras)
+
+    return "\n\n".join(lines)
+
+
+async def build_store_policy_lines(session: Any, merchant_id: UUID) -> list[str]:
+    """Italian one-liners for the merchant's store policies (empty if none).
+
+    Best-effort: any error (missing table during a partial migration, etc.)
+    degrades to no policy lines rather than breaking the turn.
+    """
+    try:
+        policy = await StorePolicyRepository(session).get_for_merchant(merchant_id)
+    except Exception:
+        return []
+    if policy is None:
+        return []
+
+    out: list[str] = []
+    labelled = [
+        ("Spedizioni", policy.shipping_info),
+        ("Resi e rimborsi", policy.return_policy),
+        ("Pagamenti", policy.payment_methods),
+        ("Cambi", policy.exchange_policy),
+        ("Garanzia", policy.warranty_info),
+        ("Contatti", policy.contact_info),
+    ]
+    for label, value in labelled:
+        if value and value.strip():
+            out.append(f"{label}: {value.strip()}")
+    for custom in policy.custom_policies or []:
+        if not isinstance(custom, dict):
+            continue
+        title = str(custom.get("title", "")).strip()
+        body = str(custom.get("body", "")).strip()
+        if title and body:
+            out.append(f"{title}: {body}")
+    return out
+
+
 class ConversationService:
     """Stateless orchestration glue. Open a fresh instance per turn, or share
     one across turns — both work; no hidden per-turn state is kept on the instance.
@@ -857,212 +1070,19 @@ class ConversationService:
     async def _cascade_system_prompt(
         self, *, session: Any, merchant_id: UUID, prior_sentiment: str | None = None
     ) -> str:
-        """Build the per-merchant system prompt from the config cascade.
+        """Thin wrapper over the module-level `build_cascade_system_prompt`.
 
-        Falls back to `DEFAULT_SYSTEM_PROMPT` when nothing is configured — so
-        a brand-new merchant still gets a working bot, it just sounds generic.
-        Structured persona knobs (register/verbosity/emoji/greeting/signature/
-        do/dont/examples) map to deterministic Italian fragments; `register ==
-        "auto"` falls back to the freeform legacy `bot.tone`. `prior_sentiment`
-        (the previous turn's lead.sentiment) optionally injects an empathy/
-        upsell hint, gated by `bot.sentiment_adaptation_enabled`.
+        The body lives at module scope so the UC-08 playground can reuse the
+        exact same builder (parity with the live WhatsApp turn) without
+        instantiating a full `ConversationService`.
         """
-        resolver = ConfigResolver(session)
-
-        async def _str(key: ConfigKey) -> str | None:
-            try:
-                value = await resolver.resolve(key, merchant_id=merchant_id)
-            except Exception:
-                return None
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            return None
-
-        async def _list(key: ConfigKey) -> list[str]:
-            try:
-                value = await resolver.resolve(key, merchant_id=merchant_id)
-            except Exception:
-                return []
-            if isinstance(value, list):
-                return [str(v).strip() for v in value if str(v).strip()]
-            return []
-
-        async def _examples(key: ConfigKey) -> list[tuple[str, str]]:
-            try:
-                value = await resolver.resolve(key, merchant_id=merchant_id)
-            except Exception:
-                return []
-            out: list[tuple[str, str]] = []
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        q = str(item.get("q", "")).strip()
-                        a = str(item.get("a", "")).strip()
-                        if q and a:
-                            out.append((q, a))
-            return out
-
-        async def _bool(key: ConfigKey, *, default: bool) -> bool:
-            try:
-                value = await resolver.resolve(key, merchant_id=merchant_id)
-            except Exception:
-                return default
-            return value if isinstance(value, bool) else default
-
-        business_name = await _str(ConfigKey.BUSINESS_NAME)
-        industry = await _str(ConfigKey.BUSINESS_INDUSTRY)
-        description = await _str(ConfigKey.BUSINESS_DESCRIPTION)
-        offer = await _str(ConfigKey.BUSINESS_OFFER)
-        hours = await _str(ConfigKey.BUSINESS_HOURS)
-        location = await _str(ConfigKey.BUSINESS_LOCATION)
-        pricing_notes = await _str(ConfigKey.BUSINESS_PRICING_NOTES)
-        website = await _str(ConfigKey.BUSINESS_WEBSITE)
-        tone = await _str(ConfigKey.BOT_TONE) or "professionale-amichevole"
-        language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
-        extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
-
-        formality = await _str(ConfigKey.BOT_FORMALITY) or "auto"
-        verbosity = await _str(ConfigKey.BOT_VERBOSITY) or "equilibrato"
-        emoji_policy = await _str(ConfigKey.BOT_EMOJI_POLICY) or "sobrio"
-        greeting = await _str(ConfigKey.BOT_GREETING_STYLE)
-        signature = await _str(ConfigKey.BOT_SIGNATURE)
-        do_phrases = await _list(ConfigKey.BOT_DO_PHRASES)
-        dont_phrases = await _list(ConfigKey.BOT_DONT_PHRASES)
-        examples = await _examples(ConfigKey.BOT_EXAMPLES)
-        sentiment_adaptation = await _bool(ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED, default=True)
-
-        # Store policies — short, always-relevant facts injected straight into
-        # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
-        policy_lines = await self._store_policy_lines(session, merchant_id)
-
-        # `has_profile` keys off content the merchant actually provided — NOT the
-        # always-defaulted enums — so a truly empty merchant keeps the generic
-        # DEFAULT_SYSTEM_PROMPT (today's behavior). Any real content opts into
-        # the assembled prompt (with the persona fragments applied).
-        has_profile = any(
-            [
-                business_name,
-                industry,
-                description,
-                offer,
-                hours,
-                location,
-                pricing_notes,
-                website,
-                extras,
-                greeting,
-                signature,
-                do_phrases,
-                dont_phrases,
-                examples,
-                policy_lines,
-            ]
+        return await build_cascade_system_prompt(
+            session=session, merchant_id=merchant_id, prior_sentiment=prior_sentiment
         )
-        if not has_profile:
-            return DEFAULT_SYSTEM_PROMPT
-
-        lines: list[str] = []
-        if business_name and industry:
-            lines.append(
-                f"Sei un assistente conversazionale che rappresenta {business_name}, "
-                f"un'attività del settore {industry}."
-            )
-        elif business_name:
-            lines.append(f"Sei un assistente conversazionale che rappresenta {business_name}.")
-        elif industry:
-            lines.append(
-                f"Sei un assistente conversazionale per un'attività del settore {industry}."
-            )
-        else:
-            lines.append("Sei un assistente conversazionale per l'azienda.")
-
-        if description:
-            lines.append(f"L'attività si descrive così: {description}")
-        if offer:
-            lines.append(f"Offerta principale: {offer}")
-        if pricing_notes:
-            lines.append(f"Note sui prezzi: {pricing_notes}")
-        if hours:
-            lines.append(f"Orari: {hours}")
-        if location:
-            lines.append(f"Sede / area di copertura: {location}")
-        if website:
-            lines.append(f"Sito web: {website}")
-        if policy_lines:
-            lines.append("Politiche del negozio:\n" + "\n".join(f"- {p}" for p in policy_lines))
-
-        # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
-        tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
-        style_bits = [
-            f"Rispondi sempre in lingua {language}.",
-            tone_clause,
-            _VERBOSITY_FRAGMENTS.get(verbosity, _VERBOSITY_FRAGMENTS["equilibrato"]),
-            _EMOJI_FRAGMENTS.get(emoji_policy, _EMOJI_FRAGMENTS["sobrio"]),
-            "Sii breve, cortese e concreto. Se mancano informazioni critiche "
-            "(nome, email, esigenza), chiedile una alla volta. Non inventare fatti "
-            "sull'attività: se non sai qualcosa, dillo e offri di far contattare una persona.",
-        ]
-        lines.append(" ".join(style_bits))
-
-        if greeting:
-            lines.append(f"Stile di apertura: {greeting}")
-        if signature:
-            lines.append(f"Chiudi i messaggi con questa firma quando appropriato: {signature}")
-        if do_phrases:
-            lines.append("Espressioni e modi di dire da preferire: " + "; ".join(do_phrases) + ".")
-        if dont_phrases:
-            lines.append(
-                "Espressioni, argomenti o toni da evitare: " + "; ".join(dont_phrases) + "."
-            )
-        if examples:
-            ex_lines = ["Esempi di stile (segui il tono, non copiarli alla lettera):"]
-            ex_lines.extend(f"- Cliente: «{q}» → Tu: «{a}»" for q, a in examples)
-            lines.append("\n".join(ex_lines))
-
-        # Sentiment adaptation — uses the PRIOR turn's sentiment (zero added
-        # latency). neutral/None inject nothing.
-        if sentiment_adaptation and prior_sentiment in _SENTIMENT_FRAGMENTS:
-            lines.append(_SENTIMENT_FRAGMENTS[prior_sentiment])
-
-        if extras:
-            lines.append("Istruzioni aggiuntive dal merchant:")
-            lines.append(extras)
-
-        return "\n\n".join(lines)
 
     async def _store_policy_lines(self, session: Any, merchant_id: UUID) -> list[str]:
-        """Italian one-liners for the merchant's store policies (empty if none).
-
-        Best-effort: any error (missing table during a partial migration, etc.)
-        degrades to no policy lines rather than breaking the turn.
-        """
-        try:
-            policy = await StorePolicyRepository(session).get_for_merchant(merchant_id)
-        except Exception:
-            return []
-        if policy is None:
-            return []
-
-        out: list[str] = []
-        labelled = [
-            ("Spedizioni", policy.shipping_info),
-            ("Resi e rimborsi", policy.return_policy),
-            ("Pagamenti", policy.payment_methods),
-            ("Cambi", policy.exchange_policy),
-            ("Garanzia", policy.warranty_info),
-            ("Contatti", policy.contact_info),
-        ]
-        for label, value in labelled:
-            if value and value.strip():
-                out.append(f"{label}: {value.strip()}")
-        for custom in policy.custom_policies or []:
-            if not isinstance(custom, dict):
-                continue
-            title = str(custom.get("title", "")).strip()
-            body = str(custom.get("body", "")).strip()
-            if title and body:
-                out.append(f"{title}: {body}")
-        return out
+        """Thin wrapper over the module-level `build_store_policy_lines`."""
+        return await build_store_policy_lines(session, merchant_id)
 
     async def _resolve_int(
         self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: int

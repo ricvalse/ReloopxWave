@@ -716,7 +716,7 @@ export interface paths {
         put?: never;
         /**
          * Playground Turn
-         * @description UC-08 — sandbox turn. No side-effects: no WhatsApp send, no DB persist.
+         * @description UC-08 — sandbox turn. Dry-run: no WhatsApp send, no DB persist, no GHL.
          */
         post: operations["playground_turn_playground_turn_post"];
         delete?: never;
@@ -1201,10 +1201,14 @@ export interface paths {
          * Ghl Marketplace Webhook
          * @description GHL marketplace lifecycle events (INSTALL / UNINSTALL).
          *
-         *     Sent to the app's Default Webhook URL and signed with GHL's RSA public key
-         *     (not the HMAC used for per-location data webhooks). `locationId`/`companyId`
-         *     arrive in the payload, not the URL. Declared BEFORE `/ghl/{merchant_id}` so
-         *     the literal "marketplace" segment isn't swallowed by the UUID path param.
+         *     Sent to the app's Default Webhook URL and signed by GHL with Ed25519
+         *     (`x-ghl-signature`, current) or, on the legacy path, RSA-SHA256
+         *     (`x-wh-signature`, deprecated 2026-07-01) — not the HMAC used for
+         *     per-location data webhooks. We verify Ed25519 first and do NOT fall back to
+         *     RSA when an `x-ghl-signature` is present (downgrade protection).
+         *     `locationId`/`companyId` arrive in the payload, not the URL. Declared BEFORE
+         *     `/ghl/{merchant_id}` so the literal "marketplace" segment isn't swallowed by
+         *     the UUID path param.
          */
         post: operations["ghl_marketplace_webhook_webhooks_ghl_marketplace_post"];
         delete?: never;
@@ -2015,6 +2019,24 @@ export interface components {
             /** Qualified Stage Id */
             qualified_stage_id?: string | null;
         };
+        /** PlaygroundBubble */
+        PlaygroundBubble: {
+            /** Text */
+            text: string;
+            /** Delay Ms */
+            delay_ms: number;
+        };
+        /** PlaygroundEvent */
+        PlaygroundEvent: {
+            /** Kind */
+            kind: string;
+            /** Summary */
+            summary: string;
+            /** Detail */
+            detail?: {
+                [key: string]: unknown;
+            };
+        };
         /** PlaygroundMessageIn */
         PlaygroundMessageIn: {
             /** Role */
@@ -2022,10 +2044,42 @@ export interface components {
             /** Content */
             content: string;
         };
+        /**
+         * PlaygroundStateModel
+         * @description Simulated lead state carried turn-to-turn by the client (dry-run).
+         */
+        PlaygroundStateModel: {
+            /**
+             * Lead Score
+             * @default 0
+             */
+            lead_score: number;
+            /** Lead Sentiment */
+            lead_sentiment?: string | null;
+            /** Lead Name */
+            lead_name?: string | null;
+            /** Lead Email */
+            lead_email?: string | null;
+            /** Pipeline Stage */
+            pipeline_stage?: string | null;
+            /**
+             * Booked
+             * @default false
+             */
+            booked: boolean;
+            /**
+             * Escalated
+             * @default false
+             */
+            escalated: boolean;
+            /**
+             * Turn Count
+             * @default 0
+             */
+            turn_count: number;
+        };
         /** PlaygroundTurnIn */
         PlaygroundTurnIn: {
-            /** System Prompt */
-            system_prompt: string;
             /**
              * History
              * @default []
@@ -2033,22 +2087,12 @@ export interface components {
             history: components["schemas"]["PlaygroundMessageIn"][];
             /** User Message */
             user_message: string;
-            /** Variant Id */
-            variant_id?: string | null;
-            /**
-             * Use Kb
-             * @default true
-             */
-            use_kb: boolean;
+            state?: components["schemas"]["PlaygroundStateModel"] | null;
         };
         /** PlaygroundTurnOut */
         PlaygroundTurnOut: {
             /** Reply Text */
             reply_text: string;
-            /** Actions */
-            actions: {
-                [key: string]: unknown;
-            }[];
             /** Model */
             model: string;
             /** Tokens In */
@@ -2061,6 +2105,16 @@ export interface components {
             retrieved_chunks: {
                 [key: string]: unknown;
             }[];
+            /** Bubbles */
+            bubbles?: components["schemas"]["PlaygroundBubble"][];
+            /**
+             * Typing Indicator
+             * @default false
+             */
+            typing_indicator: boolean;
+            /** Events */
+            events?: components["schemas"]["PlaygroundEvent"][];
+            state: components["schemas"]["PlaygroundStateModel"];
         };
         /** PolicyIn */
         PolicyIn: {
@@ -5048,6 +5102,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                "x-ghl-signature"?: string;
                 "x-wh-signature"?: string;
             };
             path?: never;

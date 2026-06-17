@@ -32,6 +32,11 @@ from ai_core.playground import (
     PlaygroundResponse,
     PlaygroundRunner,
 )
+from ai_core.playground_sim import (
+    PlaygroundLeadState,
+    SimulatedActionEvent,
+    simulate_turn,
+)
 from ai_core.rag import Embedder, RAGEngine, RetrievedChunk
 from ai_core.router import ModelRouter, RoutingRequest
 from ai_core.scoring import LeadScore, derive_conversation_signals, score_lead
@@ -57,6 +62,7 @@ __all__ = [
     "OpenAIClient",
     "OrchestratorAction",
     "OrchestratorResponse",
+    "PlaygroundLeadState",
     "PlaygroundMessage",
     "PlaygroundRequest",
     "PlaygroundResponse",
@@ -67,6 +73,7 @@ __all__ = [
     "RetrievedChunk",
     "RoutingRequest",
     "SentimentAnalyzer",
+    "SimulatedActionEvent",
     "TurnContext",
     "classify_objections",
     "compute_typing_delay_s",
@@ -74,5 +81,6 @@ __all__ = [
     "derive_conversation_signals",
     "score_lead",
     "should_use_ft",
+    "simulate_turn",
     "split_into_bubbles",
 ]

@@ -10,7 +10,7 @@ import pytest
 
 from ai_core.actions.scoring import (
     UpdateScoreHandler,
-    _classify,
+    classify_temperature,
     derive_signals_from_llm_payload,
 )
 from ai_core.conversation_service import TurnContext
@@ -77,11 +77,11 @@ def test_derive_signals_whitelists_known_keys() -> None:
 
 
 def test_classify_thresholds() -> None:
-    assert _classify(85, 80, 30) == "hot"
-    assert _classify(50, 80, 30) == "warm"
-    assert _classify(20, 80, 30) == "cold"
-    assert _classify(80, 80, 30) == "hot"
-    assert _classify(30, 80, 30) == "cold"
+    assert classify_temperature(85, 80, 30) == "hot"
+    assert classify_temperature(50, 80, 30) == "warm"
+    assert classify_temperature(20, 80, 30) == "cold"
+    assert classify_temperature(80, 80, 30) == "hot"
+    assert classify_temperature(30, 80, 30) == "cold"
 
 
 async def test_handler_persists_score_and_emits_event(

@@ -88,8 +88,8 @@ class UpdateScoreHandler:
                 ),
                 30,
             )
-            temperature = _classify(scored.score, hot_threshold, cold_threshold)
-            previous_temp = _classify(previous_score, hot_threshold, cold_threshold)
+            temperature = classify_temperature(scored.score, hot_threshold, cold_threshold)
+            previous_temp = classify_temperature(previous_score, hot_threshold, cold_threshold)
 
             await analytics.emit(
                 tenant_id=turn_ctx.tenant_id,
@@ -109,7 +109,12 @@ class UpdateScoreHandler:
             )
 
 
-def _classify(score: int, hot: int, cold: int) -> str:
+def classify_temperature(score: int, hot: int, cold: int) -> str:
+    """Map a lead score to hot/warm/cold given the merchant's thresholds (pure).
+
+    Public so the UC-08 playground simulator classifies exactly like the live
+    `update_score` handler.
+    """
     if score >= hot:
         return "hot"
     if score <= cold:

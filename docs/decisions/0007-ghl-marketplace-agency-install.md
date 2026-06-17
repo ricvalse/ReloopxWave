@@ -48,7 +48,7 @@ Positive:
 
 Negative / watch:
 - **INSTALL before agency-connect**: if a `companyId` has no agency install yet, the INSTALL is logged and dropped (200, no retry storm). The agency must connect from web-admin before installing; a later re-install recovers. A backfill job (list locations via API + re-mint) is a possible follow-up.
-- **Marketplace signature**: the exact header name (`x-wh-signature`) and RSA algorithm should be reconfirmed against GHL before go-live; the verifier takes the PEM from `GHL_MARKETPLACE_PUBLIC_KEY` so it can be rotated/adjusted without a code change.
+- **Marketplace signature** (confirmed 2026-06-17 against the [GHL Webhook Integration Guide](https://marketplace.gohighlevel.com/docs/webhook/WebhookIntegrationGuide/index.html)): GHL signs with **two** schemes over the raw body, base64 — **Ed25519** (header `x-ghl-signature`, current/preferred) and **RSA-SHA256** (header `x-wh-signature`, legacy, **deprecated 2026-07-01**). Both public keys are *global published constants* (not per-app, not in the dashboard). `marketplace_signatures.verify_ghl_marketplace_webhook` verifies Ed25519 first with **no fallback** when present (downgrade protection), else the legacy RSA, else rejects. Keys ship as settings defaults (`ghl_marketplace_public_key_ed25519` / `ghl_marketplace_public_key`), env-overridable on rotation — so no Railway var is required.
 - **Refresh race**: two concurrent turns for one location could both refresh and invalidate each other's refresh token. V1 self-heals via re-mint from the agency token; a Redis lock on `ghl:refresh:{location_id}` is a V1.5 hardening.
 - Legacy `integrations(provider='ghl')` rows (if any in prod) become inert; the new resolver does not read them. Clean up if present.
 
@@ -72,11 +72,11 @@ Frontend:
 - `frontend/apps/web-merchant/src/components/integrations/integrations-panel.tsx` (GHL card now read-only / agency-managed).
 
 Tests:
-- `backend/tests/unit/{test_ghl_oauth_state,test_integrations_oauth,test_ghl_marketplace_signature,test_ghl_location_token,test_ghl_install}.py`.
+- `backend/tests/unit/{test_ghl_oauth_state,test_integrations_oauth,test_ghl_marketplace_signature,test_ghl_marketplace_ed25519,test_ghl_location_token,test_ghl_install}.py`.
 - `backend/tests/integration/test_isolation_ghl_marketplace.py` (RLS).
 
 Operations (GHL Developer Portal):
 - App: Target User = Sub-Account, Distribution = "Both Agency and Sub-account".
 - Redirect URI = `${PUBLIC_API_BASE_URL}/integrations/crm/oauth/callback`.
 - Default Webhook URL = `${PUBLIC_API_BASE_URL}/webhooks/ghl/marketplace`.
-- Set `GHL_MARKETPLACE_PUBLIC_KEY` (PEM) for INSTALL/UNINSTALL signature verification.
+- INSTALL/UNINSTALL signature keys (Ed25519 + legacy RSA) ship as code defaults — no env step needed. Override `GHL_MARKETPLACE_PUBLIC_KEY_ED25519` / `GHL_MARKETPLACE_PUBLIC_KEY` only if GHL rotates them.

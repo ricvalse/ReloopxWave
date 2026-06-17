@@ -323,22 +323,11 @@ class BookSlotHandler:
     ) -> None:
         if outcome is None:
             return
-        if outcome.booked and outcome.slot_start_iso:
-            text = (
-                f"Perfetto, ho prenotato per te l'appuntamento del "
-                f"{_format_human(outcome.slot_start_iso)}. Ti invieremo il promemoria."
-            )
-        elif outcome.suggested:
-            options = "\n".join(f"• {_format_human(s)}" for s in outcome.suggested)
-            text = (
-                "Quello slot non è più disponibile. Ti suggerisco:\n"
-                f"{options}\nFammi sapere quale preferisci."
-            )
-        else:
-            text = (
-                "Al momento non riesco a completare la prenotazione. "
-                "Ti ricontatteremo a brevissimo."
-            )
+        text = format_booking_confirmation(
+            booked=outcome.booked,
+            slot_start_iso=outcome.slot_start_iso,
+            suggested=outcome.suggested,
+        )
         await self._reply_sender.send(
             phone_number_id=turn_ctx.phone_number_id,
             api_key=turn_ctx.api_key,
@@ -393,3 +382,25 @@ def _format_human(iso: str) -> str:
     if dt is None:
         return iso
     return dt.strftime("%d/%m alle %H:%M")
+
+
+def format_booking_confirmation(
+    *, booked: bool, slot_start_iso: str | None, suggested: list[str]
+) -> str:
+    """Italian WhatsApp confirmation text for a booking outcome (pure).
+
+    Reused by the live handler's `_send_confirmation` and by the UC-08 playground
+    simulator, so the dry-run shows the exact message a real booking would send.
+    """
+    if booked and slot_start_iso:
+        return (
+            f"Perfetto, ho prenotato per te l'appuntamento del "
+            f"{_format_human(slot_start_iso)}. Ti invieremo il promemoria."
+        )
+    if suggested:
+        options = "\n".join(f"• {_format_human(s)}" for s in suggested)
+        return (
+            "Quello slot non è più disponibile. Ti suggerisco:\n"
+            f"{options}\nFammi sapere quale preferisci."
+        )
+    return "Al momento non riesco a completare la prenotazione. Ti ricontatteremo a brevissimo."

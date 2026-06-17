@@ -6,7 +6,7 @@ export default function PlaygroundPage() {
     <>
       <PageHeader
         title="Playground"
-        description="UC-08 — prova il bot senza inviare messaggi reali. I turni non vengono salvati."
+        description="Prova come risponderebbe il bot ai messaggi WhatsApp: stesso prompt, stesse impostazioni e stesse azioni del sistema reale, ma in simulazione (dry-run). Nessun messaggio inviato, nessun dato scritto."
       />
       <div className="p-6">
         <PlaygroundChat />
