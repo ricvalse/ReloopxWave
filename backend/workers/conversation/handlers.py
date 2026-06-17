@@ -42,7 +42,9 @@ from integrations import (
     mint_location_token,
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
+from integrations.whatsapp.templates import build_send_components
 from shared import IntegrationError, get_logger, get_settings
+from workers.outbound import is_within_24h
 from workers.runtime import Runtime
 
 logger = get_logger(__name__)
@@ -73,6 +75,7 @@ async def handle_inbound_message(
     from_phone: str,
     text: str,
     wa_message_id: str,
+    campaign: str | None = None,
 ) -> dict[str, Any]:
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
@@ -84,6 +87,7 @@ async def handle_inbound_message(
         from_phone=from_phone,
         text=text,
         wa_message_id=wa_message_id,
+        campaign=campaign,
     )
 
     if not (outcome.handled and outcome.auto_reply_on):
@@ -718,6 +722,26 @@ async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[s
             )
             return {"sent": False, "reason": "no_integration"}
 
+        # 24h-window enforcement for the human composer. A free-text reply sent
+        # outside the customer-service window is rejected by WhatsApp — failing it
+        # explicitly (instead of attempting a doomed send) lets the inbox surface
+        # "window closed, use a template". A message the composer marked as a
+        # template (meta.kind == 'template') is allowed out-of-window.
+        msg_meta = dict(msg.meta or {})
+        is_template = msg_meta.get("kind") == "template"
+        template_payload = msg_meta.get("template") if is_template else None
+        if not is_template and not is_within_24h(conv.last_inbound_at, datetime.now(tz=UTC)):
+            await _mark_failed(
+                session,
+                message_id=message_id,
+                error_code="outside_24h_window",
+                detail=(
+                    "free-text reply outside the 24h window; send an approved template instead"
+                ),
+            )
+            logger.info("wa.outbound.outside_window", message_id=message_id)
+            return {"sent": False, "reason": "outside_24h_window"}
+
         text_to_send = msg.content
         to_phone = conv.wa_contact_phone
         phone_number_id = resolved.phone_number_id
@@ -732,7 +756,18 @@ async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[s
             waba_base_url=waba_base_url,
         )
         try:
-            resp = await sender.send_text(to_phone=to_phone, text=text_to_send)
+            if template_payload:
+                components = build_send_components(
+                    body_params=[str(v) for v in (template_payload.get("variables") or [])]
+                )
+                resp = await sender.send_template(
+                    to_phone=to_phone,
+                    template_name=str(template_payload.get("name", "")),
+                    language=str(template_payload.get("language", "it")),
+                    components=components,
+                )
+            else:
+                resp = await sender.send_text(to_phone=to_phone, text=text_to_send)
         finally:
             await sender.close()
     except IntegrationError as exc:

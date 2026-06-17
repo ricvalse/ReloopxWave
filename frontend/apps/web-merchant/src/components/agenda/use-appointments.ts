@@ -75,10 +75,10 @@ export function useRescheduleAppointment() {
   return useMutation({
     mutationFn: async (vars: { id: string; startAtIso: string; endAtIso?: string | null }) => {
       const api = getApiClient();
-      const { error } = await api.POST('/appointments/{appointment_id}/reschedule' as never, {
+      const { error } = await api.POST('/appointments/{appointment_id}/reschedule', {
         params: { path: { appointment_id: vars.id } },
         body: { start_at_iso: vars.startAtIso, end_at_iso: vars.endAtIso ?? null },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => {
@@ -92,9 +92,9 @@ export function useCancelAppointment() {
   return useMutation({
     mutationFn: async (id: string) => {
       const api = getApiClient();
-      const { error } = await api.POST('/appointments/{appointment_id}/cancel' as never, {
+      const { error } = await api.POST('/appointments/{appointment_id}/cancel', {
         params: { path: { appointment_id: id } },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => {

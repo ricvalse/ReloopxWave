@@ -10,6 +10,8 @@ export interface Conversation {
   wa_phone_number_id: string | null;
   status: string;
   last_message_at: string | null;
+  /** Time of the customer's last inbound — drives the 24h-window composer banner. */
+  last_inbound_at?: string | null;
   message_count: number;
   /** Per-thread bot takeover. AND-ed with merchant `bot.auto_reply_enabled`. */
   auto_reply: boolean;

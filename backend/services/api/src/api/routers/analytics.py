@@ -54,6 +54,7 @@ async def merchant_kpis(
     ctx: CurrentContext,
     session: DBSession,
     since_days: int = Query(30, ge=1, le=365),
+    campaign: str | None = Query(default=None, description="Filter lead metrics to a campaign"),
     merchant_id: UUID | None = _MERCHANT_FILTER,
 ) -> MerchantKpisOut:
     target = _resolve_kpi_merchant(ctx, merchant_id)
@@ -74,9 +75,22 @@ async def merchant_kpis(
         merchant_id=target,
         hot_threshold=hot_threshold,
         since_days=since_days,
+        campaign=campaign,
     )
     dist = await repo.score_distribution(merchant_id=target)
     return MerchantKpisOut(**asdict(k), score_distribution=dist)
+
+
+@router.get("/merchant/campaigns", response_model=list[str])
+async def merchant_campaigns(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+) -> list[str]:
+    """Distinct campaigns for the merchant — populates the dashboard filter (UC-11)."""
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+    campaigns: list[str] = await AnalyticsRepository(session).list_campaigns(merchant_id=target)
+    return campaigns
 
 
 def _resolve_kpi_merchant(ctx: CurrentContext, override: UUID | None) -> UUID:

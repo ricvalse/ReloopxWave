@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonChart } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
@@ -20,17 +20,38 @@ type Kpis = {
   score_distribution: { bucket: number; count: number }[];
 };
 
+const PERIODS = [
+  { value: 7, label: 'Ultimi 7 giorni' },
+  { value: 30, label: 'Ultimi 30 giorni' },
+  { value: 90, label: 'Ultimi 90 giorni' },
+];
+
 export function MerchantDashboard() {
   const { merchantId } = useMerchantId();
   const queryClient = useQueryClient();
+  const [sinceDays, setSinceDays] = useState(30);
+  const [campaign, setCampaign] = useState('');
+
+  const campaignsQuery = useQuery({
+    queryKey: ['merchant-campaigns', merchantId],
+    enabled: !!merchantId,
+    queryFn: async (): Promise<string[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/analytics/merchant/campaigns');
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data ?? [];
+    },
+  });
 
   const query = useQuery({
-    queryKey: ['merchant-kpis', merchantId],
+    queryKey: ['merchant-kpis', merchantId, sinceDays, campaign],
     queryFn: async (): Promise<Kpis> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/analytics/merchant/kpis' as never, {
-        params: { query: { since_days: 30 } },
-      } as never);
+      const { data, error } = await api.GET('/analytics/merchant/kpis', {
+        params: {
+          query: { since_days: sinceDays, ...(campaign ? { campaign } : {}) },
+        },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Kpis;
     },
@@ -70,6 +91,34 @@ export function MerchantDashboard() {
   return (
     <div className="space-y-4 p-6">
       <SetupChecklist />
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          aria-label="Periodo"
+          value={sinceDays}
+          onChange={(e) => setSinceDays(Number(e.target.value))}
+          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+        >
+          {PERIODS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Campagna"
+          value={campaign}
+          onChange={(e) => setCampaign(e.target.value)}
+          className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          disabled={(campaignsQuery.data ?? []).length === 0}
+        >
+          <option value="">Tutte le campagne</option>
+          {(campaignsQuery.data ?? []).map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         <KPICard label="Lead totali" loading={query.isLoading} value={k ? k.leads_total : '—'} />
         <KPICard label="Lead hot" loading={query.isLoading} value={k ? k.leads_hot : '—'} />

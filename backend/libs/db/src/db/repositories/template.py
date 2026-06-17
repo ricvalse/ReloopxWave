@@ -73,6 +73,17 @@ class BotTemplateRepository:
         await self._session.flush()
         return tmpl
 
+    async def delete(self, template_id: UUID) -> bool:
+        """Delete a template. RLS scopes the row to the caller's tenant, so a
+        cross-tenant id resolves to no-op. Returns True when a row was removed.
+        """
+        tmpl = await self._session.get(BotTemplate, template_id)
+        if tmpl is None:
+            return False
+        await self._session.delete(tmpl)
+        await self._session.flush()
+        return True
+
     async def _clear_default(self, tenant_id: UUID) -> None:
         await self._session.execute(
             update(BotTemplate)

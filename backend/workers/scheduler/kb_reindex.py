@@ -79,6 +79,7 @@ async def reindex_doc(ctx: dict[str, Any], *, doc_id: str) -> dict[str, Any]:
         assert doc is not None
 
         doc.status = "indexing"
+        doc.status_detail = "Indicizzazione in corso"
         await session.flush()
 
         indexer = Indexer(session, embedder)
@@ -87,8 +88,18 @@ async def reindex_doc(ctx: dict[str, Any], *, doc_id: str) -> dict[str, Any]:
                 merchant_id=doc_merchant_id, doc=doc, raw_bytes=raw_bytes
             )
         except Exception as e:
+            # Best-effort: registra il motivo del fallimento sul doc così che la
+            # UI KB possa mostrarlo (status_detail/last_error troncati ai limiti
+            # di colonna). Il flush avviene comunque prima del re-raise.
+            err = str(e)
             doc.status = "failed"
-            logger.warning("kb.reindex.failed", doc_id=doc_id, error=str(e))
+            doc.status_detail = "Indicizzazione fallita"
+            doc.last_error = err[:1000]
+            try:
+                await session.flush()
+            except Exception:  # non mascherare l'errore originale dell'indexer
+                logger.warning("kb.reindex.error_persist_failed", doc_id=doc_id)
+            logger.warning("kb.reindex.failed", doc_id=doc_id, error=err)
             await AnalyticsRepository(session).emit(
                 tenant_id=tenant_id,
                 merchant_id=doc_merchant_id,
@@ -98,6 +109,15 @@ async def reindex_doc(ctx: dict[str, Any], *, doc_id: str) -> dict[str, Any]:
                 properties={"error": str(e)},
             )
             raise
+
+        # L'Indexer imposta doc.status ("indexed" o "empty"); rifletti l'esito
+        # nel dettaglio leggibile e azzera l'eventuale errore precedente.
+        if doc.status == "empty":
+            doc.status_detail = "Nessun contenuto estraibile"
+        else:
+            doc.status_detail = f"Indicizzato ({result.chunk_count} chunk)"
+        doc.last_error = None
+        await session.flush()
 
         await AnalyticsRepository(session).emit(
             tenant_id=tenant_id,

@@ -27,7 +27,7 @@ export function MerchantPicker({ value, onChange }: MerchantPickerProps) {
     queryKey: ['merchants', 'list'],
     queryFn: async (): Promise<Merchant[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/merchants/' as never, {} as never);
+      const { data, error } = await api.GET('/merchants/');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant[];
     },

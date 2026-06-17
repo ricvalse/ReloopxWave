@@ -25,10 +25,7 @@ export function AgencyGhlPanel() {
     queryKey: ['ghl', 'agency', 'status'],
     queryFn: async (): Promise<AgencyStatus> => {
       const api = getApiClient();
-      const { data, error } = await api.GET(
-        '/integrations/ghl/agency/status' as never,
-        {} as never,
-      );
+      const { data, error } = await api.GET('/integrations/ghl/agency/status');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as AgencyStatus;
     },
@@ -37,10 +34,7 @@ export function AgencyGhlPanel() {
   const connect = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { data, error } = await api.POST(
-        '/integrations/ghl/agency/oauth/start' as never,
-        {} as never,
-      );
+      const { data, error } = await api.POST('/integrations/ghl/agency/oauth/start');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as { authorize_url: string };
     },

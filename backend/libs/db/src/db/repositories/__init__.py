@@ -1,6 +1,6 @@
 from db.repositories.ab import ABRepository, VariantMetric
 from db.repositories.analytics import AnalyticsRepository
-from db.repositories.appointment import AppointmentRepository
+from db.repositories.appointment import AppointmentReminderCandidate, AppointmentRepository
 from db.repositories.catalog import FaqRepository, ProductRepository, StorePolicyRepository
 from db.repositories.conversation import ConversationRepository, ReminderCandidate
 from db.repositories.flow import (
@@ -41,6 +41,7 @@ __all__ = [
     "LIFECYCLE_FLOW_KEYS",
     "ABRepository",
     "AnalyticsRepository",
+    "AppointmentReminderCandidate",
     "AppointmentRepository",
     "BotTemplateRepository",
     "CategoryCount",

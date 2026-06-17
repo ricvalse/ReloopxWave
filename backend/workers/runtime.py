@@ -22,6 +22,7 @@ from ai_core.actions import (
     CancelSlotHandler,
     EscalateHumanHandler,
     MovePipelineHandler,
+    ProposeSlotsHandler,
     RescheduleSlotHandler,
     UpdateScoreHandler,
 )
@@ -109,6 +110,16 @@ def build_runtime(settings: Settings) -> Runtime:
         reply_sender=sender,
     )
     dispatcher.register(booking.kind, booking)
+
+    # UC-02 — proactively offer free slots when the lead wants to book but
+    # hasn't named a time.
+    propose_slots = ProposeSlotsHandler(
+        kek_base64=settings.integrations_kek_base64,
+        ghl_client_id=settings.ghl_client_id,
+        ghl_client_secret=settings.ghl_client_secret,
+        reply_sender=sender,
+    )
+    dispatcher.register(propose_slots.kind, propose_slots)
 
     # UC-02 — reschedule / cancel an existing appointment over WhatsApp.
     reschedule = RescheduleSlotHandler(

@@ -50,6 +50,24 @@ _MEDIA_PLACEHOLDER = {
     "contacts": "[Il cliente ha inviato un contatto]",
 }
 
+_CAMPAIGN_MAX_LEN = 200
+
+
+def _extract_campaign(raw: dict[str, Any]) -> str | None:
+    """Campaign attribution from a click-to-WhatsApp ad (UC-11).
+
+    WhatsApp puts an ad's metadata on the inbound message's `referral` object.
+    Prefer the stable `source_id` (the ad/campaign id); fall back to the
+    human-readable `headline`. None for organic messages (no `referral`).
+    """
+    referral = raw.get("referral")
+    if not isinstance(referral, dict):
+        return None
+    value = referral.get("source_id") or referral.get("headline")
+    if not value:
+        return None
+    return str(value)[:_CAMPAIGN_MAX_LEN]
+
 
 @router.post("/whatsapp")
 async def whatsapp_inbound(
@@ -105,6 +123,7 @@ async def whatsapp_inbound(
             ev.from_phone,
             text,
             ev.message_id,
+            _extract_campaign(ev.raw),  # UC-11 click-to-WhatsApp ad attribution
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )
         enqueued_msgs += 1

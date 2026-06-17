@@ -21,7 +21,7 @@ export function IntegrationsPanel() {
     queryKey: ['integrations', 'status'],
     queryFn: async (): Promise<Status> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/integrations/status' as never, {} as never);
+      const { data, error } = await api.GET('/integrations/status');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Status;
     },

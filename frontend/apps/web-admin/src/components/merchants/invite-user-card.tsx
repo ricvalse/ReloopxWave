@@ -7,6 +7,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 
 type UserOut = components['schemas']['UserOut'];
+type InviteIn = components['schemas']['InviteIn'];
 
 export function InviteUserCard({ merchantId }: { merchantId: string }) {
   const queryClient = useQueryClient();
@@ -21,9 +22,9 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
     queryKey: ['users', 'list', merchantId],
     queryFn: async (): Promise<UserOut[]> => {
       const api = getApiClient();
-      const { data, error: e } = await api.GET('/users/' as never, {
+      const { data, error: e } = await api.GET('/users/', {
         params: { query: { merchant_id: merchantId } },
-      } as never);
+      });
       if (e) throw new Error(typeof e === 'string' ? e : JSON.stringify(e));
       return data as UserOut[];
     },
@@ -32,16 +33,16 @@ export function InviteUserCard({ merchantId }: { merchantId: string }) {
   const invite = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const body: Record<string, unknown> = {
+      const body: InviteIn = {
         email,
         role: 'merchant_user',
         merchant_id: merchantId,
         password,
       };
       if (fullName.trim()) body.full_name = fullName.trim();
-      const { data, error: e } = await api.POST('/users/invite' as never, {
+      const { data, error: e } = await api.POST('/users/invite', {
         body,
-      } as never);
+      });
       if (e) {
         const msg =
           typeof e === 'string'

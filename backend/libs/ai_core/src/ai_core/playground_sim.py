@@ -93,6 +93,25 @@ class SimulationResult:
     extra_bubbles: list[str]
 
 
+def apply_playground_rule_overrides(system_prompt: str, rules: list[str] | None) -> str:
+    """Append the tester's ad-hoc rules to the system prompt (pure, no IO).
+
+    The playground tester can add hard/soft rules on the fly (e.g. "non offrire
+    mai sconti", "rispondi sempre in massimo due frasi"). These are appended to
+    the canonical cascade system prompt so the dry-run PREVIEW reflects them,
+    exactly as if they were saved as `bot.system_prompt_additions` overrides
+    (see `POST /playground/apply`). This keeps the preview faithful (ADR 0009)
+    without persisting anything.
+
+    Empty/whitespace rules are dropped; an empty list leaves the prompt untouched.
+    """
+    cleaned = [r.strip() for r in (rules or []) if r and r.strip()]
+    if not cleaned:
+        return system_prompt
+    block = "\n".join(f"- {r}" for r in cleaned)
+    return f"{system_prompt}\n\nRegole aggiuntive dal tester (playground):\n{block}"
+
+
 def _contact_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
     cf = payload.get("contact_fields")
     if not isinstance(cf, dict):

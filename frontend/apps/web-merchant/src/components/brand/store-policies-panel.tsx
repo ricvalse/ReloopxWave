@@ -20,6 +20,7 @@ import { apiErrorMessage, getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 
 type Policy = components['schemas']['PolicyOut'];
+type PolicyIn = components['schemas']['PolicyIn'];
 type CustomPolicy = { title: string; body: string };
 
 type Field = { key: keyof PolicyForm; label: string; placeholder: string };
@@ -88,9 +89,9 @@ export function StorePoliciesPanel() {
     enabled: !!merchantId,
     queryFn: async (): Promise<Policy> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/catalog/{merchant_id}/policies' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/catalog/{merchant_id}/policies', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return data as Policy;
     },
@@ -115,15 +116,16 @@ export function StorePoliciesPanel() {
   const save = useMutation({
     mutationFn: async () => {
       if (!merchantId) throw new Error('Merchant context mancante');
-      const body: Record<string, unknown> = {
+      const body: PolicyIn = {
         custom_policies: custom.filter((c) => c.title.trim() && c.body.trim()),
       };
-      for (const [k, v] of Object.entries(form)) body[k] = v.trim() || null;
+      for (const [k, v] of Object.entries(form))
+        body[k as keyof PolicyForm] = v.trim() || null;
       const api = getApiClient();
-      const { error } = await api.PUT('/catalog/{merchant_id}/policies' as never, {
+      const { error } = await api.PUT('/catalog/{merchant_id}/policies', {
         params: { path: { merchant_id: merchantId } },
         body,
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => {

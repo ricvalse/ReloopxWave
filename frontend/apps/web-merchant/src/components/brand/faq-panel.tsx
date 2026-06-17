@@ -42,9 +42,9 @@ export function FaqPanel() {
     enabled: !!merchantId,
     queryFn: async (): Promise<Faq[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/catalog/{merchant_id}/faq' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/catalog/{merchant_id}/faq', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return (data as Faq[]) ?? [];
     },
@@ -54,8 +54,8 @@ export function FaqPanel() {
 
   const putEntry = async (e: Faq) => {
     const api = getApiClient();
-    const { error } = await api.PUT('/catalog/{merchant_id}/faq/{faq_id}' as never, {
-      params: { path: { merchant_id: merchantId, faq_id: e.id } },
+    const { error } = await api.PUT('/catalog/{merchant_id}/faq/{faq_id}', {
+      params: { path: { merchant_id: merchantId!, faq_id: e.id } },
       body: {
         question: e.question,
         answer: e.answer,
@@ -63,7 +63,7 @@ export function FaqPanel() {
         sort_order: e.sort_order,
         is_active: e.is_active,
       },
-    } as never);
+    });
     if (error) throw new Error(apiErrorMessage(error));
   };
 
@@ -75,9 +75,9 @@ export function FaqPanel() {
   const del = useMutation({
     mutationFn: async (id: string) => {
       const api = getApiClient();
-      const { error } = await api.DELETE('/catalog/{merchant_id}/faq/{faq_id}' as never, {
-        params: { path: { merchant_id: merchantId, faq_id: id } },
-      } as never);
+      const { error } = await api.DELETE('/catalog/{merchant_id}/faq/{faq_id}', {
+        params: { path: { merchant_id: merchantId!, faq_id: id } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['faq', merchantId] }),
@@ -273,16 +273,16 @@ function FaqFormDialog({
       };
       const api = getApiClient();
       if (entry) {
-        const { error } = await api.PUT('/catalog/{merchant_id}/faq/{faq_id}' as never, {
+        const { error } = await api.PUT('/catalog/{merchant_id}/faq/{faq_id}', {
           params: { path: { merchant_id: merchantId, faq_id: entry.id } },
           body,
-        } as never);
+        });
         if (error) throw new Error(apiErrorMessage(error));
       } else {
-        const { error } = await api.POST('/catalog/{merchant_id}/faq' as never, {
+        const { error } = await api.POST('/catalog/{merchant_id}/faq', {
           params: { path: { merchant_id: merchantId } },
           body,
-        } as never);
+        });
         if (error) throw new Error(apiErrorMessage(error));
       }
     },

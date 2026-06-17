@@ -29,10 +29,9 @@ export function ConversationsRoute({ selectedId }: ConversationsRouteProps) {
     staleTime: 60_000,
     queryFn: async (): Promise<Record<string, unknown>> => {
       const api = getApiClient();
-      const { data, error } = await api.GET(
-        '/bot-config/{merchant_id}/resolved' as never,
-        { params: { path: { merchant_id: merchantId } } } as never,
-      );
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return (data as Record<string, unknown>) ?? {};
     },

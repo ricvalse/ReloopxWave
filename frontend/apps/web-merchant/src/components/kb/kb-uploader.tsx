@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button, ButtonSpinner, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
-import { Upload } from 'lucide-react';
+import { Link2, Upload } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
@@ -13,11 +13,15 @@ type UploadArgs = { file: File; title: string };
 
 const KB_BUCKET = 'kb-documents';
 
+type Mode = 'file' | 'url';
+
 export function KnowledgeBaseUploader() {
   const { merchantId } = useMerchantId();
   const queryClient = useQueryClient();
+  const [mode, setMode] = useState<Mode>('file');
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
+  const [url, setUrl] = useState('');
   // Determinate % on the impersonation proxy path (XHR); null elsewhere.
   const [progress, setProgress] = useState<number | null>(null);
 
@@ -53,10 +57,10 @@ export function KnowledgeBaseUploader() {
 
       const api = getApiClient();
       const source = inferSource(file);
-      const { data, error } = await api.POST('/knowledge-base/{merchant_id}/docs' as never, {
+      const { data, error } = await api.POST('/knowledge-base/{merchant_id}/docs', {
         params: { path: { merchant_id: merchantId } },
         body: { title, source, storage_path: storagePath },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data;
     },
@@ -68,6 +72,24 @@ export function KnowledgeBaseUploader() {
     onSettled: () => setProgress(null),
   });
 
+  const urlMutation = useMutation({
+    mutationFn: async ({ title, url }: { title: string; url: string }) => {
+      if (!merchantId) throw new Error('No merchant context');
+      const api = getApiClient();
+      const { data, error } = await api.POST('/knowledge-base/{merchant_id}/docs', {
+        params: { path: { merchant_id: merchantId } },
+        body: { title, source: 'url', url },
+      });
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['kb-docs'] });
+      setUrl('');
+      setTitle('');
+    },
+  });
+
   return (
     <Card>
       <CardHeader>
@@ -75,6 +97,33 @@ export function KnowledgeBaseUploader() {
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
+          <div className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+            <button
+              type="button"
+              onClick={() => setMode('file')}
+              className={`flex flex-1 items-center justify-center gap-2 rounded px-3 py-1.5 ${
+                mode === 'file'
+                  ? 'bg-background shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Upload className="h-4 w-4" />
+              File
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('url')}
+              className={`flex flex-1 items-center justify-center gap-2 rounded px-3 py-1.5 ${
+                mode === 'url'
+                  ? 'bg-background shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Link2 className="h-4 w-4" />
+              URL
+            </button>
+          </div>
+
           <input
             type="text"
             placeholder="Titolo (es. Listino 2026)"
@@ -82,44 +131,82 @@ export function KnowledgeBaseUploader() {
             onChange={(e) => setTitle(e.target.value)}
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
-          <label className="flex cursor-pointer items-center gap-3 rounded-md border-2 border-dashed border-input p-6 text-sm text-muted-foreground hover:bg-accent">
-            <Upload className="h-5 w-5" />
-            <span>
-              {file ? file.name : 'Trascina o seleziona PDF, DOCX, TXT (max 20 MB)'}
-            </span>
-            <input
-              type="file"
-              accept=".pdf,.docx,.txt"
-              className="hidden"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
-          </label>
-          {mutation.error ? (
-            <p className="text-sm text-destructive">
-              {mutation.error instanceof Error ? mutation.error.message : 'Upload failed'}
-            </p>
-          ) : null}
-          {mutation.isPending && progress !== null ? (
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-[width] duration-150"
-                style={{ width: `${progress}%` }}
+
+          {mode === 'file' ? (
+            <>
+              <label className="flex cursor-pointer items-center gap-3 rounded-md border-2 border-dashed border-input p-6 text-sm text-muted-foreground hover:bg-accent">
+                <Upload className="h-5 w-5" />
+                <span>
+                  {file ? file.name : 'Trascina o seleziona PDF, DOCX, TXT (max 20 MB)'}
+                </span>
+                <input
+                  type="file"
+                  accept=".pdf,.docx,.txt"
+                  className="hidden"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              {mutation.error ? (
+                <p className="text-sm text-destructive">
+                  {mutation.error instanceof Error ? mutation.error.message : 'Upload failed'}
+                </p>
+              ) : null}
+              {mutation.isPending && progress !== null ? (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-150"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              ) : null}
+              <Button
+                disabled={!file || !title || mutation.isPending}
+                onClick={() => file && title && mutation.mutate({ file, title })}
+              >
+                {mutation.isPending ? (
+                  <>
+                    <ButtonSpinner />
+                    Caricamento…
+                  </>
+                ) : (
+                  'Carica e indicizza'
+                )}
+              </Button>
+            </>
+          ) : (
+            <>
+              <input
+                type="url"
+                placeholder="https://esempio.it/pagina"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
-            </div>
-          ) : null}
-          <Button
-            disabled={!file || !title || mutation.isPending}
-            onClick={() => file && title && mutation.mutate({ file, title })}
-          >
-            {mutation.isPending ? (
-              <>
-                <ButtonSpinner />
-                Caricamento…
-              </>
-            ) : (
-              'Carica e indicizza'
-            )}
-          </Button>
+              <p className="text-xs text-muted-foreground">
+                Il bot scaricherà e indicizzerà il contenuto della pagina.
+              </p>
+              {urlMutation.error ? (
+                <p className="text-sm text-destructive">
+                  {urlMutation.error instanceof Error
+                    ? urlMutation.error.message
+                    : 'Creazione fallita'}
+                </p>
+              ) : null}
+              <Button
+                disabled={!url || !title || urlMutation.isPending}
+                onClick={() => url && title && urlMutation.mutate({ title, url })}
+              >
+                {urlMutation.isPending ? (
+                  <>
+                    <ButtonSpinner />
+                    Indicizzazione…
+                  </>
+                ) : (
+                  'Indicizza da URL'
+                )}
+              </Button>
+            </>
+          )}
         </div>
       </CardContent>
     </Card>

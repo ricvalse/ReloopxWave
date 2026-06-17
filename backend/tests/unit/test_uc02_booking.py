@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_core.actions.booking import BookSlotHandler
+from ai_core.actions.booking import BookSlotHandler, ProposeSlotsHandler
 from ai_core.conversation_service import TurnContext
 from ai_core.orchestrator import OrchestratorAction
 from db import ResolvedGHLIntegration
@@ -213,6 +213,69 @@ async def test_book_slot_taken_proposes_alternatives(
     assert sender.calls[0]["text"].count("•") == 3
     # No booking → nothing mirrored locally.
     assert appt_calls == []
+
+
+async def test_propose_slots_offers_availability(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    from ai_core.actions import booking as mod
+
+    client = AsyncMock()
+    client.get_free_slots = AsyncMock(
+        return_value=[
+            {"startTime": "2026-04-25T09:00:00+02:00"},
+            {"startTime": "2026-04-25T10:00:00+02:00"},
+            {"startTime": "2026-04-25T11:00:00+02:00"},
+        ]
+    )
+    client.close = AsyncMock()
+    monkeypatch.setattr(mod, "GHLClient", MagicMock(side_effect=lambda **kw: client))
+
+    sender = FakeSender()
+    handler = ProposeSlotsHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+    await handler(OrchestratorAction(kind="propose_slots", payload={}), turn_ctx)
+
+    client.get_free_slots.assert_awaited_once()
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"].count("•") == 3
+    assert "disponibilità" in sender.calls[0]["text"].lower()
+
+
+async def test_book_slot_transient_error_falls_back_gracefully(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    # A 5xx from create_booking is transient — we must NOT propose alternatives
+    # (which would be misleading and likely fail too); send the graceful fallback.
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    from ai_core.actions import booking as mod
+
+    client = AsyncMock()
+    client.upsert_contact = AsyncMock(return_value={"contact": {"id": "CT-1"}})
+    client.create_booking = AsyncMock(
+        side_effect=IntegrationError("ghl down", error_code="ghl_request_failed", status=503)
+    )
+    client.get_free_slots = AsyncMock()
+    client.close = AsyncMock()
+    monkeypatch.setattr(mod, "GHLClient", MagicMock(side_effect=lambda **kw: client))
+
+    sender = FakeSender()
+    handler = BookSlotHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot", payload={"preferred_start_iso": "2026-07-15T15:00:00"}
+        ),
+        turn_ctx,
+    )
+
+    client.get_free_slots.assert_not_awaited()  # no misleading alternatives
+    assert len(sender.calls) == 1
+    assert "ricontatteremo" in sender.calls[0]["text"].lower()
+    assert "•" not in sender.calls[0]["text"]
 
 
 async def test_book_slot_naive_time_interpreted_in_merchant_tz(

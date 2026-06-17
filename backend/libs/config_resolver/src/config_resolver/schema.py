@@ -10,7 +10,14 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class _StrictModel(BaseModel):
+    """Base for every config section: `extra='forbid'` so an unknown/typo'd key
+    is rejected on write instead of being silently dropped (UC-10)."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ConfigKey(StrEnum):
@@ -119,6 +126,23 @@ class ConfigKey(StrEnum):
     DELIVERY_MULTI_BUBBLE_MAX = "delivery.multi_bubble_max"
     DELIVERY_BUBBLE_MAX_CHARS = "delivery.bubble_max_chars"
 
+    # UC-13 Objections — the category vocabulary the classifier maps to.
+    OBJECTION_CATEGORIES = "objections.categories"
+
+    # Conversation lifecycle — idle close drives the objection-extraction sweep.
+    CONVERSATION_IDLE_CLOSE_MINUTES = "conversation.idle_close_minutes"
+
+
+# Default objection vocabulary (UC-13); merchants can override per-tenant.
+_DEFAULT_OBJECTION_CATEGORIES = [
+    "prezzo",
+    "fiducia",
+    "tempistiche",
+    "concorrenza",
+    "necessita",
+    "altro",
+]
+
 
 SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
@@ -181,10 +205,12 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.DELIVERY_TYPING_JITTER_FRAC: 0.0,
     ConfigKey.DELIVERY_MULTI_BUBBLE_MAX: 1,
     ConfigKey.DELIVERY_BUBBLE_MAX_CHARS: 600,
+    ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,
+    ConfigKey.CONVERSATION_IDLE_CLOSE_MINUTES: 120,
 }
 
 
-class BotConfigSchema(BaseModel):
+class BotConfigSchema(_StrictModel):
     """Typed view over the JSONB override bag — validated at write time."""
 
     no_answer: NoAnswerConfig = Field(default_factory=lambda: NoAnswerConfig())
@@ -200,9 +226,11 @@ class BotConfigSchema(BaseModel):
     booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
     business: BusinessConfig = Field(default_factory=lambda: BusinessConfig())
     delivery: DeliveryConfig = Field(default_factory=lambda: DeliveryConfig())
+    objections: ObjectionsConfig = Field(default_factory=lambda: ObjectionsConfig())
+    conversation: ConversationConfig = Field(default_factory=lambda: ConversationConfig())
 
 
-class NoAnswerConfig(BaseModel):
+class NoAnswerConfig(_StrictModel):
     first_reminder_min: int = Field(120, ge=30, le=480)
     second_reminder_min: int = Field(1440, ge=720, le=2880)
     max_followups: int = Field(2, ge=1, le=4)
@@ -211,7 +239,7 @@ class NoAnswerConfig(BaseModel):
     second_reminder_text: str | None = Field(default=None, max_length=1000)
 
 
-class ReactivationConfig(BaseModel):
+class ReactivationConfig(_StrictModel):
     dormant_days: int = Field(90, ge=30, le=180)
     interval_days: int = Field(7, ge=3, le=30)
     max_attempts: int = Field(3, ge=1, le=5)
@@ -220,30 +248,30 @@ class ReactivationConfig(BaseModel):
     message: str | None = Field(default=None, max_length=1000)
 
 
-class PipelineConfig(BaseModel):
+class PipelineConfig(_StrictModel):
     advance_threshold: int = Field(60, ge=0, le=100)
     default_pipeline_id: str | None = None
     new_stage_id: str | None = None
     qualified_stage_id: str | None = None
 
 
-class ScoringConfig(BaseModel):
+class ScoringConfig(_StrictModel):
     hot_threshold: int = Field(80, ge=50, le=100)
     cold_threshold: int = Field(30, ge=0, le=50)
 
 
-class ABTestConfig(BaseModel):
+class ABTestConfig(_StrictModel):
     default_split: list[int] = Field(default_factory=lambda: [50, 50])
     min_sample: int = Field(100, ge=50, le=1000)
 
 
-class ScheduleConfig(BaseModel):
+class ScheduleConfig(_StrictModel):
     active_hours: str = "24/7"
     off_hours_message: str = "Grazie per averci contattato! Ti risponderemo al più presto."
     timezone: str = "Europe/Rome"
 
 
-class RagConfig(BaseModel):
+class RagConfig(_StrictModel):
     top_k: int = Field(5, ge=3, le=10)
     min_score: float = Field(0.7, ge=0.5, le=0.9)
 
@@ -255,7 +283,7 @@ class BotExample(BaseModel):
     a: str = Field(max_length=600)
 
 
-class BotSurfaceConfig(BaseModel):
+class BotSurfaceConfig(_StrictModel):
     language: str = "it"
     # Legacy freeform tone. Kept as the fallback when `register == "auto"` so
     # merchants who customized it keep today's behavior verbatim.
@@ -277,7 +305,7 @@ class BotSurfaceConfig(BaseModel):
     auto_reply_enabled: bool = False
 
 
-class BusinessConfig(BaseModel):
+class BusinessConfig(_StrictModel):
     """Merchant-facing profile — names, offer, hours. All optional. Fed into
     the orchestrator's system prompt so the bot speaks for this merchant.
     """
@@ -292,21 +320,34 @@ class BusinessConfig(BaseModel):
     website: str | None = Field(default=None, max_length=300)
 
 
-class EscalationConfig(BaseModel):
+class EscalationConfig(_StrictModel):
     enabled: bool = True
 
 
-class PrivacyConfig(BaseModel):
+class PrivacyConfig(_StrictModel):
     retention_months: int = Field(24, ge=6, le=60)
 
 
-class BookingConfig(BaseModel):
+class BookingConfig(_StrictModel):
     default_calendar_id: str | None = None
     default_duration_min: int = Field(30, ge=15, le=240)
     lookahead_days: int = Field(14, ge=1, le=60)
 
 
-class DeliveryConfig(BaseModel):
+class ObjectionsConfig(_StrictModel):
+    # The category vocabulary the objection classifier maps to (UC-13).
+    categories: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_OBJECTION_CATEGORIES), max_length=30
+    )
+
+
+class ConversationConfig(_StrictModel):
+    # Minutes of inactivity after which a conversation is auto-closed and its
+    # objections extracted (UC-13 sweep).
+    idle_close_minutes: int = Field(120, ge=15, le=10080)
+
+
+class DeliveryConfig(_StrictModel):
     """Human-feel delivery knobs. All-zero defaults reproduce today's instant,
     single-bubble, no-typing-indicator send."""
 

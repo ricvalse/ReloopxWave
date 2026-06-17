@@ -14,20 +14,29 @@ from __future__ import annotations
 
 from typing import Any
 
+from config_resolver import SYSTEM_DEFAULTS, ConfigKey
 from db import ConversationRepository, session_scope
 from shared import get_logger
 
 logger = get_logger(__name__)
 
-# 48h of silence => consider the conversation closed. Comfortably past the
-# default follow-up window (up to ~24h for the second reminder).
-IDLE_CLOSE_MINUTES = 2880
+# Fallback idle threshold (minutes) if the config default is somehow unset.
+_IDLE_CLOSE_FALLBACK_MIN = 120
+
+
+def _idle_close_minutes() -> int:
+    """Idle threshold from config (system default for the cascade), not a magic
+    constant. The sweep is tenant-agnostic so we read the system-level default;
+    a merchant override only changes the per-merchant view, not this sweep."""
+    raw = SYSTEM_DEFAULTS.get(ConfigKey.CONVERSATION_IDLE_CLOSE_MINUTES)
+    return int(raw) if isinstance(raw, int) else _IDLE_CLOSE_FALLBACK_MIN
 
 
 async def close_idle_conversations(ctx: dict[str, Any]) -> dict[str, Any]:
+    min_idle = _idle_close_minutes()
     async with session_scope() as session:
         repo = ConversationRepository(session)
-        closed_ids = await repo.close_idle_active(min_idle_minutes=IDLE_CLOSE_MINUTES)
+        closed_ids = await repo.close_idle_active(min_idle_minutes=min_idle)
     # Commit happened on context exit; now fan out extraction jobs.
 
     redis = ctx.get("redis")

@@ -118,6 +118,26 @@ async def update_template(
     return _tmpl_out(updated)
 
 
+@router.delete(
+    "/templates/{template_id}",
+    status_code=204,
+    dependencies=[Depends(require_role("agency_admin"))],
+)
+async def delete_template(
+    template_id: UUID,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> None:
+    repo = BotTemplateRepository(session)
+    existing = await repo.get(template_id)
+    if existing is None or existing.tenant_id != ctx.tenant_id:
+        raise NotFoundError("Template not found")
+    await repo.delete(template_id)
+    # Removing a template (especially the default) shifts the cascade for every
+    # merchant that inherited from it, so drop the whole tenant's config cache.
+    await _invalidate_tenant_merchants(session, ctx.tenant_id)
+
+
 # ---- Persona presets + suggested rules (read-only catalogs) --------------
 
 

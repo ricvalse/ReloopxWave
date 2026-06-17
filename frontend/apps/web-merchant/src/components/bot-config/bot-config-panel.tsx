@@ -25,7 +25,7 @@ type OverridesOut = components['schemas']['OverridesOut'];
 type OverrideBag = Record<string, Record<string, unknown>>;
 type FormState = Record<string, unknown>; // flat, dotted keys
 
-type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea' | 'select' | 'tags';
+type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea' | 'select' | 'tags' | 'calendar';
 
 type BadgeKind = 'inherited' | 'customized' | 'locked' | 'lock-override';
 
@@ -141,7 +141,12 @@ const SECTIONS: SectionDef[] = [
     fields: [
       { key: 'booking.default_duration_min', label: 'Durata default (min)', kind: 'int', min: 15, max: 240 },
       { key: 'booking.lookahead_days', label: 'Lookahead (giorni)', kind: 'int', min: 1, max: 60 },
-      { key: 'booking.default_calendar_id', label: 'Calendar ID default', kind: 'text' },
+      {
+        key: 'booking.default_calendar_id',
+        label: 'Calendario default',
+        kind: 'calendar',
+        help: 'Calendario GHL su cui il bot prenota. Se GHL non è collegato, inserisci l’ID manualmente.',
+      },
     ],
   },
   {
@@ -392,9 +397,9 @@ export function BotConfigPanel() {
     staleTime: 60_000,
     queryFn: async (): Promise<BotConfig> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as BotConfig;
     },
@@ -406,9 +411,9 @@ export function BotConfigPanel() {
     staleTime: 60_000,
     queryFn: async (): Promise<OverridesOut> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as OverridesOut;
     },
@@ -453,11 +458,11 @@ export function BotConfigPanel() {
       const nested = inflate(bag);
       const api = getApiClient();
       const { data, error } = await api.PUT(
-        '/bot-config/{merchant_id}/overrides' as never,
+        '/bot-config/{merchant_id}/overrides',
         {
-          params: { path: { merchant_id: merchantId } },
+          params: { path: { merchant_id: merchantId! } },
           body: { overrides: nested },
-        } as never,
+        },
       );
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data;
@@ -779,6 +784,9 @@ function FieldInput({
       </select>
     );
   }
+  if (field.kind === 'calendar') {
+    return <CalendarFieldInput value={value} disabled={disabled} onChange={onChange} />;
+  }
   if (field.kind === 'tags') {
     // Value is a string[]; render one item per line. Emit null when empty so
     // `inflate` drops it and the field reads as Inherited (not an empty override).
@@ -811,6 +819,66 @@ function FieldInput({
       placeholder={placeholder ?? field.placeholder}
       className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
     />
+  );
+}
+
+function CalendarFieldInput({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: unknown;
+  disabled: boolean;
+  onChange: (v: unknown) => void;
+}) {
+  const { merchantId } = useMerchantId();
+  const calendars = useQuery({
+    queryKey: ['ghl', 'calendars', merchantId],
+    enabled: !!merchantId,
+    queryFn: async (): Promise<{ id: string; name: string | null }[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/integrations/ghl/calendars', {
+        params: { query: { merchant_id: merchantId! } },
+      });
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return (data as { calendars: { id: string; name: string | null }[] }).calendars;
+    },
+  });
+
+  const current = value === null || value === undefined ? '' : String(value);
+  const options = calendars.data ?? [];
+
+  // GHL not connected (or no calendars): fall back to a manual id input so the
+  // booking config still works without the picker.
+  if (!calendars.isLoading && !calendars.isError && options.length === 0) {
+    return (
+      <input
+        type="text"
+        disabled={disabled}
+        value={current}
+        onChange={(e) => onChange(e.target.value || null)}
+        placeholder="Calendar ID (GHL non collegato)"
+        className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
+      />
+    );
+  }
+
+  const hasCurrent = options.some((c) => c.id === current);
+  return (
+    <select
+      disabled={disabled || calendars.isLoading}
+      value={current}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="h-9 w-72 rounded-md border border-input bg-background px-3 text-sm"
+    >
+      <option value="">{calendars.isLoading ? 'Caricamento…' : '— Seleziona calendario —'}</option>
+      {options.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name || c.id}
+        </option>
+      ))}
+      {current && !hasCurrent ? <option value={current}>{current} (corrente)</option> : null}
+    </select>
   );
 }
 
@@ -857,7 +925,7 @@ function PersonaPresets({
     staleTime: Infinity,
     queryFn: async (): Promise<TonePreset[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/tone-presets' as never, {} as never);
+      const { data, error } = await api.GET('/bot-config/tone-presets');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return (data as TonePreset[]) ?? [];
     },
@@ -867,7 +935,7 @@ function PersonaPresets({
     staleTime: Infinity,
     queryFn: async (): Promise<SuggestedRules> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/suggested-rules' as never, {} as never);
+      const { data, error } = await api.GET('/bot-config/suggested-rules');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as SuggestedRules;
     },

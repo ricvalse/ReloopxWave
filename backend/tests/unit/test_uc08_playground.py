@@ -167,6 +167,26 @@ async def test_playground_carries_incoming_state(wiring) -> None:
     assert any(e["kind"] == "update_score" for e in out.events)
 
 
+async def test_playground_override_rules_ride_on_system_prompt(wiring) -> None:
+    runner, orch, _ = wiring
+
+    await runner.run(
+        PlaygroundRequest(
+            tenant_id=uuid.uuid4(),
+            merchant_id=uuid.uuid4(),
+            history=[],
+            user_message="ciao",
+            override_rules=["Non offrire mai sconti", "  "],
+        )
+    )
+
+    # The tester's rules are appended to the canonical prompt for this turn.
+    ctx = orch.run.call_args.args[0]
+    assert ctx.system_prompt.startswith("PROMPT-CANONICO")
+    assert "Regole aggiuntive dal tester (playground):" in ctx.system_prompt
+    assert "- Non offrire mai sconti" in ctx.system_prompt
+
+
 async def test_playground_records_turn_sentiment_in_returned_state(wiring) -> None:
     runner, _orch, _ = wiring
 

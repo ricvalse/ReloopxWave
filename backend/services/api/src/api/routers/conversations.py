@@ -26,7 +26,17 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+class TemplateSendIn(BaseModel):
+    """An approved WhatsApp template to send out of the 24h window (CC-WA)."""
+
+    name: str = Field(min_length=1, max_length=512)
+    language: str = "it"
+    variables: list[str] = Field(default_factory=list)
+
+
 class SendMessageIn(BaseModel):
+    # For a template send, `text` is the human-readable preview stored on the
+    # inbox row; the actual wire payload is built from `template`.
     text: str = Field(min_length=1, max_length=4096)
     client_message_id: str = Field(
         min_length=8,
@@ -36,6 +46,9 @@ class SendMessageIn(BaseModel):
             "the frontend's optimistic insert with the canonical row."
         ),
     )
+    # When set, the message is sent as an approved template (allowed outside the
+    # 24h window); when null it's a free-text reply (24h-window gated).
+    template: TemplateSendIn | None = None
 
 
 class MessageOut(BaseModel):
@@ -170,6 +183,15 @@ async def send_message(
         )
         return _to_out(existing)
 
+    meta: dict[str, Any] = {"sender_type": "human"}
+    if body.template is not None:
+        meta["kind"] = "template"
+        meta["template"] = {
+            "name": body.template.name,
+            "language": body.template.language,
+            "variables": list(body.template.variables),
+        }
+
     msg = Message(
         id=uuid4(),
         conversation_id=conversation_id,
@@ -179,7 +201,7 @@ async def send_message(
         content=body.text,
         status="pending",
         client_message_id=body.client_message_id,
-        meta={"sender_type": "human"},
+        meta=meta,
     )
     session.add(msg)
     await session.flush()
@@ -266,6 +288,8 @@ def _conv_to_dict(c: Conversation) -> dict[str, Any]:
         "message_count": c.message_count,
         "started_at": c.started_at.isoformat() if c.started_at else None,
         "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+        # Drives the composer's 24h-window banner / template selector (CC-WA).
+        "last_inbound_at": c.last_inbound_at.isoformat() if c.last_inbound_at else None,
         "meta": dict(c.meta) if c.meta else None,
     }
 

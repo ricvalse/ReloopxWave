@@ -2,8 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
-import { Send, Sparkles } from 'lucide-react';
+import { Check, Save, Send, Sparkles } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
+
+const parseRules = (raw: string): string[] =>
+  raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
 
 type ChatTurn = { role: 'user' | 'assistant'; content: string };
 
@@ -59,6 +65,10 @@ export function PlaygroundChat() {
   const [pending, setPending] = useState(false);
   const [lastMeta, setLastMeta] = useState<TurnMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rulesText, setRulesText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
+  const [rulesError, setRulesError] = useState<string | null>(null);
   const idRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -82,13 +92,15 @@ export function PlaygroundChat() {
       const api = getApiClient();
       // Dry-run: only the conversation + carried simulated state travel. Prompt,
       // settings, tools and scoring are resolved server-side, identical to a real turn.
-      const { data, error: apiError } = await api.POST('/playground/turn' as never, {
+      const overrideRules = parseRules(rulesText);
+      const { data, error: apiError } = await api.POST('/playground/turn', {
         body: {
           history: priorHistory,
           user_message: text,
           state: leadState ?? undefined,
+          override_rules: overrideRules.length ? overrideRules : undefined,
         },
-      } as never);
+      });
       if (apiError) throw new Error(typeof apiError === 'string' ? apiError : JSON.stringify(apiError));
 
       const payload = data as {
@@ -164,6 +176,27 @@ export function PlaygroundChat() {
     setError(null);
   };
 
+  const saveRules = async () => {
+    if (saving) return;
+    setSaving(true);
+    setRulesError(null);
+    setSavedOk(false);
+    try {
+      const api = getApiClient();
+      const { error: apiError } = await api.POST('/playground/apply', {
+        body: { rules: parseRules(rulesText) },
+      });
+      if (apiError)
+        throw new Error(typeof apiError === 'string' ? apiError : JSON.stringify(apiError));
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 3000);
+    } catch (e) {
+      setRulesError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_300px]">
       <Card>
@@ -236,6 +269,46 @@ export function PlaygroundChat() {
       </Card>
 
       <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Regole</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Una regola per riga. Vengono applicate alla preview immediatamente (effimere). Salvale
+              per renderle attive anche nel bot reale.
+            </p>
+            <textarea
+              value={rulesText}
+              onChange={(e) => {
+                setRulesText(e.target.value);
+                setSavedOk(false);
+              }}
+              placeholder={'Es. Usa sempre il tu\nNon promettere sconti\nProponi una call entro 2 turni'}
+              rows={6}
+              className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={saving}
+              onClick={saveRules}
+            >
+              {savedOk ? (
+                <>
+                  <Check className="mr-2 h-4 w-4" /> Regole salvate
+                </>
+              ) : (
+                <>
+                  <Save className="mr-2 h-4 w-4" /> {saving ? 'Salvataggio…' : 'Salva regole'}
+                </>
+              )}
+            </Button>
+            {rulesError ? <p className="text-xs text-destructive">{rulesError}</p> : null}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Stato lead simulato</CardTitle>

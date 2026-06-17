@@ -182,6 +182,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
                   ? undefined
                   : 'Composer disabilitato per questo merchant. Contatta il supporto.'
               }
+              lastInboundAt={selectedConversation.last_inbound_at}
             />
           </>
         )}

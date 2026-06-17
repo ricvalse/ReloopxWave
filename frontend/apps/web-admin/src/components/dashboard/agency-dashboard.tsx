@@ -28,9 +28,9 @@ export function AgencyDashboard() {
     queryKey: ['agency-kpis'],
     queryFn: async (): Promise<AgencyKpis> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/analytics/agency/kpis' as never, {
+      const { data, error } = await api.GET('/analytics/agency/kpis', {
         params: { query: { since_days: 30 } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as AgencyKpis;
     },

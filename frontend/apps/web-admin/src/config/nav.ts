@@ -1,4 +1,13 @@
-import { FileCode, Inbox, LayoutDashboard, Plug, Settings, Sparkles, Users } from 'lucide-react';
+import {
+  FileCode,
+  Inbox,
+  LayoutDashboard,
+  MessagesSquare,
+  Plug,
+  Settings,
+  Sparkles,
+  Users,
+} from 'lucide-react';
 import type { NavSection } from '@reloop/ui';
 
 export const adminNav: NavSection[] = [
@@ -14,6 +23,7 @@ export const adminNav: NavSection[] = [
       { href: '/merchants', label: 'Merchant', icon: Users },
       { href: '/integrations', label: 'Integrazioni', icon: Plug },
       { href: '/templates', label: 'Template bot', icon: FileCode },
+      { href: '/reports/objections', label: 'Obiezioni', icon: MessagesSquare },
       { href: '/fine-tuning', label: 'Fine-tuning', icon: Sparkles },
     ],
   },

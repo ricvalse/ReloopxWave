@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from ai_core import ChatMessage, ObjectionClassifierInput, classify_objections
 from ai_core.llm import OpenAIClient
+from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
     ObjectionRepository,
@@ -46,6 +47,7 @@ async def extract_for_conversation(ctx: dict[str, Any], *, conversation_id: str)
             return {"conversation_id": conversation_id, "status": "not_found"}
         conv, tenant_id = row
         merchant_id = conv.merchant_id
+        variant_id = conv.variant_id
 
     # Per-tenant session: load messages, classify, persist.
     tenant_ctx = TenantContext(
@@ -60,22 +62,28 @@ async def extract_for_conversation(ctx: dict[str, Any], *, conversation_id: str)
         if not messages:
             return {"conversation_id": conversation_id, "objections": 0}
 
+        # Per-merchant category vocabulary (UC-13): fed into the classifier prompt.
+        resolved = await ConfigResolver(session).resolve(
+            ConfigKey.OBJECTION_CATEGORIES, merchant_id=merchant_id
+        )
+        payload = ObjectionClassifierInput(
+            conversation_id=conversation_id,
+            transcript=[ChatMessage(role=r, content=c) for r, c in messages],
+        )
+        if isinstance(resolved, list) and resolved:
+            payload.categories = [str(c) for c in resolved]
+
         client = OpenAIClient(
             api_key=settings.openai_api_key,
             model=settings.llm_model_default,
         )
-        results = await classify_objections(
-            client,
-            payload=ObjectionClassifierInput(
-                conversation_id=conversation_id,
-                transcript=[ChatMessage(role=r, content=c) for r, c in messages],
-            ),
-        )
+        results = await classify_objections(client, payload=payload)
 
         await objections_repo.replace_for_conversation(
             merchant_id=merchant_id,
             conversation_id=conv_uuid,
             items=[o.model_dump() for o in results],
+            bot_variant=variant_id,
         )
 
         await AnalyticsRepository(session).emit(

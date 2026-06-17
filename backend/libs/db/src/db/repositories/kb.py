@@ -48,3 +48,16 @@ class KnowledgeBaseRepository:
         doc = await self._session.get(KnowledgeBaseDoc, doc_id)
         if doc is not None:
             doc.status = status
+
+    async def delete_doc(self, merchant_id: UUID, doc_id: UUID) -> bool:
+        """Cancella il doc (i kb_chunks seguono per FK ON DELETE CASCADE).
+
+        Scoped sul merchant: ritorna ``False`` se il doc non esiste o appartiene
+        a un altro merchant, così l'endpoint può rispondere 404.
+        """
+        doc = await self._session.get(KnowledgeBaseDoc, doc_id)
+        if doc is None or doc.merchant_id != merchant_id:
+            return False
+        await self._session.delete(doc)
+        await self._session.flush()
+        return True

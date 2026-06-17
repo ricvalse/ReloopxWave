@@ -49,6 +49,7 @@ from integrations import (
     sign_oauth_state,
     verify_oauth_state,
 )
+from integrations.ghl.client import GHLClient, GHLTokenBundle
 from shared import (
     IntegrationError,
     NotFoundError,
@@ -123,6 +124,15 @@ class LocationsOut(BaseModel):
 
 class LinkLocationIn(BaseModel):
     merchant_id: UUID
+
+
+class CalendarOut(BaseModel):
+    id: str
+    name: str | None = None
+
+
+class CalendarsOut(BaseModel):
+    calendars: list[CalendarOut]
 
 
 # ---- GHL marketplace (agency OAuth + location linking) ---------------------
@@ -280,6 +290,62 @@ async def ghl_unlink_location(
     if not unlinked:
         raise NotFoundError("GHL location not found", location_id=location_id)
     return Response(status_code=204)
+
+
+@router.get("/ghl/calendars", response_model=CalendarsOut)
+async def ghl_calendars(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+) -> CalendarsOut:
+    """Calendars available for the merchant's linked GHL location (UC-02 picker).
+
+    Returns an empty list (not an error) when GHL isn't connected yet, so the
+    booking-config UI degrades to the manual calendar-id field.
+    """
+    target = merchant_id or _require_merchant_scope(ctx)
+    settings = get_settings()
+    kek = settings.integrations_kek_base64
+    ghl = await IntegrationRepository(session, kek_base64=kek).resolve_ghl(target)
+    if ghl is None or not ghl.location_id:
+        return CalendarsOut(calendars=[])
+
+    async def _persist(bundle: GHLTokenBundle) -> None:
+        if not bundle.location_id:
+            return
+        async with session_scope() as token_session:
+            await GHLMarketplaceRepository(token_session, kek_base64=kek).set_location_token(
+                location_id=bundle.location_id,
+                access_token=bundle.access_token,
+                refresh_token=bundle.refresh_token,
+                expires_at=bundle.expires_at,
+            )
+
+    client = GHLClient(
+        token_bundle=GHLTokenBundle(
+            access_token=ghl.access_token,
+            refresh_token=ghl.refresh_token,
+            expires_at=ghl.expires_at,
+            location_id=ghl.location_id,
+        ),
+        client_id=settings.ghl_client_id,
+        client_secret=settings.ghl_client_secret,
+        on_token_refresh=_persist,
+    )
+    try:
+        raw = await client.list_calendars(ghl.location_id)
+    except IntegrationError as exc:
+        logger.warning("ghl.calendars.failed", merchant_id=str(target), error_code=exc.error_code)
+        return CalendarsOut(calendars=[])
+    finally:
+        await client.close()
+
+    calendars = [
+        CalendarOut(id=str(c["id"]), name=c.get("name"))
+        for c in raw
+        if isinstance(c, dict) and c.get("id")
+    ]
+    return CalendarsOut(calendars=calendars)
 
 
 # ---- WhatsApp router-mediated onboarding ----------------------------------

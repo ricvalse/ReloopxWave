@@ -19,9 +19,9 @@ export function CreateMerchantForm({ onClose }: { onClose: () => void }) {
   const create = useMutation({
     mutationFn: async (payload: MerchantIn): Promise<Merchant> => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/merchants/' as never, {
+      const { data, error } = await api.POST('/merchants/', {
         body: payload,
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant;
     },

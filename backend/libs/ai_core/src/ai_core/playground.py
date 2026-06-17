@@ -32,7 +32,11 @@ from ai_core.conversation_service import _to_chat_history as to_chat_history
 from ai_core.conversation_service import build_cascade_system_prompt
 from ai_core.delivery import compute_typing_delay_s, split_into_bubbles
 from ai_core.orchestrator import ConversationContext, ConversationOrchestrator, OrchestratorResponse
-from ai_core.playground_sim import PlaygroundLeadState, simulate_turn
+from ai_core.playground_sim import (
+    PlaygroundLeadState,
+    apply_playground_rule_overrides,
+    simulate_turn,
+)
 from ai_core.rag import Embedder, RAGEngine
 from ai_core.sentiment import SentimentAnalyzer
 from config_resolver import ConfigKey, ConfigResolver
@@ -55,6 +59,11 @@ class PlaygroundRequest:
     history: list[PlaygroundMessage]
     user_message: str
     state: PlaygroundLeadState | None = None
+    # Ad-hoc rules the tester adds on the fly (hard/soft). Appended to the
+    # cascade system prompt for THIS turn only — never persisted (see
+    # `apply_playground_rule_overrides`). To save them, the client calls the
+    # `POST /playground/apply` endpoint, which writes them as a config override.
+    override_rules: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -168,6 +177,9 @@ class PlaygroundRunner:
                 merchant_id=req.merchant_id,
                 prior_sentiment=state_in.lead_sentiment,
             )
+            # The tester's ad-hoc rules ride on top of the canonical prompt for
+            # this turn only, so the preview reflects them before they are saved.
+            system_prompt = apply_playground_rule_overrides(system_prompt, req.override_rules)
 
             hot_threshold = await _int(ConfigKey.SCORING_HOT_THRESHOLD, 80)
             cold_threshold = await _int(ConfigKey.SCORING_COLD_THRESHOLD, 30)

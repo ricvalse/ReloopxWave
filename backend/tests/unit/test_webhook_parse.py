@@ -137,3 +137,13 @@ def test_parse_phone_echo_missing_field_returns_empty() -> None:
         ]
     }
     assert parse_message_echo_payload(inbound) == []
+
+
+def test_extract_campaign_from_referral() -> None:
+    from api.routers.webhooks import _extract_campaign
+
+    assert _extract_campaign({"referral": {"source_id": "AD123", "headline": "Promo"}}) == "AD123"
+    assert _extract_campaign({"referral": {"headline": "Promo estiva"}}) == "Promo estiva"
+    assert _extract_campaign({}) is None
+    assert _extract_campaign({"referral": "not-a-dict"}) is None
+    assert _extract_campaign({"referral": {}}) is None

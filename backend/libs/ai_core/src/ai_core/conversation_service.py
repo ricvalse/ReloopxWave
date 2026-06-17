@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID
 
@@ -30,6 +31,7 @@ from ai_core.orchestrator import (
     OrchestratorResponse,
 )
 from ai_core.rag import Embedder, RAGEngine
+from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals
 from ai_core.sentiment import SentimentAnalyzer
 from config_resolver import ConfigKey, ConfigResolver
@@ -523,6 +525,7 @@ class ConversationService:
         from_phone: str,
         text: str,
         wa_message_id: str | None,
+        campaign: str | None = None,
     ) -> PersistOutcome:
         """Phase 1: durably persist the inbound and evaluate the auto-reply gate.
 
@@ -556,7 +559,9 @@ class ConversationService:
                 await msgs.find_by_wa_message_id(wa_message_id) if wa_message_id else None
             )
 
-            lead = await leads.upsert_by_phone(merchant_id=resolved.merchant_id, phone=from_phone)
+            lead = await leads.upsert_by_phone(
+                merchant_id=resolved.merchant_id, phone=from_phone, campaign=campaign
+            )
 
             conv = await convs.get_active(
                 merchant_id=resolved.merchant_id, wa_contact_phone=from_phone
@@ -580,11 +585,27 @@ class ConversationService:
             history = await msgs.list_history(conv.id, limit=30)
             history = [m for m in history if m.wa_message_id != wa_message_id]
 
-            # Auto-reply gate: AND of merchant master + per-thread takeover.
+            # UC-06 opt-out: a STOP/CANCELLA reply unsubscribes the lead — record
+            # it, suppress auto-replies, and exclude them from reactivation. The
+            # inbound message itself is still persisted below.
+            opted_out = _is_opt_out(text)
+            if opted_out and await leads.mark_opted_out(lead.id):
+                await analytics.emit(
+                    tenant_id=resolved.tenant_id,
+                    merchant_id=resolved.merchant_id,
+                    event_type="lead.opted_out",
+                    subject_type="lead",
+                    subject_id=lead.id,
+                    variant_id=conv.variant_id,
+                    properties={"conversation_id": str(conv.id)},
+                )
+
+            # Auto-reply gate: AND of merchant master + per-thread takeover, and
+            # never auto-reply to a lead who just opted out.
             merchant_auto_reply = await self._resolve_bool(
                 session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=False
             )
-            auto_reply_on = bool(merchant_auto_reply and conv.auto_reply)
+            auto_reply_on = bool(merchant_auto_reply and conv.auto_reply) and not opted_out
 
             if already_persisted is None:
                 await msgs.persist_user_message(
@@ -600,7 +621,11 @@ class ConversationService:
                 if not auto_reply_on:
                     received_props["auto_reply_skipped"] = True
                     received_props["reason"] = (
-                        "merchant_off" if not merchant_auto_reply else "conversation_off"
+                        "opted_out"
+                        if opted_out
+                        else "merchant_off"
+                        if not merchant_auto_reply
+                        else "conversation_off"
                     )
                 await analytics.emit(
                     tenant_id=resolved.tenant_id,
@@ -787,7 +812,22 @@ class ConversationService:
                 variant_id=rc.conv_variant_id,
             )
 
-            response: OrchestratorResponse = await self._orchestrator.run(ctx, rc.text)
+            # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
+            # configured off-hours message instead of an LLM reply. Reuses the
+            # normal delivery + scoring path (the synthetic response carries no
+            # actions). Fails open: no/empty message or unparseable hours → reply.
+            off_hours_message = await self._maybe_off_hours_message(session, resolved.merchant_id)
+            response: OrchestratorResponse
+            if off_hours_message is not None:
+                response = OrchestratorResponse(
+                    reply_text=off_hours_message,
+                    model="off_hours",
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                )
+            else:
+                response = await self._orchestrator.run(ctx, rc.text)
 
             # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
             # inbound text. Best-effort — never blocks the reply. Updates the lead
@@ -1098,6 +1138,30 @@ class ConversationService:
         """Thin wrapper over the module-level `build_store_policy_lines`."""
         return await build_store_policy_lines(session, merchant_id)
 
+    async def _maybe_off_hours_message(self, session: Any, merchant_id: UUID) -> str | None:
+        """Return the configured off-hours reply if the merchant is outside its
+        active hours right now, else None (bot replies normally). Best-effort:
+        any resolution error → None (fail open)."""
+        try:
+            resolver = ConfigResolver(session)
+            active_hours = await resolver.resolve(
+                ConfigKey.SCHEDULE_ACTIVE_HOURS, merchant_id=merchant_id
+            )
+            tz_name = await resolver.resolve(ConfigKey.SCHEDULE_TIMEZONE, merchant_id=merchant_id)
+            if is_within_active_hours(
+                str(active_hours) if active_hours is not None else None,
+                str(tz_name) if tz_name is not None else None,
+                datetime.now(tz=UTC),
+            ):
+                return None
+            message = await resolver.resolve(
+                ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE, merchant_id=merchant_id
+            )
+            return message if isinstance(message, str) and message.strip() else None
+        except Exception as e:
+            logger.warning("uc01.active_hours_failed", error=str(e), merchant_id=str(merchant_id))
+            return None
+
     async def _resolve_int(
         self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: int
     ) -> int:
@@ -1159,6 +1223,17 @@ def _with_score_action(
     if not found:
         out.append(OrchestratorAction(kind="update_score", payload={"signals": signals}))
     return out
+
+
+# Exact (normalised) messages that unsubscribe a lead (UC-06). Kept to exact
+# matches so a sentence like "stop un attimo" doesn't accidentally opt-out.
+_OPT_OUT_KEYWORDS = frozenset(
+    {"stop", "cancella", "cancellami", "annulla", "disiscrivi", "disiscrivimi", "unsubscribe"}
+)
+
+
+def _is_opt_out(text: str) -> bool:
+    return text.strip().lower().rstrip(".!") in _OPT_OUT_KEYWORDS
 
 
 async def _assign_ab_variant(session: Any, *, merchant_id: UUID, lead_id: UUID) -> str | None:

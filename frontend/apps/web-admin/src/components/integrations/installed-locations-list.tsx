@@ -23,10 +23,7 @@ export function InstalledLocationsList() {
     queryKey: ['ghl', 'locations'],
     queryFn: async (): Promise<GhlLocation[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET(
-        '/integrations/ghl/locations' as never,
-        {} as never,
-      );
+      const { data, error } = await api.GET('/integrations/ghl/locations');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return (data as { locations: GhlLocation[] }).locations;
     },
@@ -36,7 +33,7 @@ export function InstalledLocationsList() {
     queryKey: ['merchants', 'list'],
     queryFn: async (): Promise<Merchant[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/merchants/' as never, {} as never);
+      const { data, error } = await api.GET('/merchants/');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant[];
     },
@@ -49,11 +46,11 @@ export function InstalledLocationsList() {
     mutationFn: async ({ locationId, merchantId }: { locationId: string; merchantId: string }) => {
       const api = getApiClient();
       const { error } = await api.POST(
-        '/integrations/ghl/locations/{location_id}/link' as never,
+        '/integrations/ghl/locations/{location_id}/link',
         {
           params: { path: { location_id: locationId } },
           body: { merchant_id: merchantId },
-        } as never,
+        },
       );
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
     },
@@ -64,8 +61,8 @@ export function InstalledLocationsList() {
     mutationFn: async (locationId: string) => {
       const api = getApiClient();
       const { error } = await api.POST(
-        '/integrations/ghl/locations/{location_id}/unlink' as never,
-        { params: { path: { location_id: locationId } } } as never,
+        '/integrations/ghl/locations/{location_id}/unlink',
+        { params: { path: { location_id: locationId } } },
       );
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
     },

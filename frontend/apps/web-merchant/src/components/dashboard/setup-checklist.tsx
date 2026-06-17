@@ -43,7 +43,7 @@ export function SetupChecklist() {
     enabled: !!merchantId,
     queryFn: async (): Promise<IntegrationStatus> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/integrations/status' as never, {} as never);
+      const { data, error } = await api.GET('/integrations/status');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as IntegrationStatus;
     },
@@ -57,9 +57,9 @@ export function SetupChecklist() {
     staleTime: 60_000,
     queryFn: async (): Promise<ResolvedConfig> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as ResolvedConfig;
     },
@@ -70,9 +70,9 @@ export function SetupChecklist() {
     enabled: !!merchantId,
     queryFn: async (): Promise<KbList> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/knowledge-base/{merchant_id}/docs' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/knowledge-base/{merchant_id}/docs', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as KbList;
     },

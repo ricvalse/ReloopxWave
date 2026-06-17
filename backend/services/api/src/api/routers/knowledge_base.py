@@ -19,9 +19,10 @@ from pydantic import BaseModel
 
 from api.dependencies.session import CurrentContext, DBSession
 from db import KnowledgeBaseRepository
+from db.models import KnowledgeBaseDoc
 from db.session import TenantContext
 from integrations import SupabaseStorage
-from shared import PermissionDeniedError, get_logger, get_settings
+from shared import NotFoundError, PermissionDeniedError, get_logger, get_settings
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,20 @@ class KbDocOut(BaseModel):
     source: str
     status: str
     chunk_count: int
+    status_detail: str | None = None
+    last_error: str | None = None
+
+    @classmethod
+    def from_model(cls, d: KnowledgeBaseDoc) -> KbDocOut:
+        return cls(
+            id=d.id,
+            title=d.title,
+            source=d.source,
+            status=d.status,
+            chunk_count=d.chunk_count,
+            status_detail=d.status_detail,
+            last_error=d.last_error,
+        )
 
 
 @router.post("/{merchant_id}/docs", response_model=KbDocOut)
@@ -71,13 +86,7 @@ async def create_doc(
     arq = request.app.state.arq
     await arq.enqueue_job("kb_reindex", str(doc.id), _job_id=f"kb:reindex:{doc.id}")
 
-    return KbDocOut(
-        id=doc.id,
-        title=doc.title,
-        source=doc.source,
-        status=doc.status,
-        chunk_count=doc.chunk_count,
-    )
+    return KbDocOut.from_model(doc)
 
 
 @router.post("/{merchant_id}/upload", response_model=KbDocOut)
@@ -136,13 +145,7 @@ async def upload_doc(
     arq = request.app.state.arq
     await arq.enqueue_job("kb_reindex", str(doc.id), _job_id=f"kb:reindex:{doc.id}")
 
-    return KbDocOut(
-        id=doc.id,
-        title=doc.title,
-        source=doc.source,
-        status=doc.status,
-        chunk_count=doc.chunk_count,
-    )
+    return KbDocOut.from_model(doc)
 
 
 @router.post("/{merchant_id}/docs/{doc_id}/reindex")
@@ -162,6 +165,21 @@ async def reindex(
     return {"enqueued": True, "doc_id": str(doc_id)}
 
 
+@router.delete("/{merchant_id}/docs/{doc_id}", status_code=204)
+async def delete_doc(
+    merchant_id: UUID,
+    doc_id: UUID,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> None:
+    """Rimuove un doc dalla KB (i chunk seguono per FK CASCADE)."""
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = KnowledgeBaseRepository(session)
+    deleted = await repo.delete_doc(merchant_id, doc_id)
+    if not deleted:
+        raise NotFoundError("Documento non trovato", doc_id=str(doc_id))
+
+
 @router.get("/{merchant_id}/docs", response_model=list[KbDocOut])
 async def list_docs(
     merchant_id: UUID,
@@ -171,16 +189,7 @@ async def list_docs(
     _assert_merchant_scope(ctx, merchant_id)
     repo = KnowledgeBaseRepository(session)
     docs = await repo.list_for_merchant(merchant_id)
-    return [
-        KbDocOut(
-            id=d.id,
-            title=d.title,
-            source=d.source,
-            status=d.status,
-            chunk_count=d.chunk_count,
-        )
-        for d in docs
-    ]
+    return [KbDocOut.from_model(d) for d in docs]
 
 
 def _assert_merchant_scope(ctx: TenantContext, merchant_id: UUID) -> None:

@@ -22,7 +22,7 @@ export function FineTuningPanel() {
     queryKey: ['ft-models'],
     queryFn: async (): Promise<FtModel[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/fine-tuning/models' as never, {} as never);
+      const { data, error } = await api.GET('/fine-tuning/models');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as FtModel[];
     },
@@ -33,9 +33,9 @@ export function FineTuningPanel() {
   const run = useMutation({
     mutationFn: async (): Promise<void> => {
       const api = getApiClient();
-      const { error } = await api.POST('/fine-tuning/run' as never, {
+      const { error } = await api.POST('/fine-tuning/run', {
         body: { since_days: 28, base_model: 'gpt-4.1-mini' },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
     },
     onSuccess: () => {

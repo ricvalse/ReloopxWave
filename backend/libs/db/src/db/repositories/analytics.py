@@ -68,15 +68,22 @@ class AnalyticsRepository:
         merchant_id: UUID,
         hot_threshold: int = 80,
         since_days: int = 30,
+        campaign: str | None = None,
     ) -> MerchantKpis:
         since = datetime.now(tz=UTC) - timedelta(days=since_days)
 
+        # `campaign` scopes the lead-based metrics (total / hot / booking_rate
+        # denominator). Event counts stay merchant-wide — analytics_events don't
+        # carry the campaign — so with a filter set the rates are indicative.
+        lead_filters = [Lead.merchant_id == merchant_id]
+        if campaign:
+            lead_filters.append(Lead.campaign == campaign)
         leads_row = (
             await self._session.execute(
                 select(
                     func.count(Lead.id),
                     func.sum(case((Lead.score >= hot_threshold, 1), else_=0)),
-                ).where(Lead.merchant_id == merchant_id)
+                ).where(*lead_filters)
             )
         ).one()
         leads_total = int(leads_row[0] or 0)
@@ -114,6 +121,22 @@ class AnalyticsRepository:
             booking_rate=booking_rate,
             reminders_sent=reminders_sent,
         )
+
+    async def list_campaigns(self, *, merchant_id: UUID) -> list[str]:
+        """Distinct campaigns seen for a merchant — populates the dashboard filter."""
+        rows = (
+            (
+                await self._session.execute(
+                    select(Lead.campaign)
+                    .where(Lead.merchant_id == merchant_id, Lead.campaign.is_not(None))
+                    .distinct()
+                    .order_by(Lead.campaign)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [str(c) for c in rows if c]
 
     async def score_distribution(self, *, merchant_id: UUID) -> list[dict[str, int]]:
         expr = (func.floor(Lead.score / 10) * 10).label("bucket")

@@ -18,7 +18,7 @@ export function SettingsPanel() {
     queryKey: ['tenants', 'me'],
     queryFn: async (): Promise<Tenant> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/tenants/me' as never, {} as never);
+      const { data, error } = await api.GET('/tenants/me');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Tenant;
     },

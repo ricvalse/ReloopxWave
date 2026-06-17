@@ -39,10 +39,11 @@ export function ProductCatalogPanel() {
     queryKey: ['products', merchantId],
     enabled: !!merchantId,
     queryFn: async (): Promise<Product[]> => {
+      if (!merchantId) return [];
       const api = getApiClient();
-      const { data, error } = await api.GET('/catalog/{merchant_id}/products' as never, {
+      const { data, error } = await api.GET('/catalog/{merchant_id}/products', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return (data as Product[]) ?? [];
     },
@@ -50,10 +51,11 @@ export function ProductCatalogPanel() {
 
   const del = useMutation({
     mutationFn: async (id: string) => {
+      if (!merchantId) throw new Error('Merchant context mancante');
       const api = getApiClient();
-      const { error } = await api.DELETE('/catalog/{merchant_id}/products/{product_id}' as never, {
+      const { error } = await api.DELETE('/catalog/{merchant_id}/products/{product_id}', {
         params: { path: { merchant_id: merchantId, product_id: id } },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['products', merchantId] }),
@@ -235,23 +237,21 @@ function ProductFormDialog({
         images: lines(images),
         variants: product?.variants ?? [],
         price: price.trim() ? Number(price) : null,
+        currency: product?.currency ?? 'EUR',
         is_active: true,
       };
       const api = getApiClient();
       if (product) {
-        const { error } = await api.PUT(
-          '/catalog/{merchant_id}/products/{product_id}' as never,
-          {
-            params: { path: { merchant_id: merchantId, product_id: product.id } },
-            body,
-          } as never,
-        );
+        const { error } = await api.PUT('/catalog/{merchant_id}/products/{product_id}', {
+          params: { path: { merchant_id: merchantId, product_id: product.id } },
+          body,
+        });
         if (error) throw new Error(apiErrorMessage(error));
       } else {
-        const { error } = await api.POST('/catalog/{merchant_id}/products' as never, {
+        const { error } = await api.POST('/catalog/{merchant_id}/products', {
           params: { path: { merchant_id: merchantId } },
           body,
-        } as never);
+        });
         if (error) throw new Error(apiErrorMessage(error));
       }
     },

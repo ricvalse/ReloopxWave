@@ -98,9 +98,9 @@ export function BrandInfoPanel() {
     staleTime: 60_000,
     queryFn: async (): Promise<BotConfig> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return data as BotConfig;
     },
@@ -112,9 +112,9 @@ export function BrandInfoPanel() {
     staleTime: 60_000,
     queryFn: async (): Promise<OverridesOut> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides' as never, {
-        params: { path: { merchant_id: merchantId } },
-      } as never);
+      const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides', {
+        params: { path: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return data as OverridesOut;
     },
@@ -148,10 +148,10 @@ export function BrandInfoPanel() {
       }
       const overrides = { ...existing, business };
       const api = getApiClient();
-      const { error } = await api.PUT('/bot-config/{merchant_id}/overrides' as never, {
-        params: { path: { merchant_id: merchantId } },
+      const { error } = await api.PUT('/bot-config/{merchant_id}/overrides', {
+        params: { path: { merchant_id: merchantId! } },
         body: { overrides },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => {

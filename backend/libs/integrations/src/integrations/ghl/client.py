@@ -94,6 +94,14 @@ class GHLClient:
         resp = await self._request("GET", f"/opportunities/pipelines?locationId={location_id}")
         return cast(list[dict[str, Any]], resp.get("pipelines", []))
 
+    # ---- Calendars (UC-02 — calendar picker) ----
+
+    async def list_calendars(self, location_id: str) -> list[dict[str, Any]]:
+        """Calendars configured for a location — powers the booking calendar
+        picker so the merchant selects which calendar the bot books into."""
+        resp = await self._request("GET", f"/calendars/?locationId={location_id}")
+        return cast(list[dict[str, Any]], resp.get("calendars", []))
+
     async def move_opportunity(
         self, opportunity_id: str, *, stage_id: str, pipeline_id: str
     ) -> dict[str, Any]:

@@ -304,8 +304,21 @@ class BookSlotHandler:
                     calendar_id=calendar_id,
                     tz_name=tz_name,
                 )
-            except IntegrationError:
-                # Propose alternatives
+            except IntegrationError as e:
+                # A transient server error (5xx) is NOT a slot conflict — querying
+                # free slots would likely fail too, and proposing alternatives
+                # would be misleading. Fall back gracefully ("ti ricontatteremo").
+                if not _is_slot_conflict(e):
+                    return BookingOutcome(
+                        False,
+                        None,
+                        None,
+                        [],
+                        "booking_error",
+                        opportunity_id=opportunity_id,
+                        pipeline_id=pipeline_id if opportunity_id else None,
+                    )
+                # Slot taken / unavailable (4xx) → propose alternatives.
                 window_start = slot_start - timedelta(hours=2)
                 window_end = slot_start + timedelta(days=3)
                 slots = await client.get_free_slots(
@@ -389,7 +402,135 @@ class BookSlotHandler:
         )
 
 
+class ProposeSlotsHandler:
+    """UC-02 — proactively offer free calendar slots when the lead wants to book
+    but hasn't named a time. Read-only: fetches availability and messages the top
+    few options; the lead's pick then drives a `book_slot` on the next turn."""
+
+    kind = "propose_slots"
+
+    def __init__(
+        self,
+        *,
+        kek_base64: str,
+        ghl_client_id: str,
+        ghl_client_secret: str,
+        reply_sender: ReplySender,
+    ) -> None:
+        self._kek = kek_base64
+        self._client_id = ghl_client_id
+        self._client_secret = ghl_client_secret
+        self._reply_sender = reply_sender
+
+    async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
+        worker_ctx = TenantContext(
+            tenant_id=turn_ctx.tenant_id,
+            merchant_id=turn_ctx.merchant_id,
+            role="worker",
+            actor_id=turn_ctx.merchant_id,
+        )
+        suggestions: list[str] = []
+        async with tenant_session(worker_ctx) as session:
+            ghl = await IntegrationRepository(session, kek_base64=self._kek).resolve_ghl(
+                turn_ctx.merchant_id
+            )
+            if ghl is None:
+                return
+            config = ConfigResolver(session)
+            calendar_id = action.payload.get("calendar_id") or await config.resolve(
+                ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
+            )
+            if not calendar_id:
+                return
+            tz_name = (
+                await config.resolve(ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id)
+                or "Europe/Rome"
+            )
+            lookahead = action.payload.get("lookahead_days") or await config.resolve(
+                ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=turn_ctx.merchant_id
+            )
+
+            async def _persist(bundle: GHLTokenBundle) -> None:
+                if not bundle.location_id:
+                    return
+                async with session_scope() as token_session:
+                    await GHLMarketplaceRepository(
+                        token_session, kek_base64=self._kek
+                    ).set_location_token(
+                        location_id=bundle.location_id,
+                        access_token=bundle.access_token,
+                        refresh_token=bundle.refresh_token,
+                        expires_at=bundle.expires_at,
+                    )
+
+            suggestions = await self._fetch_slots(
+                ghl=ghl,
+                calendar_id=str(calendar_id),
+                tz_name=str(tz_name),
+                lookahead_days=int(lookahead) if lookahead else 14,
+                on_token_refresh=_persist,
+            )
+
+        if suggestions:
+            await self._reply_sender.send(
+                phone_number_id=turn_ctx.phone_number_id,
+                api_key=turn_ctx.api_key,
+                to_phone=turn_ctx.lead_phone,
+                text=format_slot_proposal(suggestions),
+                waba_base_url=turn_ctx.waba_base_url,
+            )
+
+    async def _fetch_slots(
+        self,
+        *,
+        ghl: Any,
+        calendar_id: str,
+        tz_name: str,
+        lookahead_days: int,
+        on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
+    ) -> list[str]:
+        client = GHLClient(
+            token_bundle=GHLTokenBundle(
+                access_token=ghl.access_token,
+                refresh_token=ghl.refresh_token,
+                expires_at=ghl.expires_at,
+                location_id=ghl.location_id,
+            ),
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            on_token_refresh=on_token_refresh,
+        )
+        try:
+            tz = _resolve_tz(tz_name)
+            start = _next_business_hour(tz)
+            end = start + timedelta(days=lookahead_days)
+            slots = await client.get_free_slots(
+                calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat()
+            )
+            raw = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
+            return [s for s in raw if s]
+        except IntegrationError:
+            return []
+        finally:
+            await client.close()
+
+
 # ---- helpers --------------------------------------------------------------
+
+
+def format_slot_proposal(suggested: list[str]) -> str:
+    """Italian WhatsApp text offering free slots (UC-02 proactive proposal)."""
+    options = "\n".join(f"• {_format_human(s)}" for s in suggested)
+    return f"Ecco le prime disponibilità:\n{options}\nFammi sapere quale preferisci."
+
+
+def _is_slot_conflict(e: IntegrationError) -> bool:
+    """True when a `create_booking` failure means the slot can't be satisfied as
+    requested (4xx / unknown) → propose alternatives. A 5xx is a transient server
+    error → caller falls back gracefully instead of suggesting (likely-failing)
+    slots. Status is carried in `IntegrationError.context['status']`."""
+    status = e.context.get("status")
+    return not isinstance(status, int) or status < 500
 
 
 def _resolve_tz(tz_name: str) -> tzinfo:

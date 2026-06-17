@@ -54,10 +54,9 @@ export function ConnectWhatsAppButton({
   const startOnboard = useMutation({
     mutationFn: async (): Promise<{ signup_url: string }> => {
       const api = getApiClient();
-      const { data, error } = await api.POST(
-        '/integrations/whatsapp/onboard/start' as never,
-        { body: {} } as never,
-      );
+      const { data, error } = await api.POST('/integrations/whatsapp/onboard/start', {
+        body: {},
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as { signup_url: string };
     },
@@ -66,10 +65,7 @@ export function ConnectWhatsAppButton({
   const disconnect = useMutation({
     mutationFn: async (): Promise<void> => {
       const api = getApiClient();
-      const { error } = await api.POST(
-        '/integrations/whatsapp/disconnect' as never,
-        {} as never,
-      );
+      const { error } = await api.POST('/integrations/whatsapp/disconnect');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
     },
   });

@@ -23,9 +23,9 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
     queryKey: ['merchants', merchantId],
     queryFn: async (): Promise<Merchant> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/merchants/{merchant_id}' as never, {
+      const { data, error } = await api.GET('/merchants/{merchant_id}', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant;
     },
@@ -39,9 +39,9 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const suspend = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/merchants/{merchant_id}/suspend' as never, {
+      const { data, error } = await api.POST('/merchants/{merchant_id}/suspend', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant;
     },
@@ -52,9 +52,9 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const resume = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/merchants/{merchant_id}/resume' as never, {
+      const { data, error } = await api.POST('/merchants/{merchant_id}/resume', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant;
     },
@@ -65,9 +65,9 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const remove = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { error } = await api.DELETE('/merchants/{merchant_id}' as never, {
+      const { error } = await api.DELETE('/merchants/{merchant_id}', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
     },
     onSuccess: () => {
@@ -81,9 +81,9 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const impersonate = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/admin/impersonation/{merchant_id}' as never, {
+      const { data, error } = await api.POST('/admin/impersonation/{merchant_id}', {
         params: { path: { merchant_id: merchantId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as {
         access_token: string;
@@ -113,10 +113,10 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
   const saveName = useMutation({
     mutationFn: async (name: string) => {
       const api = getApiClient();
-      const { data, error } = await api.PATCH('/merchants/{merchant_id}' as never, {
+      const { data, error } = await api.PATCH('/merchants/{merchant_id}', {
         params: { path: { merchant_id: merchantId } },
         body: { name },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Merchant;
     },
@@ -329,9 +329,9 @@ function MerchantKpiSection({ merchantId }: { merchantId: string }) {
     queryKey: ['merchant-kpis', merchantId],
     queryFn: async (): Promise<Kpis> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/analytics/merchant/kpis' as never, {
+      const { data, error } = await api.GET('/analytics/merchant/kpis', {
         params: { query: { merchant_id: merchantId, since_days: 30 } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Kpis;
     },

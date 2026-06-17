@@ -3,7 +3,28 @@
 from __future__ import annotations
 
 from ai_core.orchestrator import OrchestratorAction
-from ai_core.playground_sim import PlaygroundLeadState, simulate_turn
+from ai_core.playground_sim import (
+    PlaygroundLeadState,
+    apply_playground_rule_overrides,
+    simulate_turn,
+)
+
+
+def test_apply_rule_overrides_appends_block() -> None:
+    out = apply_playground_rule_overrides(
+        "PROMPT", ["Non offrire mai sconti", "Rispondi in massimo due frasi"]
+    )
+    assert out.startswith("PROMPT")
+    assert "Regole aggiuntive dal tester (playground):" in out
+    assert "- Non offrire mai sconti" in out
+    assert "- Rispondi in massimo due frasi" in out
+
+
+def test_apply_rule_overrides_noop_when_empty_or_blank() -> None:
+    assert apply_playground_rule_overrides("PROMPT", None) == "PROMPT"
+    assert apply_playground_rule_overrides("PROMPT", []) == "PROMPT"
+    # Whitespace-only rules are dropped, leaving the prompt untouched.
+    assert apply_playground_rule_overrides("PROMPT", ["  ", ""]) == "PROMPT"
 
 
 def _sim(actions, state=None, sentiment=None, history_len=0):

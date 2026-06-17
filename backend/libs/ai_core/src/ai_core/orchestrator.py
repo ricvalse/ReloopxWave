@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 
 
 ActionKind = Literal[
+    "propose_slots",
     "book_slot",
     "reschedule_slot",
     "cancel_slot",
@@ -127,13 +128,17 @@ _RESPONSE_SCHEMA_HINT = (
     "{\n"
     '  "reply_text": "<testo da inviare all\'utente>",\n'
     '  "actions": [\n'
-    '    {"kind": "book_slot|reschedule_slot|cancel_slot|move_pipeline|update_score|escalate_human|none", "payload": {}}\n'
+    '    {"kind": "propose_slots|book_slot|reschedule_slot|cancel_slot|move_pipeline|update_score|escalate_human|none", "payload": {}}\n'
     "  ]\n"
     "}\n"
     "`reply_text` non deve mai essere vuoto. `actions` può essere lista vuota.\n"
     "\n"
     "Emetti le azioni SOLO quando i criteri sono soddisfatti, riempiendo il payload:\n"
     "\n"
+    '- "propose_slots": quando l\'utente vuole prenotare ma NON ha ancora indicato '
+    'un orario preciso (chiede disponibilità, "quando siete liberi?"). Mostra gli '
+    "slot liberi così l'utente ne sceglie uno. payload: {} (reply_text può anticipare "
+    '"ti mostro le disponibilità").\n'
     '- "book_slot": quando l\'utente vuole prenotare/fissare un appuntamento o '
     "accetta uno slot proposto. payload: {\n"
     '    "preferred_start_iso": "<ISO8601, es. 2026-06-03T15:00:00, se l\'utente indica data/ora>",\n'

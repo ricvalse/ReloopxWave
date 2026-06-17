@@ -130,13 +130,17 @@ async def _maybe_send(
             if isinstance(override, str) and override.strip()
             else REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
         )
+        # UC-06: personalise the configured text. `{name}` is the only supported
+        # placeholder for now; a literal replace avoids str.format KeyErrors on
+        # stray braces in merchant copy.
+        fallback_text = fallback_text.replace("{name}", cand.name or "").strip()
 
         analytics = AnalyticsRepository(session)
         decision = decide_outbound(
             within_window=False,
             fallback_text=fallback_text,
             step=step,
-            context={"contact.phone": cand.phone},
+            context={"contact.phone": cand.phone, "contact.name": cand.name or ""},
         )
         if decision.mode == MODE_SKIP:
             logger.info(

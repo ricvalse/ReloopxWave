@@ -38,7 +38,7 @@ export function AbTestingPanel() {
     queryKey: ['ab', 'list'],
     queryFn: async (): Promise<Experiment[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/ab-test/' as never, {} as never);
+      const { data, error } = await api.GET('/ab-test/');
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Experiment[];
     },
@@ -47,9 +47,9 @@ export function AbTestingPanel() {
   const start = useMutation({
     mutationFn: async (experimentId: string): Promise<Experiment> => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/ab-test/{experiment_id}/start' as never, {
+      const { data, error } = await api.POST('/ab-test/{experiment_id}/start', {
         params: { path: { experiment_id: experimentId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Experiment;
     },
@@ -61,10 +61,10 @@ export function AbTestingPanel() {
   const stop = useMutation({
     mutationFn: async (experimentId: string): Promise<Experiment> => {
       const api = getApiClient();
-      const { data, error } = await api.POST('/ab-test/{experiment_id}/stop' as never, {
+      const { data, error } = await api.POST('/ab-test/{experiment_id}/stop', {
         params: { path: { experiment_id: experimentId } },
         body: {},
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Experiment;
     },
@@ -214,7 +214,7 @@ function CreateExperimentForm({
         min_sample_size: 100,
       };
       const api = getApiClient();
-      const { data, error } = await api.POST('/ab-test/' as never, { body: payload } as never);
+      const { data, error } = await api.POST('/ab-test/', { body: payload });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Experiment;
     },
@@ -380,9 +380,9 @@ function MetricsCard({ experimentId }: { experimentId: string }) {
     queryKey: ['ab', 'metrics', experimentId],
     queryFn: async (): Promise<Metrics> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/ab-test/{experiment_id}/metrics' as never, {
+      const { data, error } = await api.GET('/ab-test/{experiment_id}/metrics', {
         params: { path: { experiment_id: experimentId } },
-      } as never);
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Metrics;
     },

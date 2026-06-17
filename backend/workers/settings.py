@@ -45,6 +45,7 @@ from workers.scheduler.handlers import (
     kb_reindex,
     objection_extraction,
     reactivate_dormant_leads,
+    send_appointment_reminders,
     sync_appointments,
     template_status_sync,
 )
@@ -98,8 +99,9 @@ class WorkerSettings:
         integration_health_check,
         build_analytics_export,
         enforce_retention,
-        # queue: scheduler:jobs — UC-02 appointment reconcile poll
+        # queue: scheduler:jobs — UC-02 appointment reconcile poll + reminders
         sync_appointments,
+        send_appointment_reminders,
         # WhatsApp template approval-status sync (webhook-driven + cron fallback)
         apply_template_status_event,
         template_status_sync,
@@ -146,4 +148,7 @@ class WorkerSettings:
         # GHL sends no appointment webhooks, so this poll is the only way manual
         # GHL-side reschedules/cancels/new bookings reach the mirror.
         cron(sync_appointments, minute={10, 40}, timeout=300, max_tries=1),
+        # UC-02: send appointment reminders ahead of the slot. Every 30 min,
+        # offset from the reconcile poll; per-appointment dedup via meta marker.
+        cron(send_appointment_reminders, minute={5, 35}, timeout=300, max_tries=1),
     ]

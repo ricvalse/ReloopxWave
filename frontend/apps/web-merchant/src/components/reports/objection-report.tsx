@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Card,
@@ -7,11 +8,19 @@ import {
   CardHeader,
   CardTitle,
   EmptyState,
+  Input,
+  Label,
   SkeletonCard,
   SkeletonChart,
 } from '@reloop/ui';
 import { MessagesSquare } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
+
+const PERIOD_OPTIONS = [
+  { value: 7, label: 'Ultimi 7 giorni' },
+  { value: 30, label: 'Ultimi 30 giorni' },
+  { value: 90, label: 'Ultimi 90 giorni' },
+] as const;
 
 type ObjectionCategory = {
   category: string;
@@ -29,13 +38,23 @@ type TrendCell = { day: string; category: string; count: number };
 type ReportData = { categories: ObjectionCategory[]; trend: TrendCell[] };
 
 export function ObjectionReport() {
+  const [sinceDays, setSinceDays] = useState<number>(30);
+  const [variantInput, setVariantInput] = useState('');
+  const variantId = variantInput.trim();
+
   const query = useQuery({
-    queryKey: ['objection-report'],
+    queryKey: ['objection-report', sinceDays, variantId],
     queryFn: async (): Promise<ReportData> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/reports/objections' as never, {
-        params: { query: { since_days: 30, samples_per_category: 3 } },
-      } as never);
+      const { data, error } = await api.GET('/reports/objections', {
+        params: {
+          query: {
+            since_days: sinceDays,
+            samples_per_category: 3,
+            ...(variantId ? { variant_id: variantId } : {}),
+          },
+        },
+      });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       const d = data as { categories: ObjectionCategory[]; trend?: TrendCell[] };
       return { categories: d.categories ?? [], trend: d.trend ?? [] };
@@ -47,9 +66,19 @@ export function ObjectionReport() {
   const total = categories.reduce((acc, c) => acc + c.count, 0);
   const maxCount = Math.max(1, ...categories.map((c) => c.count));
 
+  const filters = (
+    <ObjectionFilters
+      sinceDays={sinceDays}
+      onSinceDaysChange={setSinceDays}
+      variantInput={variantInput}
+      onVariantChange={setVariantInput}
+    />
+  );
+
   if (query.isLoading) {
     return (
       <div className="space-y-4">
+        {filters}
         <SkeletonCard lines={5} />
         <Card>
           <CardHeader>
@@ -67,20 +96,29 @@ export function ObjectionReport() {
     );
   }
   if (query.error) {
-    return <p className="text-sm text-destructive">Errore: {String(query.error)}</p>;
+    return (
+      <div className="space-y-4">
+        {filters}
+        <p className="text-sm text-destructive">Errore: {String(query.error)}</p>
+      </div>
+    );
   }
   if (!categories.length) {
     return (
-      <EmptyState
-        icon={MessagesSquare}
-        title="Nessuna obiezione classificata"
-        description="Quando i clienti sollevano obiezioni nelle conversazioni, le ritrovi qui raggruppate per categoria."
-      />
+      <div className="space-y-4">
+        {filters}
+        <EmptyState
+          icon={MessagesSquare}
+          title="Nessuna obiezione classificata"
+          description="Quando i clienti sollevano obiezioni nelle conversazioni, le ritrovi qui raggruppate per categoria."
+        />
+      </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      {filters}
       <Card>
         <CardHeader>
           <CardTitle>Categorie ({total} obiezioni)</CardTitle>
@@ -132,6 +170,50 @@ export function ObjectionReport() {
         ))}
       </div>
     </div>
+  );
+}
+
+function ObjectionFilters({
+  sinceDays,
+  onSinceDaysChange,
+  variantInput,
+  onVariantChange,
+}: {
+  sinceDays: number;
+  onSinceDaysChange: (value: number) => void;
+  variantInput: string;
+  onVariantChange: (value: string) => void;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-4 pt-6 sm:flex-row sm:items-end">
+        <div className="space-y-1.5">
+          <Label htmlFor="objection-period">Periodo</Label>
+          <select
+            id="objection-period"
+            value={sinceDays}
+            onChange={(e) => onSinceDaysChange(Number(e.target.value))}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:w-48"
+          >
+            {PERIOD_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="objection-variant">Variante A/B (opzionale)</Label>
+          <Input
+            id="objection-variant"
+            value={variantInput}
+            onChange={(e) => onVariantChange(e.target.value)}
+            placeholder="es. A, B…"
+            className="sm:w-48"
+          />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

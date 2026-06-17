@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import DateTime, Integer, String, cast, func, select, text, update
@@ -21,6 +21,7 @@ class ReactivationCandidate:
     last_interaction_at: datetime
     attempts_sent: int
     last_reactivation_at: datetime | None
+    name: str | None = None
 
 
 class LeadRepository:
@@ -31,11 +32,18 @@ class LeadRepository:
         stmt = select(Lead).where(Lead.merchant_id == merchant_id, Lead.phone == phone)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
-    async def upsert_by_phone(self, *, merchant_id: UUID, phone: str) -> Lead:
-        """Get-or-create lead keyed on (merchant_id, phone). Returns the persisted row."""
+    async def upsert_by_phone(
+        self, *, merchant_id: UUID, phone: str, campaign: str | None = None
+    ) -> Lead:
+        """Get-or-create lead keyed on (merchant_id, phone). Returns the persisted row.
+
+        `campaign` is recorded only when the row is first created (it's in the
+        INSERT values, untouched by `on_conflict_do_nothing`), so a lead's
+        original attribution is never overwritten by a later organic message.
+        """
         stmt = (
             pg_insert(Lead)
-            .values(merchant_id=merchant_id, phone=phone)
+            .values(merchant_id=merchant_id, phone=phone, campaign=campaign)
             .on_conflict_do_nothing(index_elements=["merchant_id", "phone"])
             .returning(Lead.id)
         )
@@ -182,7 +190,11 @@ class LeadRepository:
         )
 
         last_conv = (
-            select(Conversation.lead_id, Conversation.wa_phone_number_id)
+            select(
+                Conversation.lead_id,
+                Conversation.wa_phone_number_id,
+                Conversation.auto_reply,
+            )
             .distinct(Conversation.lead_id)
             .order_by(Conversation.lead_id, Conversation.last_message_at.desc())
             .subquery()
@@ -201,6 +213,7 @@ class LeadRepository:
                 Lead.merchant_id,
                 Merchant.tenant_id,
                 Lead.phone,
+                Lead.name,
                 last_conv.c.wa_phone_number_id,
                 latest_conv_subq.c.last_interaction,
                 attempts_expr.label("attempts_sent"),
@@ -216,6 +229,10 @@ class LeadRepository:
                     last_attempt_raw.is_(None)
                     | (cast(last_attempt_raw, DateTime(timezone=True)) < interval_cutoff)
                 ),
+                # UC-06: never reactivate opted-out, erased, or human-takeover leads.
+                Lead.opted_out_at.is_(None),
+                Lead.status != "erased",
+                last_conv.c.auto_reply.is_(True),
             )
             .limit(500)
         )
@@ -232,9 +249,23 @@ class LeadRepository:
                     last_interaction_at=row["last_interaction"],
                     attempts_sent=int(row["attempts_sent"]),
                     last_reactivation_at=row["last_reactivation_at"],
+                    name=row["name"],
                 )
             )
         return results
+
+    async def mark_opted_out(self, lead_id: UUID) -> bool:
+        """Mark a lead opted-out (replied STOP/CANCELLA). Idempotent; returns True
+        only on the transition so the caller can emit the event once."""
+        lead = await self._session.get(Lead, lead_id)
+        if lead is None or lead.opted_out_at is not None:
+            return False
+        lead.opted_out_at = datetime.now(tz=UTC)
+        return True
+
+    async def is_opted_out(self, *, merchant_id: UUID, phone: str) -> bool:
+        stmt = select(Lead.opted_out_at).where(Lead.merchant_id == merchant_id, Lead.phone == phone)
+        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
 
     async def record_reactivation_sent(self, lead_id: UUID) -> None:
         await self._session.execute(

@@ -51,7 +51,7 @@ export function TemplatesPanel() {
     queryKey: ['whatsapp-templates'],
     queryFn: async (): Promise<Template[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/whatsapp-templates' as never, {} as never);
+      const { data, error } = await api.GET('/whatsapp-templates');
       if (error) throw new Error(apiErrorMessage(error));
       return data as Template[];
     },
@@ -63,9 +63,9 @@ export function TemplatesPanel() {
   const syncTemplate = useMutation({
     mutationFn: async (id: string) => {
       const api = getApiClient();
-      const { error } = await api.POST('/whatsapp-templates/{template_id}/sync' as never, {
+      const { error } = await api.POST('/whatsapp-templates/{template_id}/sync', {
         params: { path: { template_id: id } },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: invalidate,
@@ -74,9 +74,9 @@ export function TemplatesPanel() {
   const deleteTemplate = useMutation({
     mutationFn: async (id: string) => {
       const api = getApiClient();
-      const { error } = await api.DELETE('/whatsapp-templates/{template_id}' as never, {
+      const { error } = await api.DELETE('/whatsapp-templates/{template_id}', {
         params: { path: { template_id: id } },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: invalidate,
@@ -173,15 +173,16 @@ function CreateTemplateForm({ onCreated }: { onCreated: () => void }) {
   const create = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { error } = await api.POST('/whatsapp-templates' as never, {
+      const { error } = await api.POST('/whatsapp-templates', {
         body: {
           purpose,
           category,
           language,
           body,
+          header_type: 'NONE',
           footer: footer || null,
         },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: onCreated,

@@ -46,7 +46,7 @@ export function FlowsPanel() {
     queryKey: ['flows'],
     queryFn: async (): Promise<Flow[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/flows' as never, {} as never);
+      const { data, error } = await api.GET('/flows');
       if (error) throw new Error(apiErrorMessage(error));
       return data as Flow[];
     },
@@ -56,7 +56,7 @@ export function FlowsPanel() {
     queryKey: ['whatsapp-templates'],
     queryFn: async (): Promise<Template[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/whatsapp-templates' as never, {} as never);
+      const { data, error } = await api.GET('/whatsapp-templates');
       if (error) throw new Error(apiErrorMessage(error));
       return data as Template[];
     },
@@ -135,7 +135,7 @@ function FlowEditor({
   const save = useMutation({
     mutationFn: async () => {
       const api = getApiClient();
-      const { error } = await api.PUT('/flows/{key}' as never, {
+      const { error } = await api.PUT('/flows/{key}', {
         params: { path: { key: flowKey } },
         body: {
           name,
@@ -150,7 +150,7 @@ function FlowEditor({
             enabled: s.enabled,
           })),
         },
-      } as never);
+      });
       if (error) throw new Error(apiErrorMessage(error));
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['flows'] }),

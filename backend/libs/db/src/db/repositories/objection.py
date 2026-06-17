@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Message, Objection
+from db.models import Merchant, Message, Objection
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,6 +27,7 @@ class ObjectionRepository:
         merchant_id: UUID,
         conversation_id: UUID,
         items: list[dict[str, Any]],
+        bot_variant: str | None = None,
     ) -> int:
         """Idempotent — replaces any existing rows for the conversation."""
         await self._session.execute(
@@ -41,6 +42,7 @@ class ObjectionRepository:
                     summary=item["summary"],
                     quote=item.get("quote"),
                     severity=item.get("severity", "medium"),
+                    bot_variant=bot_variant,
                     meta={},
                 )
             )
@@ -59,10 +61,10 @@ class ObjectionRepository:
         return [(r.role, r.content) for r in (await self._session.execute(stmt)).all()]
 
     async def category_histogram(
-        self, *, merchant_id: UUID, since_days: int = 30
+        self, *, merchant_id: UUID, since_days: int = 30, bot_variant: str | None = None
     ) -> list[CategoryCount]:
         since = datetime.now(tz=UTC) - timedelta(days=since_days)
-        rows = await self._session.execute(
+        stmt = (
             select(Objection.category, func.count(Objection.id))
             .where(
                 Objection.merchant_id == merchant_id,
@@ -71,15 +73,38 @@ class ObjectionRepository:
             .group_by(Objection.category)
             .order_by(func.count(Objection.id).desc())
         )
+        if bot_variant is not None:
+            stmt = stmt.where(Objection.bot_variant == bot_variant)
+        rows = await self._session.execute(stmt)
+        return [CategoryCount(category=c, count=int(n)) for c, n in rows.all()]
+
+    async def category_histogram_tenant(
+        self, *, tenant_id: UUID, since_days: int = 30, bot_variant: str | None = None
+    ) -> list[CategoryCount]:
+        """Aggregate category counts across all merchants of a tenant (UC-13 agency view)."""
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
+        stmt = (
+            select(Objection.category, func.count(Objection.id))
+            .join(Merchant, Merchant.id == Objection.merchant_id)
+            .where(
+                Merchant.tenant_id == tenant_id,
+                Objection.created_at >= since,
+            )
+            .group_by(Objection.category)
+            .order_by(func.count(Objection.id).desc())
+        )
+        if bot_variant is not None:
+            stmt = stmt.where(Objection.bot_variant == bot_variant)
+        rows = await self._session.execute(stmt)
         return [CategoryCount(category=c, count=int(n)) for c, n in rows.all()]
 
     async def category_histogram_by_day(
-        self, *, merchant_id: UUID, since_days: int = 30
+        self, *, merchant_id: UUID, since_days: int = 30, bot_variant: str | None = None
     ) -> list[dict[str, Any]]:
         """Per-day, per-category counts for the objection heatmap/trend (UC-13)."""
         since = datetime.now(tz=UTC) - timedelta(days=since_days)
         day = func.date_trunc("day", Objection.created_at).label("day")
-        rows = await self._session.execute(
+        stmt = (
             select(day, Objection.category, func.count(Objection.id))
             .where(
                 Objection.merchant_id == merchant_id,
@@ -88,12 +113,20 @@ class ObjectionRepository:
             .group_by(day, Objection.category)
             .order_by(day)
         )
+        if bot_variant is not None:
+            stmt = stmt.where(Objection.bot_variant == bot_variant)
+        rows = await self._session.execute(stmt)
         return [
             {"day": d.date().isoformat(), "category": c, "count": int(n)} for d, c, n in rows.all()
         ]
 
     async def recent_samples(
-        self, *, merchant_id: UUID, category: str, limit: int = 5
+        self,
+        *,
+        merchant_id: UUID,
+        category: str,
+        limit: int = 5,
+        bot_variant: str | None = None,
     ) -> list[dict[str, Any]]:
         stmt = (
             select(Objection)
@@ -101,6 +134,8 @@ class ObjectionRepository:
             .order_by(Objection.created_at.desc())
             .limit(limit)
         )
+        if bot_variant is not None:
+            stmt = stmt.where(Objection.bot_variant == bot_variant)
         rows = (await self._session.execute(stmt)).scalars()
         return [
             {

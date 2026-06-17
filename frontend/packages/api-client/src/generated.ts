@@ -283,7 +283,8 @@ export interface paths {
         /** Update Template */
         put: operations["update_template_bot_config_templates__template_id__put"];
         post?: never;
-        delete?: never;
+        /** Delete Template */
+        delete: operations["delete_template_bot_config_templates__template_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -426,6 +427,26 @@ export interface paths {
         /** Reindex */
         post: operations["reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/knowledge-base/{merchant_id}/docs/{doc_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Doc
+         * @description Rimuove un doc dalla KB (i chunk seguono per FK CASCADE).
+         */
+        delete: operations["delete_doc_knowledge_base__merchant_id__docs__doc_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -675,6 +696,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/analytics/merchant/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Merchant Campaigns
+         * @description Distinct campaigns for the merchant — populates the dashboard filter (UC-11).
+         */
+        get: operations["merchant_campaigns_analytics_merchant_campaigns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/analytics/agency/kpis": {
         parameters: {
             query?: never;
@@ -759,6 +800,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/playground/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Playground Apply
+         * @description UC-08 — promote the tester's playground rules to a saved config override.
+         *
+         *     Writes them into the merchant's `bot.system_prompt_additions` so the live
+         *     bot starts following them (the playground previews the same prompt).
+         */
+        post: operations["playground_apply_playground_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ab-test/": {
         parameters: {
             query?: never;
@@ -837,6 +901,26 @@ export interface paths {
         };
         /** Objection Report */
         get: operations["objection_report_reports_objections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/objections/agency": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Objection Report Agency
+         * @description Tenant-wide objection histogram across every merchant of the agency (UC-13).
+         */
+        get: operations["objection_report_agency_reports_objections_agency_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1003,6 +1087,29 @@ export interface paths {
         put?: never;
         /** Ghl Unlink Location */
         post: operations["ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/ghl/calendars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ghl Calendars
+         * @description Calendars available for the merchant's linked GHL location (UC-02 picker).
+         *
+         *     Returns an empty list (not an error) when GHL isn't connected yet, so the
+         *     booking-config UI degrades to the manual calendar-id field.
+         */
+        get: operations["ghl_calendars_integrations_ghl_calendars_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1424,6 +1531,8 @@ export interface components {
             booking?: components["schemas"]["BookingConfig"];
             business?: components["schemas"]["BusinessConfig"];
             delivery?: components["schemas"]["DeliveryConfig"];
+            objections?: components["schemas"]["ObjectionsConfig"];
+            conversation?: components["schemas"]["ConversationConfig"];
         };
         /**
          * BotExample
@@ -1513,6 +1622,18 @@ export interface components {
             /** Website */
             website?: string | null;
         };
+        /** CalendarOut */
+        CalendarOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name?: string | null;
+        };
+        /** CalendarsOut */
+        CalendarsOut: {
+            /** Calendars */
+            calendars: components["schemas"]["CalendarOut"][];
+        };
         /** ConnectionOut */
         ConnectionOut: {
             /** Provider */
@@ -1529,6 +1650,14 @@ export interface components {
             meta: {
                 [key: string]: unknown;
             };
+        };
+        /** ConversationConfig */
+        ConversationConfig: {
+            /**
+             * Idle Close Minutes
+             * @default 120
+             */
+            idle_close_minutes: number;
         };
         /** ConversationNoteOut */
         ConversationNoteOut: {
@@ -1879,6 +2008,10 @@ export interface components {
             status: string;
             /** Chunk Count */
             chunk_count: number;
+            /** Status Detail */
+            status_detail?: string | null;
+            /** Last Error */
+            last_error?: string | null;
         };
         /** LinkLocationIn */
         LinkLocationIn: {
@@ -2049,6 +2182,11 @@ export interface components {
             /** Authorize Url */
             authorize_url: string;
         };
+        /** ObjectionsConfig */
+        ObjectionsConfig: {
+            /** Categories */
+            categories?: string[];
+        };
         /** OverridesIn */
         OverridesIn: {
             /** Overrides */
@@ -2088,6 +2226,25 @@ export interface components {
             new_stage_id?: string | null;
             /** Qualified Stage Id */
             qualified_stage_id?: string | null;
+        };
+        /**
+         * PlaygroundApplyIn
+         * @description Persist the playground's ad-hoc rules as a merchant config override.
+         *
+         *     Reuses the existing `bot.system_prompt_additions` override (rather than a
+         *     new config key) so the live WhatsApp flow picks the rules up through the
+         *     same cascade — what the tester previews is exactly what production runs.
+         */
+        PlaygroundApplyIn: {
+            /** Rules */
+            rules?: string[];
+        };
+        /** PlaygroundApplyOut */
+        PlaygroundApplyOut: {
+            /** Applied */
+            applied: boolean;
+            /** System Prompt Additions */
+            system_prompt_additions: string | null;
         };
         /** PlaygroundBubble */
         PlaygroundBubble: {
@@ -2158,6 +2315,8 @@ export interface components {
             /** User Message */
             user_message: string;
             state?: components["schemas"]["PlaygroundStateModel"] | null;
+            /** Override Rules */
+            override_rules?: string[] | null;
         };
         /** PlaygroundTurnOut */
         PlaygroundTurnOut: {
@@ -2392,6 +2551,7 @@ export interface components {
              * @description Caller-provided UUID. Used to deduplicate retries and to reconcile the frontend's optimistic insert with the canonical row.
              */
             client_message_id: string;
+            template?: components["schemas"]["TemplateSendIn"] | null;
         };
         /** StatusOut */
         StatusOut: {
@@ -2459,6 +2619,21 @@ export interface components {
             locked_keys: string[];
             /** Is Default */
             is_default: boolean;
+        };
+        /**
+         * TemplateSendIn
+         * @description An approved WhatsApp template to send out of the 24h window (CC-WA).
+         */
+        TemplateSendIn: {
+            /** Name */
+            name: string;
+            /**
+             * Language
+             * @default it
+             */
+            language: string;
+            /** Variables */
+            variables?: string[];
         };
         /** TenantOut */
         TenantOut: {
@@ -3302,6 +3477,37 @@ export interface operations {
             };
         };
     };
+    delete_template_bot_config_templates__template_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_tone_presets_bot_config_tone_presets_get: {
         parameters: {
             query?: never;
@@ -3600,6 +3806,38 @@ export interface operations {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_doc_knowledge_base__merchant_id__docs__doc_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -4186,6 +4424,8 @@ export interface operations {
         parameters: {
             query?: {
                 since_days?: number;
+                /** @description Filter lead metrics to a campaign */
+                campaign?: string | null;
                 /** @description Admin-only: target merchant_id */
                 merchant_id?: string | null;
             };
@@ -4204,6 +4444,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MerchantKpisOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    merchant_campaigns_analytics_merchant_campaigns_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
                 };
             };
             /** @description Validation Error */
@@ -4340,6 +4614,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaygroundTurnOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    playground_apply_playground_apply_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundApplyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundApplyOut"];
                 };
             };
             /** @description Validation Error */
@@ -4529,6 +4838,45 @@ export interface operations {
             query?: {
                 since_days?: number;
                 samples_per_category?: number;
+                /** @description Filter to one A/B variant (UC-13) */
+                variant_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    objection_report_agency_reports_objections_agency_get: {
+        parameters: {
+            query?: {
+                since_days?: number;
+                /** @description Filter to one A/B variant (UC-13) */
+                variant_id?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -4844,6 +5192,40 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ghl_calendars_integrations_ghl_calendars_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarsOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5416,6 +5798,7 @@ export enum ApiPaths {
     list_templates_bot_config_templates_get = "/bot-config/templates",
     create_template_bot_config_templates_post = "/bot-config/templates",
     update_template_bot_config_templates__template_id__put = "/bot-config/templates/{template_id}",
+    delete_template_bot_config_templates__template_id__delete = "/bot-config/templates/{template_id}",
     list_tone_presets_bot_config_tone_presets_get = "/bot-config/tone-presets",
     list_suggested_rules_bot_config_suggested_rules_get = "/bot-config/suggested-rules",
     resolved_config_bot_config__merchant_id__resolved_get = "/bot-config/{merchant_id}/resolved",
@@ -5425,6 +5808,7 @@ export enum ApiPaths {
     list_docs_knowledge_base__merchant_id__docs_get = "/knowledge-base/{merchant_id}/docs",
     upload_doc_knowledge_base__merchant_id__upload_post = "/knowledge-base/{merchant_id}/upload",
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
+    delete_doc_knowledge_base__merchant_id__docs__doc_id__delete = "/knowledge-base/{merchant_id}/docs/{doc_id}",
     list_products_catalog__merchant_id__products_get = "/catalog/{merchant_id}/products",
     create_product_catalog__merchant_id__products_post = "/catalog/{merchant_id}/products",
     update_product_catalog__merchant_id__products__product_id__put = "/catalog/{merchant_id}/products/{product_id}",
@@ -5442,16 +5826,19 @@ export enum ApiPaths {
     reschedule_appointments__appointment_id__reschedule_post = "/appointments/{appointment_id}/reschedule",
     cancel_appointments__appointment_id__cancel_post = "/appointments/{appointment_id}/cancel",
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",
+    merchant_campaigns_analytics_merchant_campaigns_get = "/analytics/merchant/campaigns",
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
     download_export_analytics_exports__export_id__download_get = "/analytics/exports/{export_id}/download",
     playground_turn_playground_turn_post = "/playground/turn",
+    playground_apply_playground_apply_post = "/playground/apply",
     list_experiments_ab_test__get = "/ab-test/",
     create_experiment_ab_test__post = "/ab-test/",
     start_experiment_ab_test__experiment_id__start_post = "/ab-test/{experiment_id}/start",
     stop_experiment_ab_test__experiment_id__stop_post = "/ab-test/{experiment_id}/stop",
     experiment_metrics_ab_test__experiment_id__metrics_get = "/ab-test/{experiment_id}/metrics",
     objection_report_reports_objections_get = "/reports/objections",
+    objection_report_agency_reports_objections_agency_get = "/reports/objections/agency",
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",
     run_fine_tune_fine_tuning_run_post = "/fine-tuning/run",
     list_ft_models_fine_tuning_models_get = "/fine-tuning/models",
@@ -5461,6 +5848,7 @@ export enum ApiPaths {
     ghl_locations_integrations_ghl_locations_get = "/integrations/ghl/locations",
     ghl_link_location_integrations_ghl_locations__location_id__link_post = "/integrations/ghl/locations/{location_id}/link",
     ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post = "/integrations/ghl/locations/{location_id}/unlink",
+    ghl_calendars_integrations_ghl_calendars_get = "/integrations/ghl/calendars",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",

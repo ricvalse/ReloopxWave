@@ -148,7 +148,7 @@ def service(
     # Stub every repository class at the module level.
     class FakeLeadRepo:
         def __init__(self, session): ...
-        async def upsert_by_phone(self, *, merchant_id, phone):
+        async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return lead
 
     class FakeConvRepo:
@@ -344,7 +344,7 @@ async def test_inbound_persisted_even_when_reply_fails(
 
     class FakeLeadRepo:
         def __init__(self, session): ...
-        async def upsert_by_phone(self, *, merchant_id, phone):
+        async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return lead
 
     class FakeConvRepo:
@@ -447,7 +447,7 @@ async def test_inbound_idempotent_on_redelivery(
 
     class FakeLeadRepo:
         def __init__(self, session): ...
-        async def upsert_by_phone(self, *, merchant_id, phone):
+        async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return FakeLead()
 
     class FakeConvRepo:
