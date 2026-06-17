@@ -26,8 +26,24 @@ class ABRepository:
         self._session = session
 
     async def list_active_for_merchant(self, merchant_id: UUID) -> list[ABExperiment]:
-        stmt = select(ABExperiment).where(
-            ABExperiment.merchant_id == merchant_id, ABExperiment.status == "running"
+        # Oldest-started first so `_assign_ab_variant` deterministically picks the
+        # oldest running experiment (matches its docstring); combined with the
+        # single-running guard in `start_experiment` there is normally one.
+        stmt = (
+            select(ABExperiment)
+            .where(ABExperiment.merchant_id == merchant_id, ABExperiment.status == "running")
+            .order_by(ABExperiment.started_at.asc())
+        )
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def list_for_merchant(self, merchant_id: UUID) -> list[ABExperiment]:
+        """All experiments for a merchant (any status), newest first — for the
+        management UI, which must show drafts (so they can be started) and
+        completed experiments (with their winner), not just running ones."""
+        stmt = (
+            select(ABExperiment)
+            .where(ABExperiment.merchant_id == merchant_id)
+            .order_by(ABExperiment.created_at.desc())
         )
         return list((await self._session.execute(stmt)).scalars())
 
@@ -66,6 +82,28 @@ class ABRepository:
         exp.status = status
         if started_at is not None and exp.started_at is None:
             exp.started_at = started_at
+
+    async def has_running(self, merchant_id: UUID, *, exclude_id: UUID | None = None) -> bool:
+        """True if the merchant already has a running experiment (UC-09 allows one
+        live experiment at a time so variant assignment is unambiguous)."""
+        stmt = select(ABExperiment.id).where(
+            ABExperiment.merchant_id == merchant_id, ABExperiment.status == "running"
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(ABExperiment.id != exclude_id)
+        return (await self._session.execute(stmt.limit(1))).first() is not None
+
+    async def stop(
+        self, experiment_id: UUID, *, winner: str | None = None, ended_at: datetime
+    ) -> None:
+        """Complete an experiment: freeze status, stamp the end, record the winner."""
+        exp = await self._session.get(ABExperiment, experiment_id)
+        if exp is None:
+            return
+        exp.status = "completed"
+        exp.ended_at = ended_at
+        if winner is not None:
+            exp.winner = winner
 
     async def assign_variant(
         self,

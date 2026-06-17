@@ -1,5 +1,6 @@
 from db.models.ab import ABAssignment, ABExperiment
 from db.models.analytics import AnalyticsEvent
+from db.models.appointment import Appointment
 from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
 from db.models.catalog import FaqEntry, Product, StorePolicy
@@ -17,6 +18,7 @@ __all__ = [
     "ABAssignment",
     "ABExperiment",
     "AnalyticsEvent",
+    "Appointment",
     "Base",
     "BotConfig",
     "BotTemplate",

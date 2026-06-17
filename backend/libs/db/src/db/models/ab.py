@@ -32,6 +32,8 @@ class ABExperiment(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Variant id declared the winner when the experiment was stopped (UC-09).
+    winner: Mapped[str | None] = mapped_column(String(32))
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 

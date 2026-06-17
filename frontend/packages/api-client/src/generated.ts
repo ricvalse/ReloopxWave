@@ -624,6 +624,40 @@ export interface paths {
         patch: operations["update_note_conversations__conversation_id__notes_patch"];
         trace?: never;
     };
+    "/appointments/{appointment_id}/reschedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reschedule */
+        post: operations["reschedule_appointments__appointment_id__reschedule_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/appointments/{appointment_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel */
+        post: operations["cancel_appointments__appointment_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/analytics/merchant/kpis": {
         parameters: {
             query?: never;
@@ -754,6 +788,23 @@ export interface paths {
         put?: never;
         /** Start Experiment */
         post: operations["start_experiment_ab_test__experiment_id__start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ab-test/{experiment_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Experiment */
+        post: operations["stop_experiment_ab_test__experiment_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1293,6 +1344,23 @@ export interface components {
             /** Expires At */
             expires_at: number | null;
         };
+        /** AppointmentOut */
+        AppointmentOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Status */
+            status: string;
+            /**
+             * Start At
+             * Format: date-time
+             */
+            start_at: string;
+            /** End At */
+            end_at: string | null;
+        };
         /** Body_upload_doc_knowledge_base__merchant_id__upload_post */
         Body_upload_doc_knowledge_base__merchant_id__upload_post: {
             /** File */
@@ -1576,6 +1644,8 @@ export interface components {
             primary_metric: string;
             /** Min Sample Size */
             min_sample_size: number;
+            /** Winner */
+            winner?: string | null;
         };
         /** ExportDownload */
         ExportDownload: {
@@ -2256,6 +2326,19 @@ export interface components {
             /** Message */
             message?: string | null;
         };
+        /** RescheduleIn */
+        RescheduleIn: {
+            /**
+             * Start At Iso
+             * @description New start time, ISO-8601.
+             */
+            start_at_iso: string;
+            /**
+             * End At Iso
+             * @description New end time; derived from the prior duration if omitted.
+             */
+            end_at_iso?: string | null;
+        };
         /** RunFineTuneIn */
         RunFineTuneIn: {
             /**
@@ -2319,6 +2402,11 @@ export interface components {
             merchant_id: string;
             /** Connections */
             connections: components["schemas"]["ConnectionOut"][];
+        };
+        /** StopExperimentIn */
+        StopExperimentIn: {
+            /** Winner */
+            winner?: string | null;
         };
         /**
          * SuggestedRules
@@ -4024,6 +4112,76 @@ export interface operations {
             };
         };
     };
+    reschedule_appointments__appointment_id__reschedule_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                appointment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RescheduleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppointmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_appointments__appointment_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                appointment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppointmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     merchant_kpis_analytics_merchant_kpis_get: {
         parameters: {
             query?: {
@@ -4273,6 +4431,43 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_experiment_ab_test__experiment_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                experiment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StopExperimentIn"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -5244,6 +5439,8 @@ export enum ApiPaths {
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
     send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
+    reschedule_appointments__appointment_id__reschedule_post = "/appointments/{appointment_id}/reschedule",
+    cancel_appointments__appointment_id__cancel_post = "/appointments/{appointment_id}/cancel",
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
@@ -5252,6 +5449,7 @@ export enum ApiPaths {
     list_experiments_ab_test__get = "/ab-test/",
     create_experiment_ab_test__post = "/ab-test/",
     start_experiment_ab_test__experiment_id__start_post = "/ab-test/{experiment_id}/start",
+    stop_experiment_ab_test__experiment_id__stop_post = "/ab-test/{experiment_id}/stop",
     experiment_metrics_ab_test__experiment_id__metrics_get = "/ab-test/{experiment_id}/metrics",
     objection_report_reports_objections_get = "/reports/objections",
     trigger_extraction_reports_objections_extract__conversation_id__post = "/reports/objections/extract/{conversation_id}",

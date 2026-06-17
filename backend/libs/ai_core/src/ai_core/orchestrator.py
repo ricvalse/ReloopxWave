@@ -24,7 +24,15 @@ from shared import get_logger
 logger = get_logger(__name__)
 
 
-ActionKind = Literal["book_slot", "move_pipeline", "update_score", "escalate_human", "none"]
+ActionKind = Literal[
+    "book_slot",
+    "reschedule_slot",
+    "cancel_slot",
+    "move_pipeline",
+    "update_score",
+    "escalate_human",
+    "none",
+]
 
 
 class OrchestratorAction(BaseModel):
@@ -119,7 +127,7 @@ _RESPONSE_SCHEMA_HINT = (
     "{\n"
     '  "reply_text": "<testo da inviare all\'utente>",\n'
     '  "actions": [\n'
-    '    {"kind": "book_slot|move_pipeline|update_score|escalate_human|none", "payload": {}}\n'
+    '    {"kind": "book_slot|reschedule_slot|cancel_slot|move_pipeline|update_score|escalate_human|none", "payload": {}}\n'
     "  ]\n"
     "}\n"
     "`reply_text` non deve mai essere vuoto. `actions` può essere lista vuota.\n"
@@ -131,6 +139,12 @@ _RESPONSE_SCHEMA_HINT = (
     '    "preferred_start_iso": "<ISO8601, es. 2026-06-03T15:00:00, se l\'utente indica data/ora>",\n'
     '    "contact_fields": {"name": "<se noto>", "email": "<se noto>"}\n'
     "  }\n"
+    '- "reschedule_slot": quando l\'utente vuole SPOSTARE/cambiare un appuntamento '
+    "già fissato. payload: {\n"
+    '    "preferred_start_iso": "<ISO8601 della nuova data/ora, se indicata>"\n'
+    "  }\n"
+    '- "cancel_slot": quando l\'utente vuole ANNULLARE/disdire un appuntamento già '
+    "fissato. payload: {}\n"
     '- "move_pipeline": quando il lead è chiaramente qualificato e pronto ad '
     "avanzare (intenzione forte, budget/tempistiche confermati). payload: {\n"
     '    "stage": "<nome stage target, opzionale>"\n'

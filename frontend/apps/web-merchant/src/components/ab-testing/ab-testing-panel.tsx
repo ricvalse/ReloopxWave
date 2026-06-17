@@ -12,6 +12,14 @@ type Metrics = {
   experiment_id: string;
   primary_metric: string;
   min_sample_size: number;
+  winner: string | null;
+  significance: {
+    winner: string | null;
+    p_value: number | null;
+    significant: boolean;
+    confidence: number;
+    enough_samples: boolean;
+  };
   variants: Array<{
     variant_id: string;
     assignments: number;
@@ -41,6 +49,21 @@ export function AbTestingPanel() {
       const api = getApiClient();
       const { data, error } = await api.POST('/ab-test/{experiment_id}/start' as never, {
         params: { path: { experiment_id: experimentId } },
+      } as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as Experiment;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['ab', 'list'] });
+    },
+  });
+
+  const stop = useMutation({
+    mutationFn: async (experimentId: string): Promise<Experiment> => {
+      const api = getApiClient();
+      const { data, error } = await api.POST('/ab-test/{experiment_id}/stop' as never, {
+        params: { path: { experiment_id: experimentId } },
+        body: {},
       } as never);
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return data as Experiment;
@@ -110,7 +133,7 @@ export function AbTestingPanel() {
                     <td className="py-2 font-mono text-xs">{e.primary_metric}</td>
                     <td className="py-2">{e.status}</td>
                     <td className="py-2 space-x-2 text-right">
-                      {e.status !== 'running' ? (
+                      {e.status !== 'running' && e.status !== 'completed' ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -118,6 +141,16 @@ export function AbTestingPanel() {
                           disabled={start.isPending}
                         >
                           Avvia
+                        </Button>
+                      ) : null}
+                      {e.status === 'running' ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => stop.mutate(e.id)}
+                          disabled={stop.isPending}
+                        >
+                          Ferma
                         </Button>
                       ) : null}
                       <Button
@@ -304,6 +337,44 @@ function CreateExperimentForm({
   );
 }
 
+function SignificanceBanner({
+  sig,
+  winner,
+}: {
+  sig: Metrics['significance'];
+  winner: string | null;
+}) {
+  if (winner) {
+    return (
+      <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+        Esperimento concluso — variante vincente: <strong>{winner}</strong>.
+      </div>
+    );
+  }
+  if (!sig.enough_samples) {
+    return (
+      <div className="mb-3 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+        Campione insufficiente: continua a raccogliere dati prima di concludere.
+      </div>
+    );
+  }
+  if (sig.significant && sig.winner) {
+    return (
+      <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+        Differenza significativa — <strong>{sig.winner}</strong> in vantaggio (confidenza{' '}
+        {(sig.confidence * 100).toFixed(1)}%, p = {sig.p_value?.toFixed(3) ?? '—'}). Puoi fermare
+        l&apos;esperimento.
+      </div>
+    );
+  }
+  return (
+    <div className="mb-3 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+      Nessuna differenza significativa finora
+      {sig.p_value != null ? ` (p = ${sig.p_value.toFixed(3)})` : ''}.
+    </div>
+  );
+}
+
 function MetricsCard({ experimentId }: { experimentId: string }) {
   const metrics = useQuery({
     queryKey: ['ab', 'metrics', experimentId],
@@ -337,6 +408,7 @@ function MetricsCard({ experimentId }: { experimentId: string }) {
               <code className="font-mono text-xs">{metrics.data.primary_metric}</code> · Min sample:{' '}
               {metrics.data.min_sample_size}
             </p>
+            <SignificanceBanner sig={metrics.data.significance} winner={metrics.data.winner} />
             <table className="w-full text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>

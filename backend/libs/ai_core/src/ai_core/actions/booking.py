@@ -25,6 +25,7 @@ from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
+    AppointmentRepository,
     GHLMarketplaceRepository,
     IntegrationRepository,
     LeadRepository,
@@ -54,6 +55,12 @@ class BookingOutcome:
     # a payload.
     opportunity_id: str | None = None
     pipeline_id: str | None = None
+    # Carried up from `_try_book` on success so `__call__` can persist the local
+    # appointment mirror (UC-02) without re-deriving the slot/contact/calendar.
+    slot_end_iso: str | None = None
+    contact_id: str | None = None
+    calendar_id: str | None = None
+    tz_name: str | None = None
 
 
 class BookSlotHandler:
@@ -153,6 +160,31 @@ class BookSlotHandler:
 
             if outcome and outcome.booked and outcome.booking_id:
                 await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
+                # Write-through mirror of the GHL appointment. GHL stays source
+                # of truth; the local row preserves the GHL appointment_id (the
+                # live flow otherwise drops it) so reschedule/cancel/reconcile
+                # have a join handle, and powers the merchant agenda. Best-effort:
+                # the calendar slot already exists in GHL and the lead gets a
+                # confirmation regardless, so a mirror-write hiccup must not crash
+                # the turn or swallow the confirmation.
+                try:
+                    tz = _resolve_tz(outcome.tz_name or "Europe/Rome")
+                    start_dt = _parse_iso(outcome.slot_start_iso, tz)
+                    end_dt = _parse_iso(outcome.slot_end_iso, tz)
+                    if start_dt is not None:
+                        await AppointmentRepository(session).record_booking(
+                            merchant_id=turn_ctx.merchant_id,
+                            lead_id=turn_ctx.lead_id,
+                            ghl_appointment_id=outcome.booking_id,
+                            ghl_contact_id=outcome.contact_id,
+                            calendar_id=outcome.calendar_id,
+                            start_at=start_dt,
+                            end_at=end_dt,
+                            tz_name=outcome.tz_name,
+                            source="bot",
+                        )
+                except Exception as e:  # pragma: no cover — mirror write is best-effort
+                    logger.warning("book_slot.mirror_failed", error=str(e))
 
             if outcome and outcome.opportunity_id:
                 # Stash on lead.meta so MovePipelineHandler can find the
@@ -167,12 +199,28 @@ class BookSlotHandler:
                         meta["ghl_pipeline_id"] = outcome.pipeline_id
                     lead_row.meta = meta
 
+            # Persist any contact identity the bot collected (fill-only) so it
+            # survives on the lead — feeds UC-05 scoring and the UC-04 note even
+            # when no opportunity was created this turn.
+            cf = action.payload.get("contact_fields", {})
+            if cf.get("name") or cf.get("first_name") or cf.get("email"):
+                lead_row = await leads.get_by_phone(
+                    merchant_id=turn_ctx.merchant_id, phone=turn_ctx.lead_phone
+                )
+                if lead_row is not None:
+                    await leads.update_contact_fields(
+                        lead_row.id,
+                        name=cf.get("name") or cf.get("first_name"),
+                        email=cf.get("email"),
+                    )
+
             await analytics.emit(
                 tenant_id=turn_ctx.tenant_id,
                 merchant_id=turn_ctx.merchant_id,
                 event_type="booking.created" if (outcome and outcome.booked) else "booking.failed",
                 subject_type="lead",
                 subject_id=turn_ctx.lead_id,
+                variant_id=turn_ctx.variant_id,
                 properties={
                     "reason": outcome.reason if outcome else "unknown",
                     "slot_start_iso": outcome.slot_start_iso if outcome else None,
@@ -251,6 +299,10 @@ class BookSlotHandler:
                     "booked",
                     opportunity_id=opportunity_id,
                     pipeline_id=pipeline_id if opportunity_id else None,
+                    slot_end_iso=slot_end.isoformat(),
+                    contact_id=contact_id,
+                    calendar_id=calendar_id,
+                    tz_name=tz_name,
                 )
             except IntegrationError:
                 # Propose alternatives

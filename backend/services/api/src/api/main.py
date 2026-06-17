@@ -24,6 +24,7 @@ from api.dependencies.session import init_db
 from api.routers import (
     ab_test,
     analytics,
+    appointments,
     auth,
     bot_config,
     catalog,
@@ -153,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_base.router, prefix="/knowledge-base", tags=["knowledge-base"])
     app.include_router(catalog.router, prefix="/catalog", tags=["catalog"])
     app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
+    app.include_router(appointments.router, prefix="/appointments", tags=["appointments"])
     app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
     app.include_router(playground.router, prefix="/playground", tags=["playground"])
     app.include_router(ab_test.router, prefix="/ab-test", tags=["ab-test"])

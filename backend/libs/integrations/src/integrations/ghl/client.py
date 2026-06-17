@@ -74,6 +74,13 @@ class GHLClient:
     async def get_contact(self, contact_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/contacts/{contact_id}")
 
+    async def add_contact_note(self, contact_id: str, *, body: str) -> dict[str, Any]:
+        """Write an internal note on a contact (UC-04: sentiment + collected data
+        recorded on the CRM card when the lead advances). `POST
+        /contacts/{contactId}/notes`. Best-effort at the call site — a failed
+        note must not roll back the pipeline move."""
+        return await self._request("POST", f"/contacts/{contact_id}/notes", json={"body": body})
+
     # ---- Locations ----
 
     async def get_location(self, location_id: str) -> dict[str, Any]:
@@ -168,6 +175,47 @@ class GHLClient:
         if self._tokens.location_id:
             body["locationId"] = self._tokens.location_id
         return await self._request("POST", "/calendars/events/appointments", json=body)
+
+    async def list_appointments(
+        self, calendar_id: str, *, start_iso: str, end_iso: str
+    ) -> list[dict[str, Any]]:
+        """List calendar appointments in a window (UC-02 reconcile poll).
+
+        GHL `GET /calendars/events` takes the window as epoch-millisecond
+        integers (same convention as free-slots) and requires `locationId`.
+        The result is normalized to stable snake_case dicts. We tolerate both
+        the `events` envelope and a bare list, and both ISO and epoch-ms times,
+        so a wire-format surprise degrades gracefully instead of dropping rows.
+        """
+        start_ms = _iso_to_epoch_ms(start_iso)
+        end_ms = _iso_to_epoch_ms(end_iso)
+        path = f"/calendars/events?calendarId={calendar_id}&startTime={start_ms}&endTime={end_ms}"
+        if self._tokens.location_id:
+            path += f"&locationId={self._tokens.location_id}"
+        resp = await self._request("GET", path)
+        return _normalize_events(resp)
+
+    async def reschedule_appointment(
+        self, event_id: str, *, slot_start_iso: str, slot_end_iso: str
+    ) -> dict[str, Any]:
+        """Move an existing appointment to a new slot (UC-02 reschedule).
+
+        `PUT /calendars/events/appointments/{eventId}` — the eventId is the
+        `ghl_appointment_id` we persisted at booking time.
+        """
+        return await self._request(
+            "PUT",
+            f"/calendars/events/appointments/{event_id}",
+            json={"startTime": slot_start_iso, "endTime": slot_end_iso},
+        )
+
+    async def cancel_appointment(self, event_id: str) -> dict[str, Any]:
+        """Cancel an appointment (UC-02 cancel).
+
+        `DELETE /calendars/events/{eventId}` — note GHL's delete path drops the
+        `/appointments` segment present in create/reschedule.
+        """
+        return await self._request("DELETE", f"/calendars/events/{event_id}")
 
     # ---- Token ----
 
@@ -283,4 +331,49 @@ def _flatten_slots(resp: dict[str, Any]) -> list[dict[str, Any]]:
     if not out and isinstance(resp.get("slots"), list):
         for slot in resp["slots"]:
             _push(slot)
+    return out
+
+
+def _event_time_to_iso(value: Any) -> str | None:
+    """GHL event times come back as ISO strings; tolerate epoch-ms too."""
+    if value is None:
+        return None
+    if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
+    return str(value)
+
+
+def _normalize_events(resp: Any) -> list[dict[str, Any]]:
+    """Normalize a GHL calendar-events response to stable snake_case dicts.
+
+    Tolerates the `events` envelope (current GHL shape), an `appointments`
+    envelope, or a bare list; skips items without an id. Each item:
+    {id, calendar_id, contact_id, title, start_iso, end_iso, status}.
+    """
+    if isinstance(resp, list):
+        raw: list[Any] = resp
+    elif isinstance(resp, dict):
+        envelope = resp.get("events") or resp.get("appointments") or []
+        raw = envelope if isinstance(envelope, list) else []
+    else:
+        raw = []
+
+    out: list[dict[str, Any]] = []
+    for ev in raw:
+        if not isinstance(ev, dict):
+            continue
+        ev_id = ev.get("id") or ev.get("appointmentId") or ev.get("eventId")
+        if not ev_id:
+            continue
+        out.append(
+            {
+                "id": str(ev_id),
+                "calendar_id": ev.get("calendarId"),
+                "contact_id": ev.get("contactId"),
+                "title": ev.get("title"),
+                "start_iso": _event_time_to_iso(ev.get("startTime")),
+                "end_iso": _event_time_to_iso(ev.get("endTime")),
+                "status": ev.get("appointmentStatus") or ev.get("status"),
+            }
+        )
     return out

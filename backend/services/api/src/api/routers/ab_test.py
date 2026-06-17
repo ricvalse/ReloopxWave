@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from ai_core.ab_stats import evaluate_significance
 from api.dependencies.session import CurrentContext, DBSession
 from db import ABRepository, PromptRepository
 from db.session import TenantContext
@@ -44,13 +45,20 @@ class ExperimentOut(BaseModel):
     variants: list[dict[str, Any]]
     primary_metric: str
     min_sample_size: int
+    winner: str | None = None
+
+
+class StopExperimentIn(BaseModel):
+    # Optional explicit winner; when omitted the significance verdict from
+    # `/metrics` is the source of truth and the experiment just ends.
+    winner: str | None = None
 
 
 @router.get("/", response_model=list[ExperimentOut])
 async def list_experiments(ctx: CurrentContext, session: DBSession) -> list[ExperimentOut]:
     merchant_id = _require_merchant(ctx)
     repo = ABRepository(session)
-    experiments = await repo.list_active_for_merchant(merchant_id)
+    experiments = await repo.list_for_merchant(merchant_id)
     return [_to_out(e) for e in experiments]
 
 
@@ -93,12 +101,34 @@ async def create_experiment(
 async def start_experiment(
     experiment_id: UUID, ctx: CurrentContext, session: DBSession
 ) -> ExperimentOut:
+    merchant_id = _require_merchant(ctx)
+    repo = ABRepository(session)
+    exp = await repo.get(experiment_id)
+    if exp is None or exp.merchant_id != ctx.merchant_id:
+        raise NotFoundError("Experiment not found")
+    # One live experiment per merchant — otherwise variant assignment picks
+    # ambiguously between concurrent experiments (UC-09).
+    if exp.status != "running" and await repo.has_running(merchant_id, exclude_id=experiment_id):
+        raise PermissionDeniedError(
+            "Another experiment is already running for this merchant",
+            error_code="experiment_already_running",
+        )
+    await repo.set_status(experiment_id, status="running", started_at=datetime.now(tz=UTC))
+    exp = await repo.get(experiment_id)
+    assert exp is not None
+    return _to_out(exp)
+
+
+@router.post("/{experiment_id}/stop", response_model=ExperimentOut)
+async def stop_experiment(
+    experiment_id: UUID, payload: StopExperimentIn, ctx: CurrentContext, session: DBSession
+) -> ExperimentOut:
     _require_merchant(ctx)
     repo = ABRepository(session)
     exp = await repo.get(experiment_id)
     if exp is None or exp.merchant_id != ctx.merchant_id:
         raise NotFoundError("Experiment not found")
-    await repo.set_status(experiment_id, status="running", started_at=datetime.now(tz=UTC))
+    await repo.stop(experiment_id, winner=payload.winner, ended_at=datetime.now(tz=UTC))
     exp = await repo.get(experiment_id)
     assert exp is not None
     return _to_out(exp)
@@ -114,10 +144,26 @@ async def experiment_metrics(
     if exp is None or exp.merchant_id != ctx.merchant_id:
         raise NotFoundError("Experiment not found")
     metrics = await repo.metrics(experiment_id)
+    sig = evaluate_significance(
+        [
+            (m.variant_id, m.events_by_type.get(exp.primary_metric, 0), m.assignments)
+            for m in metrics
+        ]
+    )
+    total_assignments = sum(m.assignments for m in metrics)
     return {
         "experiment_id": str(experiment_id),
         "primary_metric": exp.primary_metric,
         "min_sample_size": exp.min_sample_size,
+        "winner": exp.winner,
+        "significance": {
+            "winner": sig.winner,
+            "p_value": sig.p_value,
+            "significant": sig.significant,
+            "confidence": sig.confidence,
+            # Only trust the verdict once both arms have enough traffic.
+            "enough_samples": total_assignments >= exp.min_sample_size,
+        },
         "variants": [
             {
                 "variant_id": m.variant_id,
@@ -166,4 +212,5 @@ def _to_out(exp: Any) -> ExperimentOut:
         variants=exp.variants or [],
         primary_metric=exp.primary_metric,
         min_sample_size=exp.min_sample_size,
+        winner=exp.winner,
     )

@@ -290,6 +290,22 @@ class GHLMarketplaceRepository:
             return None
         return self._to_resolved_location(row)
 
+    async def list_active_linked_locations(self) -> list[ResolvedLocationToken]:
+        """Cross-tenant: every active location token linked to a merchant, with
+        its decrypted bundle. Used by the appointment reconcile poll (UC-02),
+        which runs without a JWT under the service-role `session_scope()`."""
+        stmt = select(GHLLocationToken).where(
+            GHLLocationToken.status == "active",
+            GHLLocationToken.merchant_id.is_not(None),
+        )
+        rows = (await self._session.execute(stmt)).scalars()
+        out: list[ResolvedLocationToken] = []
+        for row in rows:
+            resolved = self._to_resolved_location(row)
+            if resolved is not None:
+                out.append(resolved)
+        return out
+
     async def resolve_location_summary_by_merchant(
         self, merchant_id: UUID
     ) -> GHLLocationSummary | None:

@@ -74,6 +74,8 @@ def _patch_session(monkeypatch, *, ghl, lead):
         async def get_by_phone(self, *, merchant_id, phone):
             return lead
 
+        async def update_contact_fields(self, lead_id, *, name=None, email=None): ...
+
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
         async def emit(self, **kw):
@@ -143,6 +145,36 @@ async def test_move_creates_opportunity_when_missing(
     assert lead.pipeline_stage_id == "STAGE-QUALIFIED"
     assert lead.meta["ghl_opportunity_id"] == "OPP-NEW"
     assert events[-1]["event_type"] == "pipeline.moved"
+
+
+async def test_move_writes_internal_note_with_sentiment(
+    monkeypatch: pytest.MonkeyPatch, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    # UC-04 contractual: the move writes an internal note carrying sentiment +
+    # collected data + the move reason onto the GHL contact.
+    ctx = TurnContext(
+        tenant_id=ghl_bundle.tenant_id,
+        merchant_id=ghl_bundle.merchant_id,
+        lead_id=uuid.uuid4(),
+        conversation_id=uuid.uuid4(),
+        lead_phone="39333000000",
+        phone_number_id="PNID-1",
+        api_key="k",
+        lead_sentiment="positivo",
+        collected_data={"name": "Mario Rossi", "email": "m@example.com"},
+    )
+    lead = FakeLead(meta={"ghl_opportunity_id": "OPP-1", "ghl_pipeline_id": "PIPE-1"})
+    _patch_session(monkeypatch, ghl=ghl_bundle, lead=lead)
+    client = _patch_ghl_client(monkeypatch)
+
+    handler = MovePipelineHandler(kek_base64="unused", ghl_client_id="x", ghl_client_secret="y")
+    await handler(OrchestratorAction(kind="move_pipeline", payload={"reason": "budget ok"}), ctx)
+
+    client.add_contact_note.assert_awaited_once()
+    body = client.add_contact_note.await_args.kwargs["body"]
+    assert "Sentiment: positivo" in body
+    assert "Mario Rossi" in body
+    assert "budget ok" in body
 
 
 async def test_move_no_ghl_integration(

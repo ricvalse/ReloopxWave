@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -15,6 +16,34 @@ from sqlalchemy.ext.asyncio import (
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+# Postgres role assumed inside `tenant_session` so RLS is actually enforced.
+#
+# Our RLS policies are FORCEd, but FORCE ROW LEVEL SECURITY is *silently
+# ignored* for roles with the BYPASSRLS attribute — and Supabase's default
+# `postgres` login role (used by the pooled connection in production) has
+# BYPASSRLS. Without downgrading, every `tenant_isolation_*` policy is bypassed
+# and the whole platform leaks cross-tenant. `authenticated` is the standard
+# Supabase role (NOBYPASSRLS) the policies are written against, and `postgres`
+# is a member of it, so `SET LOCAL ROLE authenticated` always succeeds and
+# reverts automatically at transaction end. Override for non-Supabase
+# environments / tests via `set_rls_tenant_role`.
+_RLS_TENANT_ROLE: str | None = "authenticated"
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def set_rls_tenant_role(role: str | None) -> None:
+    """Override the Postgres role assumed inside `tenant_session`.
+
+    Pass a role name (validated as a plain SQL identifier) to downgrade to it
+    for every tenant-scoped transaction; pass `None`/`""` to disable the
+    `SET LOCAL ROLE` (only safe when the login role is a non-superuser,
+    NOBYPASSRLS table owner relying on FORCE RLS).
+    """
+    global _RLS_TENANT_ROLE
+    if role and not _IDENT_RE.match(role):
+        raise ValueError(f"Invalid RLS role identifier: {role!r}")
+    _RLS_TENANT_ROLE = role or None
 
 
 @dataclass(slots=True, frozen=True)
@@ -100,6 +129,15 @@ async def tenant_session(ctx: TenantContext) -> AsyncIterator[AsyncSession]:
             "user_role": ctx.role,
             "sub": str(ctx.actor_id),
         }
+        # Downgrade from the (possibly BYPASSRLS) login role to a role the RLS
+        # policies actually apply to. `SET LOCAL` scopes it to this transaction
+        # and reverts on commit/rollback, so the pooled connection is clean for
+        # the next checkout. The role name is a validated identifier (see
+        # `set_rls_tenant_role`), so the f-string interpolation is injection-safe;
+        # `SET ROLE` accepts no bind parameters. Must run inside the transaction
+        # SQLAlchemy autobegins on this first execute.
+        if _RLS_TENANT_ROLE is not None:
+            await session.execute(text(f'SET LOCAL ROLE "{_RLS_TENANT_ROLE}"'))
         # Postgres does not accept bind parameters on the `SET LOCAL ...`
         # command — the value has to be a literal. `set_config()` is the
         # function equivalent and does take parameters, so we use that to

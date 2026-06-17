@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ai_core.orchestrator import OrchestratorAction
-from ai_core.scoring import SIGNAL_WEIGHTS, score_lead
+from ai_core.scoring import BEHAVIOURAL_SIGNALS, CONTENT_SIGNALS, SIGNAL_WEIGHTS, score_lead
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
@@ -41,7 +41,11 @@ def derive_signals_from_llm_payload(payload: dict[str, Any]) -> dict[str, bool]:
     Defensive: we accept exactly the keys that map to weights in SIGNAL_WEIGHTS.
     This prevents model hallucinations from invisibly shifting scores.
     """
-    signals = payload.get("signals") or {}
+    signals = payload.get("signals")
+    if not isinstance(signals, dict):
+        # The LLM occasionally emits `signals` as a list/string/null; treat any
+        # non-object as "no signals" instead of crashing on `.get`.
+        return {}
     return {k: bool(signals.get(k)) for k in SIGNAL_WEIGHTS if k in signals}
 
 
@@ -72,7 +76,20 @@ class UpdateScoreHandler:
             if lead is None:
                 return
 
-            scored = score_lead(signals)
+            # Content signals accumulate (a budget confirmed earlier stays true);
+            # behavioural signals are recomputed fresh each turn from cumulative
+            # state. Score over (accumulated content + this-turn behavioural) so a
+            # turn that simply moves on can't crater an otherwise-hot lead.
+            content_incoming: dict[str, bool] = {
+                k: True for k in signals if k in CONTENT_SIGNALS and signals[k]
+            }
+            accumulated_content = await leads.merge_content_signals(lead.id, content_incoming)
+            behavioural: dict[str, bool] = {
+                k: True for k in signals if k in BEHAVIOURAL_SIGNALS and signals[k]
+            }
+            effective_signals: dict[str, bool] = {**accumulated_content, **behavioural}
+
+            scored = score_lead(effective_signals)
             previous_score = lead.score
             await leads.update_score(lead.id, score=scored.score, reasons=scored.reason_codes)
 
@@ -97,13 +114,14 @@ class UpdateScoreHandler:
                 event_type="lead_score_changed",
                 subject_type="lead",
                 subject_id=turn_ctx.lead_id,
+                variant_id=turn_ctx.variant_id,
                 properties={
                     "previous_score": previous_score,
                     "new_score": scored.score,
                     "temperature": temperature,
                     "previous_temperature": previous_temp,
                     "reason_codes": scored.reason_codes,
-                    "signals": signals,
+                    "signals": effective_signals,
                     "conversation_id": str(turn_ctx.conversation_id),
                 },
             )

@@ -11,6 +11,7 @@ from typing import Any
 
 from shared import get_logger
 from workers.scheduler.analytics_export import build_analytics_export  # re-export
+from workers.scheduler.appointment_sync import sync_appointments  # re-export
 from workers.scheduler.close_conversations import close_idle_conversations  # re-export
 from workers.scheduler.integration_health import integration_health_check  # re-export
 from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
@@ -36,6 +37,7 @@ __all__ = [
     "kb_reindex",
     "objection_extraction",
     "reactivate_dormant_leads",
+    "sync_appointments",
     "template_status_sync",
 ]
 

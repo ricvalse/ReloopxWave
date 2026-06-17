@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bot,
+  CalendarDays,
   Database,
   FileWarning,
   FlaskConical,
@@ -22,6 +23,7 @@ export const merchantNav: NavSection[] = [
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: BarChart3, exact: true },
       { href: '/conversations', label: 'Conversazioni', icon: MessageSquare },
+      { href: '/agenda', label: 'Agenda', icon: CalendarDays },
     ],
   },
   {

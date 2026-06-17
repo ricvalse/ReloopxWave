@@ -32,6 +32,26 @@ SIGNAL_WEIGHTS = {
     "profanity": -30,
 }
 
+# Behavioural signals are owned by the system and recomputed from cumulative
+# conversation state every turn (see `derive_conversation_signals`), so they are
+# naturally up-to-date and must NOT be made sticky (e.g. sentiment can flip).
+BEHAVIOURAL_SIGNALS = frozenset(
+    {
+        "has_name",
+        "has_email",
+        "engaged_multiple_turns",
+        "positive_sentiment",
+        "asked_for_booking",
+        "responded_within_10min",
+    }
+)
+# Content signals are facts the LLM reports about a single message (budget,
+# timeline, objections, …). They must accumulate: a budget confirmed on turn 3
+# is still true on turn 4 even if that turn doesn't mention it. Persisted and
+# OR-merged via `LeadRepository.merge_content_signals` so the score doesn't
+# crater when a later turn simply moves on.
+CONTENT_SIGNALS = frozenset(SIGNAL_WEIGHTS) - BEHAVIOURAL_SIGNALS
+
 
 def score_lead(signals: dict[str, Any]) -> LeadScore:
     score = 0

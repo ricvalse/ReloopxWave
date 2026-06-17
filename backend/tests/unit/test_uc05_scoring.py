@@ -36,8 +36,16 @@ class FakeLead:
     score: int = 0
 
 
-def _patch(monkeypatch, lead: FakeLead | None, captured_events: list, captured_updates: list):
+def _patch(
+    monkeypatch,
+    lead: FakeLead | None,
+    captured_events: list,
+    captured_updates: list,
+    content_store: dict | None = None,
+):
     from ai_core.actions import scoring as mod
+
+    store = content_store if content_store is not None else {}
 
     @asynccontextmanager
     async def fake_session(ctx):
@@ -50,6 +58,10 @@ def _patch(monkeypatch, lead: FakeLead | None, captured_events: list, captured_u
 
         async def update_score(self, lead_id, *, score, reasons):
             captured_updates.append({"lead_id": lead_id, "score": score, "reasons": reasons})
+
+        async def merge_content_signals(self, lead_id, new_signals):
+            store.update({k: True for k, v in new_signals.items() if v})
+            return dict(store)
 
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
@@ -74,6 +86,14 @@ def test_derive_signals_whitelists_known_keys() -> None:
         {"signals": {"has_name": True, "has_budget": True, "unknown_signal": True}}
     )
     assert signals == {"has_name": True, "has_budget": True}
+
+
+def test_derive_signals_tolerates_non_dict_signals() -> None:
+    # The LLM sometimes emits `signals` as a list/string/null — must not crash.
+    assert derive_signals_from_llm_payload({"signals": ["has_name"]}) == {}
+    assert derive_signals_from_llm_payload({"signals": "has_budget"}) == {}
+    assert derive_signals_from_llm_payload({"signals": None}) == {}
+    assert derive_signals_from_llm_payload({}) == {}
 
 
 def test_classify_thresholds() -> None:
@@ -105,6 +125,42 @@ async def test_handler_persists_score_and_emits_event(
     assert events and events[0]["event_type"] == "lead_score_changed"
     assert events[0]["properties"]["previous_score"] == 10
     assert events[0]["properties"]["new_score"] == 30
+
+
+async def test_content_signals_accumulate_across_turns(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext
+) -> None:
+    """A budget confirmed on turn 1 must keep counting on turn 2 even though that
+    turn only carries a behavioural signal — the score must not crater."""
+    lead = FakeLead(id=turn_ctx.lead_id, score=0)
+    events: list = []
+    updates: list = []
+    store: dict = {}
+    _patch(
+        monkeypatch,
+        lead=lead,
+        captured_events=events,
+        captured_updates=updates,
+        content_store=store,
+    )
+
+    handler = UpdateScoreHandler()
+
+    # Turn 1: LLM reports a budget (content signal). Score = 20.
+    await handler(
+        OrchestratorAction(kind="update_score", payload={"signals": {"has_budget": True}}),
+        turn_ctx,
+    )
+    assert updates[-1]["score"] == 20
+
+    # Turn 2: only a behavioural signal this turn; budget is NOT repeated. The
+    # accumulated content keeps budget → 20 (budget) + 5 (has_name) = 25.
+    await handler(
+        OrchestratorAction(kind="update_score", payload={"signals": {"has_name": True}}),
+        turn_ctx,
+    )
+    assert updates[-1]["score"] == 25
+    assert "has_budget" in updates[-1]["reasons"]
 
 
 async def test_handler_noops_when_no_signals(

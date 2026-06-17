@@ -19,8 +19,10 @@ from ai_core import (
 )
 from ai_core.actions import (
     BookSlotHandler,
+    CancelSlotHandler,
     EscalateHumanHandler,
     MovePipelineHandler,
+    RescheduleSlotHandler,
     UpdateScoreHandler,
 )
 from ai_core.rag import Embedder
@@ -107,6 +109,23 @@ def build_runtime(settings: Settings) -> Runtime:
         reply_sender=sender,
     )
     dispatcher.register(booking.kind, booking)
+
+    # UC-02 — reschedule / cancel an existing appointment over WhatsApp.
+    reschedule = RescheduleSlotHandler(
+        kek_base64=settings.integrations_kek_base64,
+        ghl_client_id=settings.ghl_client_id,
+        ghl_client_secret=settings.ghl_client_secret,
+        reply_sender=sender,
+    )
+    dispatcher.register(reschedule.kind, reschedule)
+
+    cancel = CancelSlotHandler(
+        kek_base64=settings.integrations_kek_base64,
+        ghl_client_id=settings.ghl_client_id,
+        ghl_client_secret=settings.ghl_client_secret,
+        reply_sender=sender,
+    )
+    dispatcher.register(cancel.kind, cancel)
 
     # UC-04
     move_pipeline = MovePipelineHandler(

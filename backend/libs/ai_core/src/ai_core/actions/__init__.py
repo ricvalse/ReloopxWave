@@ -9,6 +9,7 @@ Adding a new action kind: define the handler here, register it in
 output; the dispatcher routes it.
 """
 
+from ai_core.actions.appointment_change import CancelSlotHandler, RescheduleSlotHandler
 from ai_core.actions.booking import BookSlotHandler
 from ai_core.actions.escalate import EscalateHumanHandler
 from ai_core.actions.pipeline import MovePipelineHandler
@@ -16,8 +17,10 @@ from ai_core.actions.scoring import UpdateScoreHandler, derive_signals_from_llm_
 
 __all__ = [
     "BookSlotHandler",
+    "CancelSlotHandler",
     "EscalateHumanHandler",
     "MovePipelineHandler",
+    "RescheduleSlotHandler",
     "UpdateScoreHandler",
     "derive_signals_from_llm_payload",
 ]

@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from db import session_scope
 from db.models import Merchant, Tenant
@@ -37,6 +38,43 @@ def _require_db() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _init_engine(_require_db: None) -> None:
     get_engine(_dsn())
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _provision_rls_role(_init_engine: None) -> None:
+    """Make sure the role `tenant_session` downgrades to exists and is RLS-subject.
+
+    `tenant_session` now runs `SET LOCAL ROLE authenticated` so RLS is enforced
+    even when the pooled connection logs in as a BYPASSRLS role (the production
+    bug B1). On real Supabase the `authenticated` role and its `public` grants
+    already exist; on CI/local vanilla Postgres they don't — so we create the
+    role (NOBYPASSRLS) and grant it the privileges the tenant-scoped queries
+    need, as the (superuser/owner) login role. Idempotent and cheap.
+    """
+    async with session_scope() as session:
+        await session.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+                        CREATE ROLE authenticated NOLOGIN NOSUPERUSER NOBYPASSRLS
+                            NOCREATEDB NOCREATEROLE;
+                    END IF;
+                END
+                $$;
+                """
+            )
+        )
+        await session.execute(text("GRANT USAGE ON SCHEMA public TO authenticated"))
+        await session.execute(
+            text(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated"
+            )
+        )
+        await session.execute(
+            text("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated")
+        )
 
 
 @pytest_asyncio.fixture

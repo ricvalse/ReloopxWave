@@ -138,6 +138,7 @@ class MovePipelineHandler:
                         contact_fields=action.payload.get("contact_fields", {}),
                         value=action.payload.get("value"),
                         currency=action.payload.get("currency", "EUR"),
+                        note_body=self._compose_note(turn_ctx, action),
                         on_token_refresh=_persist_tokens,
                     )
 
@@ -152,6 +153,12 @@ class MovePipelineHandler:
                             **(lead.meta or {}),
                             "ghl_opportunity_id": outcome.opportunity_id,
                         }
+                    cf = action.payload.get("contact_fields", {})
+                    await leads.update_contact_fields(
+                        lead.id,
+                        name=cf.get("name") or cf.get("first_name"),
+                        email=cf.get("email"),
+                    )
 
             await analytics.emit(
                 tenant_id=turn_ctx.tenant_id,
@@ -159,6 +166,7 @@ class MovePipelineHandler:
                 event_type="pipeline.moved" if outcome.moved else "pipeline.failed",
                 subject_type="lead",
                 subject_id=turn_ctx.lead_id,
+                variant_id=turn_ctx.variant_id,
                 properties={
                     "stage_id": outcome.stage_id,
                     "opportunity_id": outcome.opportunity_id,
@@ -167,6 +175,33 @@ class MovePipelineHandler:
                     "llm_reason": action.payload.get("reason"),
                 },
             )
+
+    @staticmethod
+    def _compose_note(turn_ctx: TurnContext, action: OrchestratorAction) -> str:
+        """UC-04 internal note: sentiment + collected data + the move reason,
+        written on the GHL contact when the lead advances."""
+        lines = ["[Reloop AI] Lead spostato in pipeline dalla conversazione WhatsApp."]
+        reason = action.payload.get("reason")
+        if reason:
+            lines.append(f"Motivo: {reason}")
+        if turn_ctx.lead_sentiment:
+            lines.append(f"Sentiment: {turn_ctx.lead_sentiment}")
+        data = turn_ctx.collected_data or {}
+        if data.get("name"):
+            lines.append(f"Nome: {data['name']}")
+        if data.get("email"):
+            lines.append(f"Email: {data['email']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    async def _maybe_note(client: Any, contact_id: str, body: str | None) -> None:
+        """Best-effort contact note — never let a note failure undo the move."""
+        if not body:
+            return
+        try:
+            await client.add_contact_note(contact_id, body=body)
+        except Exception as e:
+            logger.warning("move_pipeline.note_failed", error=str(e), contact_id=contact_id)
 
     async def _execute(
         self,
@@ -179,6 +214,7 @@ class MovePipelineHandler:
         contact_fields: dict[str, Any],
         value: float | None,
         currency: str,
+        note_body: str | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> MoveOutcome:
         client = GHLClient(
@@ -232,12 +268,14 @@ class MovePipelineHandler:
                 created_id = created.get("id") or created.get("opportunity", {}).get("id")
                 if not isinstance(created_id, str):
                     return MoveOutcome(False, stage_id, None, "opportunity_create_failed")
+                await self._maybe_note(client, contact_id, note_body)
                 return MoveOutcome(True, stage_id, created_id, "created_in_stage")
 
             try:
                 await client.move_opportunity(
                     opportunity_id, stage_id=stage_id, pipeline_id=pipeline_id or ""
                 )
+                await self._maybe_note(client, contact_id, note_body)
                 return MoveOutcome(True, stage_id, opportunity_id, "moved")
             except IntegrationError as e:
                 logger.warning(

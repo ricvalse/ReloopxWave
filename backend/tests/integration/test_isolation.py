@@ -18,7 +18,7 @@ import uuid
 from typing import cast
 
 import pytest
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, select, text, update
 
 from db import MerchantRepository, TenantContext, TenantRepository, tenant_session
 from db.models import Merchant, Tenant
@@ -26,6 +26,28 @@ from db.models import Merchant, Tenant
 pytestmark = pytest.mark.asyncio
 
 TwoTenants = tuple[Tenant, Merchant, Tenant, Merchant]
+
+
+async def test_tenant_session_runs_as_non_bypassrls_role(two_tenants: TwoTenants) -> None:
+    """B1 guard: a tenant-scoped session must run as a NOBYPASSRLS role.
+
+    If the session ran as the (Supabase `postgres`) login role, which has
+    BYPASSRLS, FORCE ROW LEVEL SECURITY is silently ignored and every
+    `tenant_isolation_*` policy leaks cross-tenant. We assert the downgrade in
+    `tenant_session` actually took effect.
+    """
+    t1, _m1, _t2, _m2 = two_tenants
+
+    async with tenant_session(_admin_ctx(t1.id)) as session:
+        current_user = (await session.execute(text("SELECT current_user"))).scalar_one()
+        bypassrls = (
+            await session.execute(
+                text("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            )
+        ).scalar_one()
+
+    assert current_user == "authenticated"
+    assert bypassrls is False
 
 
 async def test_tenant_cannot_read_other_tenant_merchants(two_tenants: TwoTenants) -> None:

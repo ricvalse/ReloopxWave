@@ -64,6 +64,64 @@ class LeadRepository:
             return
         lead.sentiment = sentiment
 
+    async def update_contact_fields(
+        self, lead_id: UUID, *, name: str | None = None, email: str | None = None
+    ) -> None:
+        """Fill-only persistence of contact identity captured during a turn.
+
+        Feeds UC-05 scoring (`has_name`/`has_email`) and the UC-04 contact note,
+        and is the fallback source of `contact_fields` for booking/pipeline. Only
+        writes a field that is currently empty, so a value the lead already
+        confirmed is never clobbered by a later partial or re-asked answer.
+        """
+        if not name and not email:
+            return
+        lead = await self._session.get(Lead, lead_id)
+        if lead is None:
+            return
+        if name and not lead.name:
+            lead.name = name[:200]
+        if email and not lead.email:
+            lead.email = email[:320]
+
+    async def merge_content_signals(
+        self, lead_id: UUID, new_signals: dict[str, bool]
+    ) -> dict[str, bool]:
+        """Accumulate LLM-derived *content* signals on the lead (UC-05).
+
+        OR-merges the truthy entries of `new_signals` into
+        `lead.meta['content_signals']` and returns the full accumulated set, so a
+        fact confirmed on an earlier turn (budget, timeline, an objection) is not
+        lost when a later turn doesn't repeat it — keeping the score cumulative.
+        """
+        incoming = {k: True for k, v in new_signals.items() if v}
+        lead = await self._session.get(Lead, lead_id)
+        if lead is None:
+            return incoming
+        existing: dict[str, bool] = dict((lead.meta or {}).get("content_signals", {}))
+        merged = {**existing, **incoming}
+        if merged != existing:
+            lead.meta = {**(lead.meta or {}), "content_signals": merged}
+        return merged
+
+    async def set_pipeline_stage(self, lead_id: UUID, *, stage_id: str) -> None:
+        """Mirror a CRM-side pipeline-stage change back onto the lead (UC-04).
+
+        Used by the GHL event router so the dashboard and scoring reflect moves
+        made directly in GoHighLevel, not only those the bot initiates.
+        """
+        lead = await self._session.get(Lead, lead_id)
+        if lead is None:
+            return
+        lead.pipeline_stage_id = stage_id
+
+    async def get_by_ghl_contact_id(self, *, merchant_id: UUID, ghl_contact_id: str) -> Lead | None:
+        """Resolve a lead by its GHL contact id (GHL webhooks key on it, not phone)."""
+        stmt = select(Lead).where(
+            Lead.merchant_id == merchant_id, Lead.ghl_contact_id == ghl_contact_id
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def anonymize_stale(
         self, *, merchant_id: UUID, cutoff: datetime, limit: int = 2000
     ) -> int:

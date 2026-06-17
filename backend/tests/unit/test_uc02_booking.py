@@ -58,13 +58,24 @@ def ghl_bundle(turn_ctx: TurnContext) -> ResolvedGHLIntegration:
     )
 
 
-def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None):
-    """Replace the action-handler's DB touchpoints with fakes."""
+def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[dict]:
+    """Replace the action-handler's DB touchpoints with fakes.
+
+    Returns the list that records `AppointmentRepository.record_booking` calls so
+    tests can assert the write-through mirror fired (UC-02).
+    """
     from ai_core.actions import booking as mod
 
     @asynccontextmanager
     async def fake_session(ctx):
         yield object()
+
+    appt_calls: list[dict] = []
+
+    class FakeAppointmentRepo:
+        def __init__(self, session): ...
+        async def record_booking(self, **kw):
+            appt_calls.append(kw)
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -74,6 +85,10 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None):
     class FakeLeadRepo:
         def __init__(self, session): ...
         async def update_score(self, lead_id, *, score, reasons): ...
+        async def get_by_phone(self, *, merchant_id, phone):
+            return None
+
+        async def update_contact_fields(self, lead_id, *, name=None, email=None): ...
 
     class FakeAnalyticsRepo:
         def __init__(self, session):
@@ -94,7 +109,9 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None):
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
+    monkeypatch.setattr(mod, "AppointmentRepository", FakeAppointmentRepo)
     monkeypatch.setattr(mod, "ConfigResolver", FakeConfig)
+    return appt_calls
 
 
 def _patch_ghl_client(monkeypatch, *, booking_ok: bool):
@@ -130,7 +147,7 @@ def _patch_ghl_client(monkeypatch, *, booking_ok: bool):
 async def test_book_slot_happy_path(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
 ) -> None:
-    _patch_session(monkeypatch, ghl=ghl_bundle)
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
     ghl_client = _patch_ghl_client(monkeypatch, booking_ok=True)
     sender = FakeSender()
 
@@ -157,11 +174,21 @@ async def test_book_slot_happy_path(
     assert len(sender.calls) == 1
     assert "prenotato" in sender.calls[0]["text"]
 
+    # Write-through mirror: the GHL appointment_id (otherwise dropped) is
+    # persisted locally with the resolved slot window and contact handle.
+    assert len(appt_calls) == 1
+    mirrored = appt_calls[0]
+    assert mirrored["ghl_appointment_id"] == "BK-1"
+    assert mirrored["ghl_contact_id"] == "CT-1"
+    assert mirrored["calendar_id"] == "CAL-1"
+    assert mirrored["start_at"].isoformat() == "2026-04-25T10:00:00+02:00"
+    assert mirrored["end_at"].isoformat() == "2026-04-25T10:30:00+02:00"
+
 
 async def test_book_slot_taken_proposes_alternatives(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
 ) -> None:
-    _patch_session(monkeypatch, ghl=ghl_bundle)
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
     ghl_client = _patch_ghl_client(monkeypatch, booking_ok=False)
     sender = FakeSender()
 
@@ -184,6 +211,8 @@ async def test_book_slot_taken_proposes_alternatives(
     assert len(sender.calls) == 1
     assert "non è più disponibile" in sender.calls[0]["text"]
     assert sender.calls[0]["text"].count("•") == 3
+    # No booking → nothing mirrored locally.
+    assert appt_calls == []
 
 
 async def test_book_slot_naive_time_interpreted_in_merchant_tz(

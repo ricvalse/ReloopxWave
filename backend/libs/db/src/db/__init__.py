@@ -6,6 +6,7 @@ from db.repositories import (
     LIFECYCLE_FLOW_KEYS,
     ABRepository,
     AnalyticsRepository,
+    AppointmentRepository,
     BotTemplateRepository,
     CategoryCount,
     ConversationRepository,
@@ -41,6 +42,7 @@ from db.session import (
     get_engine,
     get_session_factory,
     session_scope,
+    set_rls_tenant_role,
     tenant_session,
 )
 
@@ -52,6 +54,7 @@ __all__ = [
     "LIFECYCLE_FLOW_KEYS",
     "ABRepository",
     "AnalyticsRepository",
+    "AppointmentRepository",
     "BotTemplateRepository",
     "CategoryCount",
     "ConversationRepository",
@@ -85,5 +88,6 @@ __all__ = [
     "get_engine",
     "get_session_factory",
     "session_scope",
+    "set_rls_tenant_role",
     "tenant_session",
 ]

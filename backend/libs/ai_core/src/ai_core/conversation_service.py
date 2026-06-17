@@ -116,6 +116,17 @@ class TurnContext:
     # integration row; None means "use the D360 default host".
     api_key: str = ""
     waba_base_url: str | None = None
+    # A/B experiment variant this conversation is enrolled in (UC-09). Threaded
+    # into every analytics.emit below so `ABRepository.metrics` can attribute
+    # conversions (booking.created / lead_score_changed / pipeline.moved) to the
+    # variant — without it the metrics filter on `variant_id IN (...)` matches
+    # nothing and every experiment reports zero conversions.
+    variant_id: str | None = None
+    # Latest-turn sentiment + a snapshot of the contact data on file, written
+    # onto the GHL contact as an internal note when the lead advances (UC-04:
+    # "scrive note interne con sentiment e dati raccolti").
+    lead_sentiment: str | None = None
+    collected_data: dict[str, Any] | None = None
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
@@ -893,6 +904,9 @@ class ConversationService:
             phone_number_id=rc.phone_number_id,
             api_key=resolved.api_key,
             waba_base_url=resolved.waba_base_url,
+            variant_id=rc.conv_variant_id,
+            lead_sentiment=sentiment or rc.lead_sentiment,
+            collected_data={"name": rc.lead_name, "email": rc.lead_email},
         )
 
         # UC-05 — always-on cumulative scoring. Derive behavioural signals from

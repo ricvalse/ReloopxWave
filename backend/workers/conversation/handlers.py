@@ -21,11 +21,18 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select, update
 
 from ai_core import ConversationService, RescheduleBy, debounce_decision
-from db import GHLMarketplaceRepository, ResolvedAgencyInstall, session_scope
+from db import (
+    ConversationRepository,
+    GHLMarketplaceRepository,
+    LeadRepository,
+    ResolvedAgencyInstall,
+    session_scope,
+)
 from db.models.conversation import Conversation, Message
 from db.repositories.integration import IntegrationRepository
 from integrations import (
@@ -267,23 +274,202 @@ async def handle_phone_app_echo(
     }
 
 
+# Failed-call outcomes that should trigger the AI WhatsApp takeover (UC-03). GHL
+# delivers call results via a workflow webhook whose payload the agency shapes,
+# so we match defensively on normalised tokens rather than one canonical value.
+_CALL_FAILED_TOKENS = (
+    "no_answer",
+    "noanswer",
+    "not_answered",
+    "unanswered",
+    "busy",
+    "failed",
+    "no_show",
+    "voicemail",
+)
+_CALL_STATUS_KEYS = ("callStatus", "call_status", "callOutcome", "call_outcome")
+
+
+def _opt_str(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
+
+
+def _ghl_phone(payload: dict[str, Any]) -> str | None:
+    for key in ("phone", "contactPhone", "contact_phone"):
+        if payload.get(key):
+            return str(payload[key])
+    contact = payload.get("contact")
+    if isinstance(contact, dict) and contact.get("phone"):
+        return str(contact["phone"])
+    return None
+
+
+def _ghl_full_name(payload: dict[str, Any]) -> str | None:
+    name = payload.get("name") or payload.get("full_name")
+    if name:
+        return str(name)
+    first = payload.get("firstName") or payload.get("first_name")
+    last = payload.get("lastName") or payload.get("last_name")
+    parts = [str(p) for p in (first, last) if p]
+    return " ".join(parts) or None
+
+
+def _detect_call_outcome(event_type_lc: str, payload: dict[str, Any]) -> str | None:
+    """Return a normalised call-outcome token if this event looks like a call
+    result, else None."""
+    has_call_key = any(payload.get(k) for k in _CALL_STATUS_KEYS)
+    if "call" not in event_type_lc and not has_call_key:
+        return None
+    raw = next((payload[k] for k in _CALL_STATUS_KEYS if payload.get(k)), None)
+    raw = raw or payload.get("status") or payload.get("outcome")
+    if not raw and "call" in event_type_lc:
+        raw = event_type_lc  # e.g. the type itself encodes "OutboundCallNoAnswer"
+    if not raw:
+        return None
+    return str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+
+
+async def _resolve_lead(
+    leads: LeadRepository, merchant_id: UUID, contact_id: str | None, phone: str | None
+) -> Any:
+    lead = None
+    if contact_id:
+        lead = await leads.get_by_ghl_contact_id(merchant_id=merchant_id, ghl_contact_id=contact_id)
+    if lead is None and phone:
+        lead = await leads.get_by_phone(merchant_id=merchant_id, phone=phone)
+    return lead
+
+
 async def handle_ghl_event(
     ctx: dict[str, Any],
     merchant_id: str,
     event_type: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Fan-out for GHL inbound webhooks (opportunity updates, bookings, contact
-    changes). V1 logs + records; richer event routing (e.g. `OpportunityStatusUpdate`
-    → analytics event) lands alongside UC-02/UC-04 completion.
+    """Route a GHL data webhook to a lead-state sync (UC-01/02/04) or, when it
+    carries a failed-call result, to the WhatsApp takeover (UC-03).
+
+    Runs on a service-role session (the signed webhook is trusted; every query
+    is explicitly scoped by `merchant_id`). Logged with a system actor marker.
     """
+    et = event_type.lower()
+
+    outcome = _detect_call_outcome(et, payload)
+    if outcome is not None:
+        return await handle_call_outcome(
+            ctx,
+            merchant_id=merchant_id,
+            contact_phone=_ghl_phone(payload) or "",
+            outcome=outcome,
+            ghl_contact_id=_opt_str(payload.get("contactId") or payload.get("contact_id")),
+        )
+
+    mid = UUID(merchant_id)
+    matched = False
+    async with session_scope() as session:
+        leads = LeadRepository(session)
+        if "contact" in et:
+            contact_id = _opt_str(
+                payload.get("id") or payload.get("contactId") or payload.get("contact_id")
+            )
+            lead = await _resolve_lead(leads, mid, contact_id, _ghl_phone(payload))
+            if lead is not None:
+                matched = True
+                await leads.update_contact_fields(
+                    lead.id, name=_ghl_full_name(payload), email=_opt_str(payload.get("email"))
+                )
+                if contact_id and not lead.ghl_contact_id:
+                    lead.ghl_contact_id = contact_id
+        elif "opportunity" in et:
+            contact_id = _opt_str(payload.get("contactId") or payload.get("contact_id"))
+            lead = await _resolve_lead(leads, mid, contact_id, _ghl_phone(payload))
+            if lead is not None:
+                matched = True
+                stage = _opt_str(
+                    payload.get("pipelineStageId")
+                    or payload.get("stageId")
+                    or payload.get("pipeline_stage_id")
+                )
+                if stage:
+                    await leads.set_pipeline_stage(lead.id, stage_id=stage)
+                opp_id = _opt_str(payload.get("id") or payload.get("opportunityId"))
+                if opp_id:
+                    lead.meta = {**(lead.meta or {}), "ghl_opportunity_id": opp_id}
+        # Appointment events carry no durable lead field to sync in V1; reminder
+        # cancellation handling lands with the UC-02 appointment reminders.
+
     logger.info(
-        "ghl.event.received",
+        "ghl.event.routed",
         merchant_id=merchant_id,
         event_type=event_type,
-        keys=sorted(payload.keys()),
+        matched=matched,
+        actor="system:ghl_webhook",
     )
-    return {"merchant_id": merchant_id, "event_type": event_type}
+    return {"merchant_id": merchant_id, "event_type": event_type, "matched": matched}
+
+
+async def handle_call_outcome(
+    ctx: dict[str, Any],
+    *,
+    merchant_id: str,
+    contact_phone: str,
+    outcome: str,
+    ghl_contact_id: str | None = None,
+) -> dict[str, Any]:
+    """UC-03 — a phone call to the lead failed; take control on WhatsApp.
+
+    Ensures an active conversation for the lead exists, marks it as originating
+    from a failed call, and stamps it so the no-answer follow-up flow
+    (`followup_no_answer`) picks it up. The first outreach itself goes through
+    `workers.outbound.decide_outbound`, which respects the 24h window and only
+    sends outside it once an approved template/flow step is configured (CC-WA) —
+    until then it skips cleanly rather than failing.
+    """
+    norm = str(outcome).strip().lower().replace(" ", "_").replace("-", "_")
+    actionable = norm in _CALL_FAILED_TOKENS or any(tok in norm for tok in _CALL_FAILED_TOKENS)
+    if not actionable:
+        return {"handled": False, "reason": "outcome_not_actionable", "outcome": norm}
+    if not contact_phone:
+        return {"handled": False, "reason": "no_contact_phone"}
+
+    settings = get_settings()
+    mid = UUID(merchant_id)
+    async with session_scope() as session:
+        leads = LeadRepository(session)
+        convs = ConversationRepository(session)
+        integrations = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+
+        lead = None
+        if ghl_contact_id:
+            lead = await leads.get_by_ghl_contact_id(merchant_id=mid, ghl_contact_id=ghl_contact_id)
+        if lead is None:
+            lead = await leads.get_by_phone(merchant_id=mid, phone=contact_phone)
+
+        conv = await convs.get_active(merchant_id=mid, wa_contact_phone=contact_phone)
+        if conv is None:
+            wa = await integrations.resolve_whatsapp_by_merchant(mid)
+            if wa is None or not wa.phone_number_id:
+                logger.warning("ghl.call_outcome.no_wa_channel", merchant_id=merchant_id)
+                return {"handled": False, "reason": "no_whatsapp_channel"}
+            conv = await convs.create(
+                merchant_id=mid,
+                lead_id=lead.id if lead is not None else None,
+                wa_phone_number_id=wa.phone_number_id,
+                wa_contact_phone=contact_phone,
+            )
+
+        conv.meta = {**(conv.meta or {}), "origin": "call_failed", "call_outcome": norm}
+        await convs.touch_last_message(conv.id)
+        conv_id = conv.id
+
+    logger.info(
+        "ghl.call_outcome.primed",
+        merchant_id=merchant_id,
+        outcome=norm,
+        conversation_id=str(conv_id),
+        actor="system:ghl_webhook",
+    )
+    return {"handled": True, "outcome": norm, "conversation_id": str(conv_id)}
 
 
 async def handle_ghl_install(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
