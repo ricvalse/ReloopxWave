@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KPICard, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonTable } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 
@@ -65,10 +65,22 @@ export function AgencyDashboard() {
   return (
     <div className="space-y-4 p-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <KPICard label="Lead totali" value={k ? k.leads_total : '—'} />
-        <KPICard label="Merchant attivi" value={k ? k.active_merchants : '—'} />
-        <KPICard label="Messaggi ricevuti" value={k ? k.messages_received : '—'} />
-        <KPICard label="Booking creati" value={k ? k.bookings_created : '—'} />
+        <KPICard label="Lead totali" loading={query.isLoading} value={k ? k.leads_total : '—'} />
+        <KPICard
+          label="Merchant attivi"
+          loading={query.isLoading}
+          value={k ? k.active_merchants : '—'}
+        />
+        <KPICard
+          label="Messaggi ricevuti"
+          loading={query.isLoading}
+          value={k ? k.messages_received : '—'}
+        />
+        <KPICard
+          label="Booking creati"
+          loading={query.isLoading}
+          value={k ? k.bookings_created : '—'}
+        />
       </div>
 
       <Card>
@@ -76,7 +88,9 @@ export function AgencyDashboard() {
           <CardTitle>Ranking merchant (conversione)</CardTitle>
         </CardHeader>
         <CardContent>
-          {!k || k.merchants_ranking.length === 0 ? (
+          {query.isLoading ? (
+            <SkeletonTable rows={5} cols={4} />
+          ) : !k || k.merchants_ranking.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nessun merchant ancora attivo.</p>
           ) : (
             <table className="w-full text-sm">

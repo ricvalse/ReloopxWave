@@ -36,6 +36,7 @@ from workers.runtime import build_runtime
 from workers.scheduler.handlers import (
     apply_template_status_event,
     build_analytics_export,
+    catalog_reindex,
     close_idle_conversations,
     daily_kpi_rollup,
     enforce_retention,
@@ -92,6 +93,7 @@ class WorkerSettings:
         objection_extraction,
         close_idle_conversations,
         kb_reindex,
+        catalog_reindex,
         integration_health_check,
         build_analytics_export,
         enforce_retention,

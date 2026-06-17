@@ -1,0 +1,164 @@
+"""Repositories for the merchant content layer — products, policies, FAQ.
+
+RLS (migration 0016) makes every query tenant-safe automatically; the explicit
+`merchant_id` filters on list/upsert mirror the existing KB repo and keep the
+SQL readable. All writes `flush()` so callers get generated ids back.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db.models import FaqEntry, Product, StorePolicy
+
+
+class ProductRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        merchant_id: UUID,
+        title: str,
+        handle: str,
+        description: str | None = None,
+        vendor: str | None = None,
+        product_type: str | None = None,
+        tags: list[str] | None = None,
+        variants: list[dict[str, Any]] | None = None,
+        images: list[str] | None = None,
+        price: Decimal | None = None,
+        currency: str = "EUR",
+        is_active: bool = True,
+    ) -> Product:
+        product = Product(
+            merchant_id=merchant_id,
+            title=title,
+            handle=handle,
+            description=description,
+            vendor=vendor,
+            product_type=product_type,
+            tags=tags or [],
+            variants=variants or [],
+            images=images or [],
+            price=price,
+            currency=currency,
+            is_active=is_active,
+        )
+        self._session.add(product)
+        await self._session.flush()
+        return product
+
+    async def get(self, product_id: UUID) -> Product | None:
+        return await self._session.get(Product, product_id)
+
+    async def list_for_merchant(
+        self, merchant_id: UUID, *, active_only: bool = False
+    ) -> list[Product]:
+        stmt = select(Product).where(Product.merchant_id == merchant_id)
+        if active_only:
+            stmt = stmt.where(Product.is_active.is_(True))
+        stmt = stmt.order_by(Product.title)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def update(self, product_id: UUID, **fields: Any) -> Product | None:
+        product = await self._session.get(Product, product_id)
+        if product is None:
+            return None
+        for key, value in fields.items():
+            setattr(product, key, value)
+        await self._session.flush()
+        return product
+
+    async def delete(self, product_id: UUID) -> bool:
+        product = await self._session.get(Product, product_id)
+        if product is None:
+            return False
+        await self._session.delete(product)
+        await self._session.flush()
+        return True
+
+
+class StorePolicyRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_for_merchant(self, merchant_id: UUID) -> StorePolicy | None:
+        return (
+            await self._session.execute(
+                select(StorePolicy).where(StorePolicy.merchant_id == merchant_id)
+            )
+        ).scalar_one_or_none()
+
+    async def upsert(self, *, merchant_id: UUID, **fields: Any) -> StorePolicy:
+        row = await self.get_for_merchant(merchant_id)
+        if row is None:
+            row = StorePolicy(merchant_id=merchant_id, **fields)
+            self._session.add(row)
+        else:
+            for key, value in fields.items():
+                setattr(row, key, value)
+        await self._session.flush()
+        return row
+
+
+class FaqRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        merchant_id: UUID,
+        question: str,
+        answer: str,
+        category: str | None = None,
+        sort_order: int = 0,
+        is_active: bool = True,
+    ) -> FaqEntry:
+        entry = FaqEntry(
+            merchant_id=merchant_id,
+            question=question,
+            answer=answer,
+            category=category,
+            sort_order=sort_order,
+            is_active=is_active,
+        )
+        self._session.add(entry)
+        await self._session.flush()
+        return entry
+
+    async def get(self, faq_id: UUID) -> FaqEntry | None:
+        return await self._session.get(FaqEntry, faq_id)
+
+    async def list_for_merchant(
+        self, merchant_id: UUID, *, active_only: bool = False
+    ) -> list[FaqEntry]:
+        stmt = select(FaqEntry).where(FaqEntry.merchant_id == merchant_id)
+        if active_only:
+            stmt = stmt.where(FaqEntry.is_active.is_(True))
+        stmt = stmt.order_by(FaqEntry.sort_order, FaqEntry.created_at)
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def update(self, faq_id: UUID, **fields: Any) -> FaqEntry | None:
+        entry = await self._session.get(FaqEntry, faq_id)
+        if entry is None:
+            return None
+        for key, value in fields.items():
+            setattr(entry, key, value)
+        await self._session.flush()
+        return entry
+
+    async def delete(self, faq_id: UUID) -> bool:
+        entry = await self._session.get(FaqEntry, faq_id)
+        if entry is None:
+            return False
+        await self._session.delete(entry)
+        await self._session.flush()
+        return True

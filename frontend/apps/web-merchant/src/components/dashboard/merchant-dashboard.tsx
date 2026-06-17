@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KPICard, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonChart } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { useMerchantId } from '@/hooks/use-merchant-id';
@@ -71,10 +71,18 @@ export function MerchantDashboard() {
     <div className="space-y-4 p-6">
       <SetupChecklist />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <KPICard label="Lead totali" value={k ? k.leads_total : '—'} />
-        <KPICard label="Lead hot" value={k ? k.leads_hot : '—'} />
-        <KPICard label="Tasso risposta" value={k ? pct(k.response_rate) : '—'} />
-        <KPICard label="Booking rate" value={k ? pct(k.booking_rate) : '—'} />
+        <KPICard label="Lead totali" loading={query.isLoading} value={k ? k.leads_total : '—'} />
+        <KPICard label="Lead hot" loading={query.isLoading} value={k ? k.leads_hot : '—'} />
+        <KPICard
+          label="Tasso risposta"
+          loading={query.isLoading}
+          value={k ? pct(k.response_rate) : '—'}
+        />
+        <KPICard
+          label="Booking rate"
+          loading={query.isLoading}
+          value={k ? pct(k.booking_rate) : '—'}
+        />
       </div>
 
       <Card>
@@ -82,7 +90,9 @@ export function MerchantDashboard() {
           <CardTitle>Distribuzione score lead</CardTitle>
         </CardHeader>
         <CardContent>
-          {!k || k.score_distribution.length === 0 ? (
+          {query.isLoading ? (
+            <SkeletonChart />
+          ) : !k || k.score_distribution.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nessun dato ancora.</p>
           ) : (
             <div className="flex items-end gap-2 h-40">

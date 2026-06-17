@@ -2,6 +2,7 @@ from db.models.ab import ABAssignment, ABExperiment
 from db.models.analytics import AnalyticsEvent
 from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
+from db.models.catalog import FaqEntry, Product, StorePolicy
 from db.models.conversation import Conversation, Message
 from db.models.flow import Flow, FlowStep
 from db.models.ft import FTModel
@@ -21,6 +22,7 @@ __all__ = [
     "BotTemplate",
     "Conversation",
     "FTModel",
+    "FaqEntry",
     "Flow",
     "FlowStep",
     "GHLAgencyInstall",
@@ -32,7 +34,9 @@ __all__ = [
     "Merchant",
     "Message",
     "Objection",
+    "Product",
     "PromptTemplate",
+    "StorePolicy",
     "Tenant",
     "TimestampMixin",
     "User",

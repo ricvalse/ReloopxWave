@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, ButtonSpinner, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
 import { Upload } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { getApiClient } from '@/lib/api';
@@ -18,6 +18,8 @@ export function KnowledgeBaseUploader() {
   const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
+  // Determinate % on the impersonation proxy path (XHR); null elsewhere.
+  const [progress, setProgress] = useState<number | null>(null);
 
   const mutation = useMutation({
     mutationFn: async ({ file, title }: UploadArgs) => {
@@ -25,27 +27,19 @@ export function KnowledgeBaseUploader() {
 
       // Under agency impersonation there is no supabase-js session, so the
       // direct-to-Storage upload (RLS-scoped) can't authenticate. Route the
-      // file through the FastAPI proxy, which uploads server-side.
+      // file through the FastAPI proxy, which uploads server-side. We use XHR
+      // here (not fetch) so we can show a determinate upload progress bar.
       if (isImpersonatingBrowser()) {
         const form = new FormData();
         form.append('file', file);
         form.append('title', title);
         const token = readCookieBrowser(IMP_COOKIE);
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL}/knowledge-base/${merchantId}/upload`,
-          {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: form,
-          },
-        );
-        if (!res.ok) {
-          const body = (await res.json().catch(() => null)) as
-            | { error?: { message?: string } }
-            | null;
-          throw new Error(body?.error?.message ?? 'Upload fallito');
-        }
-        return res.json();
+        return uploadViaProxy({
+          url: `${process.env.NEXT_PUBLIC_API_BASE_URL}/knowledge-base/${merchantId}/upload`,
+          form,
+          token,
+          onProgress: setProgress,
+        });
       }
 
       const supabase = getBrowserSupabase();
@@ -71,6 +65,7 @@ export function KnowledgeBaseUploader() {
       setFile(null);
       setTitle('');
     },
+    onSettled: () => setProgress(null),
   });
 
   return (
@@ -104,16 +99,73 @@ export function KnowledgeBaseUploader() {
               {mutation.error instanceof Error ? mutation.error.message : 'Upload failed'}
             </p>
           ) : null}
+          {mutation.isPending && progress !== null ? (
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-150"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          ) : null}
           <Button
             disabled={!file || !title || mutation.isPending}
             onClick={() => file && title && mutation.mutate({ file, title })}
           >
-            {mutation.isPending ? 'Caricamento…' : 'Carica e indicizza'}
+            {mutation.isPending ? (
+              <>
+                <ButtonSpinner />
+                Caricamento…
+              </>
+            ) : (
+              'Carica e indicizza'
+            )}
           </Button>
         </div>
       </CardContent>
     </Card>
   );
+}
+
+/** POST a multipart form via XHR so we can report determinate upload progress. */
+function uploadViaProxy({
+  url,
+  form,
+  token,
+  onProgress,
+}: {
+  url: string;
+  form: FormData;
+  token: string | null;
+  onProgress: (pct: number) => void;
+}): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(xhr.responseText ? JSON.parse(xhr.responseText) : null);
+        } catch {
+          resolve(null);
+        }
+      } else {
+        let message = 'Upload fallito';
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: { message?: string } };
+          message = body?.error?.message ?? message;
+        } catch {
+          /* keep default */
+        }
+        reject(new Error(message));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Errore di rete durante il caricamento'));
+    xhr.send(form);
+  });
 }
 
 function inferSource(file: File): 'pdf' | 'docx' | 'txt' {

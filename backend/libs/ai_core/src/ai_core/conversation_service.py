@@ -41,6 +41,7 @@ from db import (
     LeadRepository,
     MessageRepository,
     ResolvedWhatsAppIntegration,
+    StorePolicyRepository,
     TenantContext,
     tenant_session,
 )
@@ -930,6 +931,10 @@ class ConversationService:
         examples = await _examples(ConfigKey.BOT_EXAMPLES)
         sentiment_adaptation = await _bool(ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED, default=True)
 
+        # Store policies — short, always-relevant facts injected straight into
+        # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
+        policy_lines = await self._store_policy_lines(session, merchant_id)
+
         # `has_profile` keys off content the merchant actually provided — NOT the
         # always-defaulted enums — so a truly empty merchant keeps the generic
         # DEFAULT_SYSTEM_PROMPT (today's behavior). Any real content opts into
@@ -950,6 +955,7 @@ class ConversationService:
                 do_phrases,
                 dont_phrases,
                 examples,
+                policy_lines,
             ]
         )
         if not has_profile:
@@ -982,6 +988,8 @@ class ConversationService:
             lines.append(f"Sede / area di copertura: {location}")
         if website:
             lines.append(f"Sito web: {website}")
+        if policy_lines:
+            lines.append("Politiche del negozio:\n" + "\n".join(f"- {p}" for p in policy_lines))
 
         # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
         tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
@@ -1021,6 +1029,40 @@ class ConversationService:
             lines.append(extras)
 
         return "\n\n".join(lines)
+
+    async def _store_policy_lines(self, session: Any, merchant_id: UUID) -> list[str]:
+        """Italian one-liners for the merchant's store policies (empty if none).
+
+        Best-effort: any error (missing table during a partial migration, etc.)
+        degrades to no policy lines rather than breaking the turn.
+        """
+        try:
+            policy = await StorePolicyRepository(session).get_for_merchant(merchant_id)
+        except Exception:
+            return []
+        if policy is None:
+            return []
+
+        out: list[str] = []
+        labelled = [
+            ("Spedizioni", policy.shipping_info),
+            ("Resi e rimborsi", policy.return_policy),
+            ("Pagamenti", policy.payment_methods),
+            ("Cambi", policy.exchange_policy),
+            ("Garanzia", policy.warranty_info),
+            ("Contatti", policy.contact_info),
+        ]
+        for label, value in labelled:
+            if value and value.strip():
+                out.append(f"{label}: {value.strip()}")
+        for custom in policy.custom_policies or []:
+            if not isinstance(custom, dict):
+                continue
+            title = str(custom.get("title", "")).strip()
+            body = str(custom.get("body", "")).strip()
+            if title and body:
+                out.append(f"{title}: {body}")
+        return out
 
     async def _resolve_int(
         self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: int

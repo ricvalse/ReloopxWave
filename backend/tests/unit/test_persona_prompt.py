@@ -7,6 +7,7 @@ from a dict, so each structured enum value maps to a deterministic fragment.
 from __future__ import annotations
 
 import uuid
+from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -147,6 +148,40 @@ async def test_persona_field_alone_triggers_assembled_prompt(monkeypatch) -> Non
     prompt = await _build(monkeypatch, {ConfigKey.BOT_DO_PHRASES: ["volentieri"]})
     assert prompt != DEFAULT_SYSTEM_PROMPT
     assert "da preferire: volentieri." in prompt
+
+
+async def test_store_policies_injected(monkeypatch) -> None:
+    """Store policies are injected as a deterministic block and, on their own,
+    trigger the assembled prompt (not the generic default)."""
+    from ai_core import conversation_service as cs
+
+    class _FakePolicy:
+        shipping_info = "Spedizione gratuita sopra 49€"
+        return_policy = "Reso entro 30 giorni"
+        payment_methods = None
+        exchange_policy = None
+        warranty_info = None
+        contact_info = None
+        custom_policies: ClassVar[list] = [
+            {"title": "Confezioni", "body": "Confezione regalo su richiesta"}
+        ]
+
+    class _FakeRepo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def get_for_merchant(self, merchant_id):
+            return _FakePolicy()
+
+    monkeypatch.setattr(cs, "StorePolicyRepository", _FakeRepo)
+    prompt = await _build(monkeypatch, {})
+    assert prompt != DEFAULT_SYSTEM_PROMPT
+    assert "Politiche del negozio:" in prompt
+    assert "Spedizioni: Spedizione gratuita sopra 49€" in prompt
+    assert "Resi e rimborsi: Reso entro 30 giorni" in prompt
+    assert "Confezioni: Confezione regalo su richiesta" in prompt
+    # Unset fields produce no line.
+    assert "Pagamenti:" not in prompt
 
 
 async def test_extras_are_last(monkeypatch) -> None:

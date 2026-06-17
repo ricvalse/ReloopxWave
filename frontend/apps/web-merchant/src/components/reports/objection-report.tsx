@@ -1,7 +1,16 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  SkeletonCard,
+  SkeletonChart,
+} from '@reloop/ui';
+import { MessagesSquare } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
 
 type ObjectionCategory = {
@@ -39,13 +48,35 @@ export function ObjectionReport() {
   const maxCount = Math.max(1, ...categories.map((c) => c.count));
 
   if (query.isLoading) {
-    return <p className="text-sm text-muted-foreground">Caricamento…</p>;
+    return (
+      <div className="space-y-4">
+        <SkeletonCard lines={5} />
+        <Card>
+          <CardHeader>
+            <CardTitle>Heatmap obiezioni</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SkeletonChart />
+          </CardContent>
+        </Card>
+        <div className="grid gap-4 md:grid-cols-2">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      </div>
+    );
   }
   if (query.error) {
     return <p className="text-sm text-destructive">Errore: {String(query.error)}</p>;
   }
   if (!categories.length) {
-    return <p className="text-sm text-muted-foreground">Nessuna obiezione classificata negli ultimi 30 giorni.</p>;
+    return (
+      <EmptyState
+        icon={MessagesSquare}
+        title="Nessuna obiezione classificata"
+        description="Quando i clienti sollevano obiezioni nelle conversazioni, le ritrovi qui raggruppate per categoria."
+      />
+    );
   }
 
   return (

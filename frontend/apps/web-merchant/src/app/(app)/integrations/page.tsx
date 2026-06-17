@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { PageHeader } from '@reloop/ui';
+import { PageHeader, SkeletonCard } from '@reloop/ui';
 import { IntegrationsPanel } from '@/components/integrations/integrations-panel';
 
 export default function IntegrationsPage() {
@@ -9,7 +9,7 @@ export default function IntegrationsPage() {
         title="Integrazioni"
         description="Stato connessioni GoHighLevel e WhatsApp Cloud."
       />
-      <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Caricamento…</div>}>
+      <Suspense fallback={<div className="grid gap-4 p-6 md:grid-cols-2"><SkeletonCard /><SkeletonCard /></div>}>
         <IntegrationsPanel />
       </Suspense>
     </>

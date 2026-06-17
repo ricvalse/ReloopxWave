@@ -16,6 +16,11 @@ logger = get_logger(__name__)
 
 CACHE_TTL_SECONDS = 60
 
+# Suffix for the whole-bag cache entry written by `resolve_all`. Namespaced
+# per merchant exactly like the per-key entries (`cfg:{merchant_id}:{key}`),
+# so the `cfg:{merchant_id}:*` invalidation scan covers it too.
+RESOLVED_CACHE_KEY = "__resolved__"
+
 # Process-wide Redis client, set once at startup (API lifespan / worker
 # startup) via `set_shared_redis`. Any `ConfigResolver` built without an
 # explicit `redis` picks this up, so caching + invalidation work uniformly
@@ -100,6 +105,65 @@ class ConfigResolver:
         await self._cache(cache_key, value)
         return value
 
+    async def resolve_all(self, *, merchant_id: UUID) -> dict[str, Any]:
+        """Resolve every ``ConfigKey`` for a merchant in a single pass.
+
+        One Redis read of the whole bag (``cfg:{merchant_id}:__resolved__``) on
+        a hit, or ≤3 DB queries on a miss — versus one ``resolve()`` round-trip
+        per key (58 keys → up to ~174 queries cold). Returns a flat dict keyed
+        by ``ConfigKey.value`` (dotted), ready to feed ``_dotted_set``. Cascade
+        and None-skip semantics match ``resolve()`` exactly.
+        """
+        cache_key = f"cfg:{merchant_id}:{RESOLVED_CACHE_KEY}"
+
+        if self._redis is not None:
+            try:
+                cached = await self._redis.get(cache_key)
+                if cached is not None:
+                    bag: dict[str, Any] = json.loads(cached)
+                    return bag
+            except Exception as e:  # Redis down / network blip → fall back to DB.
+                logger.warning("config.cache.get_failed", key=cache_key, error=str(e))
+
+        # 1. Merchant override bag (single query).
+        overrides = (
+            await self._session.execute(
+                select(BotConfig.overrides).where(BotConfig.merchant_id == merchant_id)
+            )
+        ).scalar_one_or_none() or {}
+
+        # 2. Resolve the merchant's tenant (single query).
+        tenant_id = (
+            await self._session.execute(
+                select(Merchant.tenant_id).where(Merchant.id == merchant_id)
+            )
+        ).scalar_one_or_none()
+        if tenant_id is None:
+            raise ValueError(f"Merchant {merchant_id} does not exist")
+
+        # 3. Agency default template defaults (single query).
+        defaults = (
+            await self._session.execute(
+                select(BotTemplate.defaults).where(
+                    BotTemplate.tenant_id == tenant_id,
+                    BotTemplate.is_default.is_(True),
+                )
+            )
+        ).scalar_one_or_none() or {}
+
+        resolved: dict[str, Any] = {}
+        for key in ConfigKey:
+            key_str = key.value
+            value = _lookup(overrides, key_str)
+            if value is None:
+                value = _lookup(defaults, key_str)
+            if value is None:
+                value = SYSTEM_DEFAULTS.get(key)
+            resolved[key_str] = value
+
+        await self._cache(cache_key, resolved)
+        return resolved
+
     async def invalidate(self, merchant_id: UUID, *, keys: list[str] | None = None) -> None:
         if self._redis is None:
             return
@@ -109,7 +173,11 @@ class ConfigResolver:
                 async for raw in self._redis.scan_iter(match=pattern):
                     await self._redis.delete(raw)
             else:
-                await self._redis.delete(*[f"cfg:{merchant_id}:{k}" for k in keys])
+                # Always drop the whole-bag entry alongside the targeted keys —
+                # a single-key write still shifts the resolved bag.
+                targets = [f"cfg:{merchant_id}:{k}" for k in keys]
+                targets.append(f"cfg:{merchant_id}:{RESOLVED_CACHE_KEY}")
+                await self._redis.delete(*targets)
         except Exception as e:  # never let a cache miss break a write.
             logger.warning(
                 "config.cache.invalidate_failed", merchant_id=str(merchant_id), error=str(e)

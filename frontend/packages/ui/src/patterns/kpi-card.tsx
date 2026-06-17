@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../primitives/card';
 import { cn } from '../utils';
+import { Skeleton } from '../components/ui/skeleton';
 
 export type KPICardProps = {
   label: string;
@@ -8,9 +9,11 @@ export type KPICardProps = {
   delta?: { value: number; label: string } | null;
   icon?: ReactNode;
   className?: string;
+  /** When true, the value renders as a skeleton instead of `value`. */
+  loading?: boolean;
 };
 
-export function KPICard({ label, value, delta, icon, className }: KPICardProps) {
+export function KPICard({ label, value, delta, icon, className, loading }: KPICardProps) {
   return (
     <Card className={cn('flex-1', className)}>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -18,8 +21,12 @@ export function KPICard({ label, value, delta, icon, className }: KPICardProps) 
         {icon ? <span className="text-muted-foreground">{icon}</span> : null}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        {delta ? (
+        {loading ? (
+          <Skeleton className="h-7 w-16" />
+        ) : (
+          <div className="text-2xl font-bold">{value}</div>
+        )}
+        {!loading && delta ? (
           <p
             className={cn(
               'text-xs',

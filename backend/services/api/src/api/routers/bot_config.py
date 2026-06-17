@@ -13,7 +13,15 @@ from sqlalchemy import select
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
-from config_resolver import BotConfigSchema, ConfigKey, ConfigResolver
+from config_resolver import (
+    SUGGESTED_RULES,
+    TONE_PRESETS,
+    BotConfigSchema,
+    ConfigKey,
+    ConfigResolver,
+    SuggestedRules,
+    TonePreset,
+)
 from db import BotTemplateRepository, MerchantRepository
 from db.models import BotConfig
 from db.session import TenantContext
@@ -110,6 +118,22 @@ async def update_template(
     return _tmpl_out(updated)
 
 
+# ---- Persona presets + suggested rules (read-only catalogs) --------------
+
+
+@router.get("/tone-presets", response_model=list[TonePreset])
+async def list_tone_presets(ctx: CurrentContext) -> list[TonePreset]:
+    """Curated persona presets. Applying one is a normal overrides write of
+    the preset's `values` (existing `bot.*` keys)."""
+    return TONE_PRESETS
+
+
+@router.get("/suggested-rules", response_model=SuggestedRules)
+async def list_suggested_rules(ctx: CurrentContext) -> SuggestedRules:
+    """Curated do / don't phrase library for the bot-config rules editor."""
+    return SUGGESTED_RULES
+
+
 # ---- Merchant config resolved view + overrides ---------------------------
 
 
@@ -118,13 +142,12 @@ async def resolved_config(
     merchant_id: UUID, session: DBSession, ctx: CurrentContext
 ) -> BotConfigSchema:
     _assert_merchant(ctx, merchant_id)
-    from config_resolver import ConfigResolver
 
     resolver = ConfigResolver(session)
+    flat = await resolver.resolve_all(merchant_id=merchant_id)
     resolved: dict[str, Any] = {}
-    for key in ConfigKey:
-        value = await resolver.resolve(key, merchant_id=merchant_id)
-        _dotted_set(resolved, key.value, value)
+    for dotted_key, value in flat.items():
+        _dotted_set(resolved, dotted_key, value)
     return BotConfigSchema.model_validate(resolved)
 
 

@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 __all__ = [
     "apply_template_status_event",
     "build_analytics_export",
+    "catalog_reindex",
     "close_idle_conversations",
     "daily_kpi_rollup",
     "enforce_retention",
@@ -37,6 +38,16 @@ __all__ = [
     "reactivate_dormant_leads",
     "template_status_sync",
 ]
+
+
+async def catalog_reindex(ctx: dict[str, Any], merchant_id: str) -> dict[str, Any]:
+    """Re-embed a merchant's catalog + FAQ after a product / FAQ write.
+
+    Real implementation lives in `workers.scheduler.catalog_reindex`.
+    """
+    from workers.scheduler.catalog_reindex import reindex_catalog
+
+    return await reindex_catalog(ctx, merchant_id=merchant_id)
 
 
 async def objection_extraction(ctx: dict[str, Any], conversation_id: str) -> dict[str, Any]:

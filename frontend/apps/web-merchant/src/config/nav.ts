@@ -4,11 +4,15 @@ import {
   Database,
   FileWarning,
   FlaskConical,
+  HelpCircle,
   LayoutTemplate,
   MessageSquare,
+  Package,
   Play,
   Plug,
+  ScrollText,
   Settings,
+  Store,
   Workflow,
 } from 'lucide-react';
 import type { NavSection } from '@reloop/ui';
@@ -18,6 +22,15 @@ export const merchantNav: NavSection[] = [
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: BarChart3, exact: true },
       { href: '/conversations', label: 'Conversazioni', icon: MessageSquare },
+    ],
+  },
+  {
+    title: 'Brand',
+    items: [
+      { href: '/brand/info', label: 'Informazioni', icon: Store },
+      { href: '/brand/catalog', label: 'Catalogo', icon: Package },
+      { href: '/brand/policies', label: 'Policy', icon: ScrollText },
+      { href: '/brand/faq', label: 'FAQ', icon: HelpCircle },
     ],
   },
   {

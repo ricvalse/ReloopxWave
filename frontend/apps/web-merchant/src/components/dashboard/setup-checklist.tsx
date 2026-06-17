@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Card, CardContent, CardHeader, CardTitle, Skeleton, SkeletonList } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 
@@ -50,8 +50,11 @@ export function SetupChecklist() {
   });
 
   const configQuery = useQuery({
-    queryKey: ['setup', 'config', merchantId],
+    // Shares the single ['bot-config','resolved',merchantId] cache entry with
+    // the conversations route + bot-config panel — one fetch per merchant.
+    queryKey: ['bot-config', 'resolved', merchantId],
     enabled: !!merchantId,
+    staleTime: 60_000,
     queryFn: async (): Promise<ResolvedConfig> => {
       const api = getApiClient();
       const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved' as never, {
@@ -76,7 +79,18 @@ export function SetupChecklist() {
   });
 
   if (!merchantId) return null;
-  if (statusQuery.isLoading || configQuery.isLoading || kbQuery.isLoading) return null;
+  if (statusQuery.isLoading || configQuery.isLoading || kbQuery.isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-4 w-48" />
+        </CardHeader>
+        <CardContent>
+          <SkeletonList rows={4} />
+        </CardContent>
+      </Card>
+    );
+  }
 
   const conns = statusQuery.data?.connections ?? [];
   const byProv = Object.fromEntries(conns.map((c) => [c.provider, c]));

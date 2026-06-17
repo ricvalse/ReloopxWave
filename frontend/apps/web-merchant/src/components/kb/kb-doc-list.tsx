@@ -1,7 +1,8 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Card, CardContent, CardHeader, CardTitle, EmptyState, SkeletonTable } from '@reloop/ui';
+import { FileText } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 
@@ -41,11 +42,15 @@ export function KnowledgeBaseDocList() {
       </CardHeader>
       <CardContent>
         {query.isLoading ? (
-          <p className="text-sm text-muted-foreground">Caricamento…</p>
+          <SkeletonTable rows={4} cols={4} />
         ) : query.error ? (
           <p className="text-sm text-destructive">Errore nel caricare i documenti.</p>
         ) : !query.data?.length ? (
-          <p className="text-sm text-muted-foreground">Nessun documento caricato.</p>
+          <EmptyState
+            icon={FileText}
+            title="Nessun documento"
+            description="Carica un PDF, un DOCX o un link: il bot lo userà per rispondere ai clienti."
+          />
         ) : (
           <table className="w-full text-sm">
             <thead className="text-left text-muted-foreground">

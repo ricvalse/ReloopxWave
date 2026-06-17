@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -93,6 +93,52 @@ class Indexer:
             chunk_count=len(chunks),
             total_chars=sum(c.char_count for c in chunks),
         )
+
+    async def index_records(
+        self,
+        *,
+        merchant_id: UUID,
+        doc: KnowledgeBaseDoc,
+        records: list[tuple[str, dict[str, Any]]],
+    ) -> IndexResult:
+        """Index pre-formed records as one chunk each (no chunker).
+
+        Used for the catalog / FAQ corpus where every row is a self-contained
+        unit. Idempotent: drops `doc`'s existing chunks first, then re-embeds.
+        Each record is a ``(content, meta)`` pair; `meta` is carried onto the
+        chunk so downstream surfaces can dereference the source row.
+        """
+        await self._session.execute(delete(KBChunk).where(KBChunk.doc_id == doc.id))
+
+        contents = [c for c, _ in records]
+        if not contents:
+            doc.status = "empty"
+            doc.chunk_count = 0
+            await self._session.flush()
+            return IndexResult(doc_id=doc.id, chunk_count=0, total_chars=0)
+
+        embeddings = await self._embedder.embed_batch(contents)
+        total_chars = 0
+        for index, ((content, meta), emb) in enumerate(
+            zip(records, embeddings, strict=True)
+        ):
+            total_chars += len(content)
+            self._session.add(
+                KBChunk(
+                    doc_id=doc.id,
+                    merchant_id=merchant_id,
+                    chunk_index=index,
+                    content=content,
+                    embedding=emb,
+                    tokens=len(content) // 4,
+                    meta=meta,
+                )
+            )
+
+        doc.status = "indexed"
+        doc.chunk_count = len(contents)
+        await self._session.flush()
+        return IndexResult(doc_id=doc.id, chunk_count=len(contents), total_chars=total_chars)
 
 
 # ---- Extractors ----------------------------------------------------------

@@ -25,6 +25,7 @@ from api.routers import (
     analytics,
     auth,
     bot_config,
+    catalog,
     conversations,
     dsar,
     fine_tuning,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(impersonation.router, prefix="/admin/impersonation", tags=["impersonation"])
     app.include_router(bot_config.router, prefix="/bot-config", tags=["bot-config"])
     app.include_router(knowledge_base.router, prefix="/knowledge-base", tags=["knowledge-base"])
+    app.include_router(catalog.router, prefix="/catalog", tags=["catalog"])
     app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
     app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
     app.include_router(playground.router, prefix="/playground", tags=["playground"])

@@ -4,7 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Card, CardContent, CardHeader, CardTitle, SkeletonCard } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { ConnectWhatsAppButton } from './connect-whatsapp-button';
 
@@ -45,7 +45,12 @@ export function IntegrationsPanel() {
   }, [providerJustConnected, connectionResult, queryClient]);
 
   if (status.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Caricamento stato…</div>;
+    return (
+      <div className="grid gap-4 p-6 md:grid-cols-2">
+        <SkeletonCard />
+        <SkeletonCard />
+      </div>
+    );
   }
 
   if (status.isError) {

@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Card, CardContent } from '@reloop/ui';
+import { Card, CardContent, EmptyState, SkeletonTable } from '@reloop/ui';
+import { Users } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
 import { StatusBadge } from './status-badge';
 
@@ -22,7 +23,13 @@ export function MerchantList() {
 
   if (query.isLoading) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Caricamento merchant…</div>
+      <div className="p-6">
+        <Card>
+          <CardContent className="p-3">
+            <SkeletonTable rows={6} cols={6} />
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -40,8 +47,12 @@ export function MerchantList() {
     return (
       <div className="p-6">
         <Card>
-          <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            Nessun merchant ancora onboardato.
+          <CardContent className="py-4">
+            <EmptyState
+              icon={Users}
+              title="Nessun merchant"
+              description="I merchant onboardati compariranno qui."
+            />
           </CardContent>
         </Card>
       </div>

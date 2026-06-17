@@ -1,0 +1,347 @@
+"""Merchant content endpoints — product catalog, store policies, FAQ.
+
+Like the KB router, these are merchant-scoped content (not agency config), so
+access is gated by `_assert_merchant_scope` rather than a role: a merchant user
+manages their own, an agency admin manages them while impersonating. Product /
+FAQ writes enqueue `catalog_reindex` so the RAG corpus stays in sync.
+"""
+
+from __future__ import annotations
+
+import time
+from decimal import Decimal
+from typing import Any
+from uuid import UUID
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
+
+from api.dependencies.session import CurrentContext, DBSession
+from db import FaqRepository, ProductRepository, StorePolicyRepository
+from db.session import TenantContext
+from shared import NotFoundError, PermissionDeniedError, get_logger
+
+logger = get_logger(__name__)
+
+router = APIRouter()
+
+_FAQ_MAX_ENTRIES = 50
+
+
+# ---- Schemas -------------------------------------------------------------
+
+
+class ProductIn(BaseModel):
+    title: str = Field(max_length=300)
+    handle: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=5000)
+    vendor: str | None = Field(default=None, max_length=200)
+    product_type: str | None = Field(default=None, max_length=120)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    variants: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    images: list[str] = Field(default_factory=list, max_length=20)
+    price: Decimal | None = Field(default=None, ge=0)
+    currency: str = Field(default="EUR", max_length=3)
+    is_active: bool = True
+
+
+class ProductOut(BaseModel):
+    id: UUID
+    title: str
+    handle: str
+    description: str | None
+    vendor: str | None
+    product_type: str | None
+    tags: list[str]
+    variants: list[dict[str, Any]]
+    images: list[str]
+    price: Decimal | None
+    currency: str
+    is_active: bool
+
+
+class FaqIn(BaseModel):
+    question: str = Field(max_length=300)
+    answer: str = Field(max_length=1000)
+    category: str | None = Field(default=None, max_length=120)
+    sort_order: int = Field(default=0, ge=0)
+    is_active: bool = True
+
+
+class FaqOut(BaseModel):
+    id: UUID
+    question: str
+    answer: str
+    category: str | None
+    sort_order: int
+    is_active: bool
+
+
+class CustomPolicy(BaseModel):
+    title: str = Field(max_length=120)
+    body: str = Field(max_length=4000)
+
+
+class PolicyIn(BaseModel):
+    shipping_info: str | None = Field(default=None, max_length=4000)
+    return_policy: str | None = Field(default=None, max_length=4000)
+    payment_methods: str | None = Field(default=None, max_length=4000)
+    exchange_policy: str | None = Field(default=None, max_length=4000)
+    warranty_info: str | None = Field(default=None, max_length=4000)
+    contact_info: str | None = Field(default=None, max_length=4000)
+    custom_policies: list[CustomPolicy] = Field(default_factory=list, max_length=20)
+
+
+class PolicyOut(PolicyIn):
+    pass
+
+
+# ---- Products ------------------------------------------------------------
+
+
+@router.get("/{merchant_id}/products", response_model=list[ProductOut])
+async def list_products(
+    merchant_id: UUID, session: DBSession, ctx: CurrentContext
+) -> list[ProductOut]:
+    _assert_merchant_scope(ctx, merchant_id)
+    products = await ProductRepository(session).list_for_merchant(merchant_id)
+    return [_product_out(p) for p in products]
+
+
+@router.post("/{merchant_id}/products", response_model=ProductOut)
+async def create_product(
+    merchant_id: UUID, payload: ProductIn, request: Request, session: DBSession, ctx: CurrentContext
+) -> ProductOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    product = await ProductRepository(session).create(
+        merchant_id=merchant_id,
+        title=payload.title,
+        handle=payload.handle or _slugify(payload.title),
+        description=payload.description,
+        vendor=payload.vendor,
+        product_type=payload.product_type,
+        tags=payload.tags,
+        variants=payload.variants,
+        images=payload.images,
+        price=payload.price,
+        currency=payload.currency,
+        is_active=payload.is_active,
+    )
+    await _enqueue_reindex(request, merchant_id)
+    return _product_out(product)
+
+
+@router.put("/{merchant_id}/products/{product_id}", response_model=ProductOut)
+async def update_product(
+    merchant_id: UUID,
+    product_id: UUID,
+    payload: ProductIn,
+    request: Request,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> ProductOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = ProductRepository(session)
+    existing = await repo.get(product_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("Product not found")
+    product = await repo.update(
+        product_id,
+        title=payload.title,
+        handle=payload.handle or _slugify(payload.title),
+        description=payload.description,
+        vendor=payload.vendor,
+        product_type=payload.product_type,
+        tags=payload.tags,
+        variants=payload.variants,
+        images=payload.images,
+        price=payload.price,
+        currency=payload.currency,
+        is_active=payload.is_active,
+    )
+    assert product is not None
+    await _enqueue_reindex(request, merchant_id)
+    return _product_out(product)
+
+
+@router.delete("/{merchant_id}/products/{product_id}")
+async def delete_product(
+    merchant_id: UUID,
+    product_id: UUID,
+    request: Request,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> dict[str, Any]:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = ProductRepository(session)
+    existing = await repo.get(product_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("Product not found")
+    await repo.delete(product_id)
+    await _enqueue_reindex(request, merchant_id)
+    return {"deleted": True, "id": str(product_id)}
+
+
+# ---- FAQ -----------------------------------------------------------------
+
+
+@router.get("/{merchant_id}/faq", response_model=list[FaqOut])
+async def list_faq(merchant_id: UUID, session: DBSession, ctx: CurrentContext) -> list[FaqOut]:
+    _assert_merchant_scope(ctx, merchant_id)
+    entries = await FaqRepository(session).list_for_merchant(merchant_id)
+    return [_faq_out(e) for e in entries]
+
+
+@router.post("/{merchant_id}/faq", response_model=FaqOut)
+async def create_faq(
+    merchant_id: UUID, payload: FaqIn, request: Request, session: DBSession, ctx: CurrentContext
+) -> FaqOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = FaqRepository(session)
+    existing = await repo.list_for_merchant(merchant_id)
+    if len(existing) >= _FAQ_MAX_ENTRIES:
+        raise PermissionDeniedError(
+            f"Max {_FAQ_MAX_ENTRIES} FAQ entries reached", error_code="faq_limit_reached"
+        )
+    entry = await repo.create(
+        merchant_id=merchant_id,
+        question=payload.question,
+        answer=payload.answer,
+        category=payload.category,
+        sort_order=payload.sort_order,
+        is_active=payload.is_active,
+    )
+    await _enqueue_reindex(request, merchant_id)
+    return _faq_out(entry)
+
+
+@router.put("/{merchant_id}/faq/{faq_id}", response_model=FaqOut)
+async def update_faq(
+    merchant_id: UUID,
+    faq_id: UUID,
+    payload: FaqIn,
+    request: Request,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> FaqOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = FaqRepository(session)
+    existing = await repo.get(faq_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("FAQ entry not found")
+    entry = await repo.update(
+        faq_id,
+        question=payload.question,
+        answer=payload.answer,
+        category=payload.category,
+        sort_order=payload.sort_order,
+        is_active=payload.is_active,
+    )
+    assert entry is not None
+    await _enqueue_reindex(request, merchant_id)
+    return _faq_out(entry)
+
+
+@router.delete("/{merchant_id}/faq/{faq_id}")
+async def delete_faq(
+    merchant_id: UUID, faq_id: UUID, request: Request, session: DBSession, ctx: CurrentContext
+) -> dict[str, Any]:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = FaqRepository(session)
+    existing = await repo.get(faq_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("FAQ entry not found")
+    await repo.delete(faq_id)
+    await _enqueue_reindex(request, merchant_id)
+    return {"deleted": True, "id": str(faq_id)}
+
+
+# ---- Policies (one document per merchant) --------------------------------
+
+
+@router.get("/{merchant_id}/policies", response_model=PolicyOut)
+async def get_policies(merchant_id: UUID, session: DBSession, ctx: CurrentContext) -> PolicyOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    row = await StorePolicyRepository(session).get_for_merchant(merchant_id)
+    if row is None:
+        return PolicyOut()
+    return PolicyOut(
+        shipping_info=row.shipping_info,
+        return_policy=row.return_policy,
+        payment_methods=row.payment_methods,
+        exchange_policy=row.exchange_policy,
+        warranty_info=row.warranty_info,
+        contact_info=row.contact_info,
+        custom_policies=[CustomPolicy(**c) for c in (row.custom_policies or [])],
+    )
+
+
+@router.put("/{merchant_id}/policies", response_model=PolicyOut)
+async def update_policies(
+    merchant_id: UUID, payload: PolicyIn, session: DBSession, ctx: CurrentContext
+) -> PolicyOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    await StorePolicyRepository(session).upsert(
+        merchant_id=merchant_id,
+        shipping_info=payload.shipping_info,
+        return_policy=payload.return_policy,
+        payment_methods=payload.payment_methods,
+        exchange_policy=payload.exchange_policy,
+        warranty_info=payload.warranty_info,
+        contact_info=payload.contact_info,
+        custom_policies=[c.model_dump() for c in payload.custom_policies],
+    )
+    return PolicyOut(**payload.model_dump())
+
+
+# ---- helpers -------------------------------------------------------------
+
+
+async def _enqueue_reindex(request: Request, merchant_id: UUID) -> None:
+    arq = request.app.state.arq
+    await arq.enqueue_job(
+        "catalog_reindex",
+        str(merchant_id),
+        _job_id=f"catalog:reindex:{merchant_id}:{int(time.time())}",
+    )
+
+
+def _assert_merchant_scope(ctx: TenantContext, merchant_id: UUID) -> None:
+    if ctx.merchant_id is not None and ctx.merchant_id != merchant_id:
+        raise PermissionDeniedError(
+            "Cannot act on another merchant", error_code="cross_merchant_access"
+        )
+
+
+def _slugify(name: str) -> str:
+    keep = "".join(c if c.isalnum() else "-" for c in name.lower())
+    slug = "-".join(filter(None, keep.split("-")))
+    return slug[:160] or "prodotto"
+
+
+def _product_out(p: Any) -> ProductOut:
+    return ProductOut(
+        id=p.id,
+        title=p.title,
+        handle=p.handle,
+        description=p.description,
+        vendor=p.vendor,
+        product_type=p.product_type,
+        tags=list(p.tags or []),
+        variants=list(p.variants or []),
+        images=list(p.images or []),
+        price=p.price,
+        currency=p.currency,
+        is_active=p.is_active,
+    )
+
+
+def _faq_out(e: Any) -> FaqOut:
+    return FaqOut(
+        id=e.id,
+        question=e.question,
+        answer=e.answer,
+        category=e.category,
+        sort_order=e.sort_order,
+        is_active=e.is_active,
+    )

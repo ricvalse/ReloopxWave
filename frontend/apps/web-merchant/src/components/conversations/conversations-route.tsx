@@ -20,21 +20,24 @@ export function ConversationsRoute({ selectedId }: ConversationsRouteProps) {
   const { merchantId } = useMerchantId();
 
   // Read the merchant-level master switch via the resolved bot-config endpoint
-  // (cascade: merchant override → agency template → system default).
+  // (cascade: merchant override → agency template → system default). Shares the
+  // single ['bot-config','resolved',merchantId] cache entry with the bot-config
+  // panel + setup checklist — one fetch per merchant, narrowed here via `select`.
   const botConfig = useQuery({
-    queryKey: ['bot-config', 'resolved', merchantId, 'auto_reply_only'],
+    queryKey: ['bot-config', 'resolved', merchantId],
     enabled: !!merchantId,
     staleTime: 60_000,
-    queryFn: async (): Promise<boolean> => {
+    queryFn: async (): Promise<Record<string, unknown>> => {
       const api = getApiClient();
       const { data, error } = await api.GET(
         '/bot-config/{merchant_id}/resolved' as never,
         { params: { path: { merchant_id: merchantId } } } as never,
       );
-      if (error) return false; // fail-closed: assume disabled if we can't read
-      const resolved = data as { bot?: { auto_reply_enabled?: boolean } };
-      return resolved.bot?.auto_reply_enabled ?? false;
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return (data as Record<string, unknown>) ?? {};
     },
+    // fail-closed: undefined data (error/loading) → auto-reply disabled
+    select: (d) => (d as { bot?: { auto_reply_enabled?: boolean } }).bot?.auto_reply_enabled ?? false,
   });
   const merchantAutoReplyEnabled = botConfig.data ?? false;
 

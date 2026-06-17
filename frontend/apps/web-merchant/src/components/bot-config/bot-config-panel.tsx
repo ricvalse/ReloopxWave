@@ -3,9 +3,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, CardHeader, CardTitle, Switch } from '@reloop/ui';
+import {
+  Button,
+  ButtonSpinner,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  SkeletonCard,
+  Switch,
+} from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
+
+type TonePreset = components['schemas']['TonePreset'];
+type SuggestedRules = components['schemas']['SuggestedRules'];
 
 type BotConfig = components['schemas']['BotConfigSchema'];
 type OverridesOut = components['schemas']['OverridesOut'];
@@ -353,6 +365,7 @@ const SECTIONS: SectionDef[] = [
 // "per ora"). Le definizioni restano in SECTIONS sopra: per riattivarle basta
 // togliere la chiave da questo set.
 const HIDDEN_SECTIONS = new Set<string>([
+  'business', // Spostato nella pagina dedicata "Brand → Informazioni"
   'no_answer', // No answer (UC-03)
   'reactivation', // Reactivation (UC-06)
   'scoring', // Scoring (UC-05)
@@ -376,6 +389,7 @@ export function BotConfigPanel() {
   const resolvedQuery = useQuery({
     queryKey: ['bot-config', 'resolved', merchantId],
     enabled: !!merchantId,
+    staleTime: 60_000,
     queryFn: async (): Promise<BotConfig> => {
       const api = getApiClient();
       const { data, error } = await api.GET('/bot-config/{merchant_id}/resolved' as never, {
@@ -389,6 +403,7 @@ export function BotConfigPanel() {
   const overridesQuery = useQuery({
     queryKey: ['bot-config', 'overrides', merchantId],
     enabled: !!merchantId,
+    staleTime: 60_000,
     queryFn: async (): Promise<OverridesOut> => {
       const api = getApiClient();
       const { data, error } = await api.GET('/bot-config/{merchant_id}/overrides' as never, {
@@ -470,8 +485,33 @@ export function BotConfigPanel() {
     setDirty(new Set());
   };
 
+  // Apply a tone preset (dotted keys → values) and/or append a suggested rule,
+  // routing through the same form/dirty machinery so Save persists them.
+  const applyValues = (values: Record<string, unknown>) => {
+    setForm((prev) => ({ ...prev, ...values }));
+    setDirty((prev) => {
+      const next = new Set(prev);
+      for (const key of Object.keys(values)) next.add(key);
+      return next;
+    });
+  };
+  const appendPhrase = (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => {
+    setForm((prev) => {
+      const current = Array.isArray(prev[key]) ? (prev[key] as string[]) : [];
+      if (current.includes(phrase)) return prev;
+      return { ...prev, [key]: [...current, phrase] };
+    });
+    setDirty((prev) => new Set(prev).add(key));
+  };
+
   if (resolvedQuery.isLoading || overridesQuery.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Caricamento configurazione…</div>;
+    return (
+      <div className="space-y-4 p-6">
+        <SkeletonCard lines={2} />
+        <SkeletonCard lines={6} />
+        <SkeletonCard lines={6} />
+      </div>
+    );
   }
   if (!merchantId) {
     return (
@@ -505,6 +545,8 @@ export function BotConfigPanel() {
         ) : null}
       </div>
 
+      <PersonaPresets form={form} onApplyValues={applyValues} onAppendPhrase={appendPhrase} />
+
       {VISIBLE_SECTIONS.map((s) => (
         <SectionCard
           key={s.section}
@@ -531,7 +573,14 @@ export function BotConfigPanel() {
           Scarta modifiche
         </Button>
         <Button onClick={() => save.mutate()} disabled={dirty.size === 0 || save.isPending}>
-          {save.isPending ? 'Salvataggio…' : `Salva (${dirty.size})`}
+          {save.isPending ? (
+            <>
+              <ButtonSpinner />
+              Salvataggio…
+            </>
+          ) : (
+            `Salva (${dirty.size})`
+          )}
         </Button>
       </div>
     </div>
@@ -791,6 +840,146 @@ function Badge({ kind }: { kind: BadgeKind }) {
     <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
       Inherited
     </span>
+  );
+}
+
+function PersonaPresets({
+  form,
+  onApplyValues,
+  onAppendPhrase,
+}: {
+  form: FormState;
+  onApplyValues: (values: Record<string, unknown>) => void;
+  onAppendPhrase: (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => void;
+}) {
+  const presetsQuery = useQuery({
+    queryKey: ['bot-config', 'tone-presets'],
+    staleTime: Infinity,
+    queryFn: async (): Promise<TonePreset[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/bot-config/tone-presets' as never, {} as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return (data as TonePreset[]) ?? [];
+    },
+  });
+  const rulesQuery = useQuery({
+    queryKey: ['bot-config', 'suggested-rules'],
+    staleTime: Infinity,
+    queryFn: async (): Promise<SuggestedRules> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/bot-config/suggested-rules' as never, {} as never);
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as SuggestedRules;
+    },
+  });
+
+  const presets = presetsQuery.data ?? [];
+  const rules = rulesQuery.data;
+  const currentDo = Array.isArray(form['bot.do_phrases']) ? (form['bot.do_phrases'] as string[]) : [];
+  const currentDont = Array.isArray(form['bot.dont_phrases'])
+    ? (form['bot.dont_phrases'] as string[])
+    : [];
+
+  const isActive = (p: TonePreset) =>
+    Object.entries(p.values as Record<string, unknown>).every(([k, v]) => form[k] === v);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Stile rapido</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Parti da un preset di tono, poi affina nei campi qui sotto. Le regole suggerite si
+          aggiungono alle liste “da preferire / da evitare”.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div>
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Tono
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {presets.map((p) => {
+              const active = isActive(p);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  title={p.description}
+                  onClick={() => onApplyValues(p.values as Record<string, unknown>)}
+                  className={
+                    'rounded-full border px-3 py-1 text-sm transition-colors ' +
+                    (active
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-input hover:bg-accent')
+                  }
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {rules ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            <RuleChips
+              title="Regole da preferire"
+              phrases={rules.do}
+              current={currentDo}
+              onAdd={(ph) => onAppendPhrase('bot.do_phrases', ph)}
+            />
+            <RuleChips
+              title="Regole da evitare"
+              phrases={rules.dont}
+              current={currentDont}
+              onAdd={(ph) => onAppendPhrase('bot.dont_phrases', ph)}
+            />
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RuleChips({
+  title,
+  phrases,
+  current,
+  onAdd,
+}: {
+  title: string;
+  phrases: string[];
+  current: string[];
+  onAdd: (phrase: string) => void;
+}) {
+  return (
+    <div>
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {title}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {phrases.map((ph) => {
+          const added = current.includes(ph);
+          return (
+            <button
+              key={ph}
+              type="button"
+              disabled={added}
+              onClick={() => onAdd(ph)}
+              className={
+                'rounded-full border px-3 py-1 text-left text-xs transition-colors ' +
+                (added
+                  ? 'cursor-default border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-dashed border-input hover:bg-accent')
+              }
+            >
+              {added ? '✓ ' : '+ '}
+              {ph}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

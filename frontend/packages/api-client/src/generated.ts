@@ -289,6 +289,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bot-config/tone-presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Tone Presets
+         * @description Curated persona presets. Applying one is a normal overrides write of
+         *     the preset's `values` (existing `bot.*` keys).
+         */
+        get: operations["list_tone_presets_bot_config_tone_presets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bot-config/suggested-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Suggested Rules
+         * @description Curated do / don't phrase library for the bot-config rules editor.
+         */
+        get: operations["list_suggested_rules_bot_config_suggested_rules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bot-config/{merchant_id}/resolved": {
         parameters: {
             query?: never;
@@ -384,6 +425,96 @@ export interface paths {
         put?: never;
         /** Reindex */
         post: operations["reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Products */
+        get: operations["list_products_catalog__merchant_id__products_get"];
+        put?: never;
+        /** Create Product */
+        post: operations["create_product_catalog__merchant_id__products_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/products/{product_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Product */
+        put: operations["update_product_catalog__merchant_id__products__product_id__put"];
+        post?: never;
+        /** Delete Product */
+        delete: operations["delete_product_catalog__merchant_id__products__product_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/faq": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Faq */
+        get: operations["list_faq_catalog__merchant_id__faq_get"];
+        put?: never;
+        /** Create Faq */
+        post: operations["create_faq_catalog__merchant_id__faq_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/faq/{faq_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Faq */
+        put: operations["update_faq_catalog__merchant_id__faq__faq_id__put"];
+        post?: never;
+        /** Delete Faq */
+        delete: operations["delete_faq_catalog__merchant_id__faq__faq_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Policies */
+        get: operations["get_policies_catalog__merchant_id__policies_get"];
+        /** Update Policies */
+        put: operations["update_policies_catalog__merchant_id__policies_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1337,6 +1468,13 @@ export interface components {
             /** Internal Note */
             internal_note: string | null;
         };
+        /** CustomPolicy */
+        CustomPolicy: {
+            /** Title */
+            title: string;
+            /** Body */
+            body: string;
+        };
         /**
          * DeliveryConfig
          * @description Human-feel delivery knobs. All-zero defaults reproduce today's instant,
@@ -1464,6 +1602,43 @@ export interface components {
              * @default 30
              */
             since_days: number;
+        };
+        /** FaqIn */
+        FaqIn: {
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Category */
+            category?: string | null;
+            /**
+             * Sort Order
+             * @default 0
+             */
+            sort_order: number;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+        };
+        /** FaqOut */
+        FaqOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /** Category */
+            category: string | null;
+            /** Sort Order */
+            sort_order: number;
+            /** Is Active */
+            is_active: boolean;
         };
         /** FlowOut */
         FlowOut: {
@@ -1887,6 +2062,40 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /** PolicyIn */
+        PolicyIn: {
+            /** Shipping Info */
+            shipping_info?: string | null;
+            /** Return Policy */
+            return_policy?: string | null;
+            /** Payment Methods */
+            payment_methods?: string | null;
+            /** Exchange Policy */
+            exchange_policy?: string | null;
+            /** Warranty Info */
+            warranty_info?: string | null;
+            /** Contact Info */
+            contact_info?: string | null;
+            /** Custom Policies */
+            custom_policies?: components["schemas"]["CustomPolicy"][];
+        };
+        /** PolicyOut */
+        PolicyOut: {
+            /** Shipping Info */
+            shipping_info?: string | null;
+            /** Return Policy */
+            return_policy?: string | null;
+            /** Payment Methods */
+            payment_methods?: string | null;
+            /** Exchange Policy */
+            exchange_policy?: string | null;
+            /** Warranty Info */
+            warranty_info?: string | null;
+            /** Contact Info */
+            contact_info?: string | null;
+            /** Custom Policies */
+            custom_policies?: components["schemas"]["CustomPolicy"][];
+        };
         /** PrivacyConfig */
         PrivacyConfig: {
             /**
@@ -1894,6 +2103,71 @@ export interface components {
              * @default 24
              */
             retention_months: number;
+        };
+        /** ProductIn */
+        ProductIn: {
+            /** Title */
+            title: string;
+            /** Handle */
+            handle?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Vendor */
+            vendor?: string | null;
+            /** Product Type */
+            product_type?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Variants */
+            variants?: {
+                [key: string]: unknown;
+            }[];
+            /** Images */
+            images?: string[];
+            /** Price */
+            price?: number | string | null;
+            /**
+             * Currency
+             * @default EUR
+             */
+            currency: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+        };
+        /** ProductOut */
+        ProductOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Handle */
+            handle: string;
+            /** Description */
+            description: string | null;
+            /** Vendor */
+            vendor: string | null;
+            /** Product Type */
+            product_type: string | null;
+            /** Tags */
+            tags: string[];
+            /** Variants */
+            variants: {
+                [key: string]: unknown;
+            }[];
+            /** Images */
+            images: string[];
+            /** Price */
+            price: string | null;
+            /** Currency */
+            currency: string;
+            /** Is Active */
+            is_active: boolean;
         };
         /** RagConfig */
         RagConfig: {
@@ -1992,6 +2266,17 @@ export interface components {
             /** Connections */
             connections: components["schemas"]["ConnectionOut"][];
         };
+        /**
+         * SuggestedRules
+         * @description Curated do / don't phrase library. Each phrase ≤200 chars to match the
+         *     `bot.do_phrases` / `bot.dont_phrases` field bounds.
+         */
+        SuggestedRules: {
+            /** Do */
+            do: string[];
+            /** Dont */
+            dont: string[];
+        };
         /** TemplateIn */
         TemplateIn: {
             /** Name */
@@ -2059,6 +2344,23 @@ export interface components {
             settings?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /**
+         * TonePreset
+         * @description A named persona shortcut. `values` are dotted config keys → values,
+         *     ready to merge into a merchant's override bag.
+         */
+        TonePreset: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Values */
+            values: {
+                [key: string]: unknown;
+            };
         };
         /** UpdateNoteIn */
         UpdateNoteIn: {
@@ -2858,6 +3160,68 @@ export interface operations {
             };
         };
     };
+    list_tone_presets_bot_config_tone_presets_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TonePreset"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_suggested_rules_bot_config_suggested_rules_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestedRules"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     resolved_config_bot_config__merchant_id__resolved_get: {
         parameters: {
             query?: never;
@@ -3093,6 +3457,364 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_products_catalog__merchant_id__products_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_product_catalog__merchant_id__products_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_product_catalog__merchant_id__products__product_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProductIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_product_catalog__merchant_id__products__product_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_faq_catalog__merchant_id__faq_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FaqOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_faq_catalog__merchant_id__faq_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FaqIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FaqOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_faq_catalog__merchant_id__faq__faq_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                faq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FaqIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FaqOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_faq_catalog__merchant_id__faq__faq_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                faq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_policies_catalog__merchant_id__policies_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_policies_catalog__merchant_id__policies_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyOut"];
                 };
             };
             /** @description Validation Error */
@@ -4444,6 +5166,8 @@ export enum ApiPaths {
     list_templates_bot_config_templates_get = "/bot-config/templates",
     create_template_bot_config_templates_post = "/bot-config/templates",
     update_template_bot_config_templates__template_id__put = "/bot-config/templates/{template_id}",
+    list_tone_presets_bot_config_tone_presets_get = "/bot-config/tone-presets",
+    list_suggested_rules_bot_config_suggested_rules_get = "/bot-config/suggested-rules",
     resolved_config_bot_config__merchant_id__resolved_get = "/bot-config/{merchant_id}/resolved",
     get_overrides_bot_config__merchant_id__overrides_get = "/bot-config/{merchant_id}/overrides",
     update_overrides_bot_config__merchant_id__overrides_put = "/bot-config/{merchant_id}/overrides",
@@ -4451,6 +5175,16 @@ export enum ApiPaths {
     list_docs_knowledge_base__merchant_id__docs_get = "/knowledge-base/{merchant_id}/docs",
     upload_doc_knowledge_base__merchant_id__upload_post = "/knowledge-base/{merchant_id}/upload",
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
+    list_products_catalog__merchant_id__products_get = "/catalog/{merchant_id}/products",
+    create_product_catalog__merchant_id__products_post = "/catalog/{merchant_id}/products",
+    update_product_catalog__merchant_id__products__product_id__put = "/catalog/{merchant_id}/products/{product_id}",
+    delete_product_catalog__merchant_id__products__product_id__delete = "/catalog/{merchant_id}/products/{product_id}",
+    list_faq_catalog__merchant_id__faq_get = "/catalog/{merchant_id}/faq",
+    create_faq_catalog__merchant_id__faq_post = "/catalog/{merchant_id}/faq",
+    update_faq_catalog__merchant_id__faq__faq_id__put = "/catalog/{merchant_id}/faq/{faq_id}",
+    delete_faq_catalog__merchant_id__faq__faq_id__delete = "/catalog/{merchant_id}/faq/{faq_id}",
+    get_policies_catalog__merchant_id__policies_get = "/catalog/{merchant_id}/policies",
+    update_policies_catalog__merchant_id__policies_put = "/catalog/{merchant_id}/policies",
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
     send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",

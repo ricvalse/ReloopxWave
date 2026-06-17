@@ -1,5 +1,6 @@
 from db.repositories.ab import ABRepository, VariantMetric
 from db.repositories.analytics import AnalyticsRepository
+from db.repositories.catalog import FaqRepository, ProductRepository, StorePolicyRepository
 from db.repositories.conversation import ConversationRepository, ReminderCandidate
 from db.repositories.flow import (
     FLOW_BOOKING_REMINDER,
@@ -42,6 +43,7 @@ __all__ = [
     "BotTemplateRepository",
     "CategoryCount",
     "ConversationRepository",
+    "FaqRepository",
     "FlowRepository",
     "GHLLocationSummary",
     "GHLMarketplaceRepository",
@@ -52,6 +54,7 @@ __all__ = [
     "MerchantRepository",
     "MessageRepository",
     "ObjectionRepository",
+    "ProductRepository",
     "PromptRepository",
     "ReactivationCandidate",
     "ReminderCandidate",
@@ -60,6 +63,7 @@ __all__ = [
     "ResolvedGHLIntegration",
     "ResolvedLocationToken",
     "ResolvedWhatsAppIntegration",
+    "StorePolicyRepository",
     "TenantRepository",
     "UserRepository",
     "VariantMetric",

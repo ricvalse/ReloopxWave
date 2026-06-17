@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { getBrowserSupabase } from '@/lib/supabase';
 import {
   IMP_META_COOKIE,
   type ImpMeta,
@@ -50,6 +51,9 @@ export function ImpersonationBanner() {
 
   const onExit = () => {
     clearImpCookiesBrowser();
+    // Revert the Realtime socket to the anon/session token so it isn't left
+    // authorized as the now-ended merchant (belt-and-suspenders with the gate).
+    void getBrowserSupabase().realtime.setAuth();
     if (window.opener) {
       window.close();
     } else {

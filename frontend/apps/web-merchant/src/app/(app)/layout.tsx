@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Sidebar } from '@/components/sidebar';
 import { UserMenu } from '@/components/user-menu';
 import { ImpersonationBanner } from '@/components/impersonation-banner';
+import { RealtimeAuthGate } from '@/components/realtime-auth-gate';
 import { MerchantProvider } from '@/context/merchant-context';
 import { requireSession } from '@/server/require-session';
 
@@ -16,6 +17,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <MerchantProvider merchantId={merchantId} tenantId={tenantId}>
+      <RealtimeAuthGate />
       {session.isImpersonation ? <ImpersonationBanner /> : null}
       <AppShell
         brand="Merchant"
