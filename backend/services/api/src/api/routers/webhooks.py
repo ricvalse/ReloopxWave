@@ -18,12 +18,10 @@ Stay under the 10s deadline; offload everything heavy to ARQ.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_webhook
-from integrations.ghl.signatures import verify_ghl_signature
 from integrations.router import SIGNATURE_HEADER, verify_router_signature
 from integrations.whatsapp.webhook import (
     parse_inbound_payload,
@@ -237,6 +235,7 @@ async def ghl_marketplace_webhook(
         payload = {}
 
     event_type = str(payload.get("type") or "").upper()
+    raw_type = str(payload.get("type") or payload.get("event") or "")
     location_id = payload.get("locationId") or payload.get("location_id")
     arq = request.app.state.arq
 
@@ -254,6 +253,18 @@ async def ghl_marketplace_webhook(
             _queue_name="ghl:events",
             _job_id=f"ghl:uninstall:{location_id}",
         )
+    elif location_id and raw_type:
+        # Data/event webhook (ContactUpdate, OpportunityStatusUpdate, call
+        # outcome, …): GHL sends these to the same Default Webhook URL signed
+        # with the global key. The worker resolves the merchant from locationId
+        # and routes to the lead sync / WhatsApp takeover (UC-01/02/03/04).
+        await arq.enqueue_job(
+            "handle_ghl_event",
+            str(location_id),
+            raw_type,
+            payload,
+            _queue_name="ghl:events",
+        )
     else:
         logger.info(
             "webhook.ghl.marketplace.ignored",
@@ -266,47 +277,5 @@ async def ghl_marketplace_webhook(
         "webhook.ghl.marketplace.enqueued",
         event_type=event_type,
         location_id=str(location_id),
-    )
-    return {"accepted": True, "event_type": event_type}
-
-
-@router.post("/ghl/{merchant_id}")
-async def ghl_inbound(
-    merchant_id: UUID,
-    request: Request,
-    x_gohighlevel_signature: str = Header(default=""),
-) -> dict[str, Any]:
-    settings = get_settings()
-    body = await request.body()
-    if not verify_ghl_signature(
-        shared_secret=settings.ghl_webhook_secret,
-        payload=body,
-        signature_header=x_gohighlevel_signature,
-    ):
-        logger.warning(
-            "webhook.ghl.signature_rejected",
-            merchant_id=str(merchant_id),
-            bytes=len(body),
-        )
-        raise HTTPException(status_code=401, detail="invalid signature")
-
-    try:
-        payload = await request.json()
-    except ValueError:
-        payload = {}
-
-    event_type = str(payload.get("type") or payload.get("event") or "unknown")
-    arq = request.app.state.arq
-    await arq.enqueue_job(
-        "handle_ghl_event",
-        str(merchant_id),
-        event_type,
-        payload,
-        _queue_name="ghl:events",
-    )
-    logger.info(
-        "webhook.ghl.inbound.enqueued",
-        merchant_id=str(merchant_id),
-        event_type=event_type,
     )
     return {"accepted": True, "event_type": event_type}

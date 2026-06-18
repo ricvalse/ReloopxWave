@@ -346,29 +346,45 @@ async def _resolve_lead(
 
 async def handle_ghl_event(
     ctx: dict[str, Any],
-    merchant_id: str,
+    location_id: str,
     event_type: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Route a GHL data webhook to a lead-state sync (UC-01/02/04) or, when it
-    carries a failed-call result, to the WhatsApp takeover (UC-03).
+    """Route a GHL marketplace data webhook to a lead-state sync (UC-01/02/04)
+    or, when it carries a failed-call result, to the WhatsApp takeover (UC-03).
 
-    Runs on a service-role session (the signed webhook is trusted; every query
-    is explicitly scoped by `merchant_id`). Logged with a system actor marker.
+    Marketplace events arrive at the app's single Default Webhook URL signed with
+    GHL's global public key and carry `locationId` (not our merchant id), so we
+    first resolve the merchant from the location. Runs on a service-role session
+    (the signed webhook is trusted); logged with a system actor marker.
     """
     et = event_type.lower()
+    settings = get_settings()
+
+    # locationId -> merchant. Unknown/unlinked location → nothing to do.
+    async with session_scope() as session:
+        mid = await GHLMarketplaceRepository(
+            session, kek_base64=settings.integrations_kek_base64
+        ).merchant_id_for_location(str(location_id))
+    if mid is None:
+        logger.info(
+            "ghl.event.unknown_location",
+            location_id=str(location_id),
+            event_type=event_type,
+            actor="system:ghl_webhook",
+        )
+        return {"matched": False, "reason": "unknown_location", "event_type": event_type}
 
     outcome = _detect_call_outcome(et, payload)
     if outcome is not None:
         return await handle_call_outcome(
             ctx,
-            merchant_id=merchant_id,
+            merchant_id=str(mid),
             contact_phone=_ghl_phone(payload) or "",
             outcome=outcome,
             ghl_contact_id=_opt_str(payload.get("contactId") or payload.get("contact_id")),
         )
 
-    mid = UUID(merchant_id)
     matched = False
     async with session_scope() as session:
         leads = LeadRepository(session)
@@ -404,12 +420,13 @@ async def handle_ghl_event(
 
     logger.info(
         "ghl.event.routed",
-        merchant_id=merchant_id,
+        merchant_id=str(mid),
+        location_id=str(location_id),
         event_type=event_type,
         matched=matched,
         actor="system:ghl_webhook",
     )
-    return {"merchant_id": merchant_id, "event_type": event_type, "matched": matched}
+    return {"merchant_id": str(mid), "event_type": event_type, "matched": matched}
 
 
 async def handle_call_outcome(

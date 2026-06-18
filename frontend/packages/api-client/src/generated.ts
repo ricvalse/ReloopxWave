@@ -1375,23 +1375,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/webhooks/ghl/{merchant_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Ghl Inbound */
-        post: operations["ghl_inbound_webhooks_ghl__merchant_id__post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/internal/whatsapp-connected": {
         parameters: {
             query?: never;
@@ -5709,41 +5692,6 @@ export interface operations {
             };
         };
     };
-    ghl_inbound_webhooks_ghl__merchant_id__post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-gohighlevel-signature"?: string;
-            };
-            path: {
-                merchant_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     whatsapp_connected_internal_whatsapp_connected_post: {
         parameters: {
             query?: never;
@@ -5863,6 +5811,5 @@ export enum ApiPaths {
     erase_lead_dsar_leads__lead_id__erase_post = "/dsar/leads/{lead_id}/erase",
     whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",
     ghl_marketplace_webhook_webhooks_ghl_marketplace_post = "/webhooks/ghl/marketplace",
-    ghl_inbound_webhooks_ghl__merchant_id__post = "/webhooks/ghl/{merchant_id}",
     whatsapp_connected_internal_whatsapp_connected_post = "/internal/whatsapp-connected"
 }

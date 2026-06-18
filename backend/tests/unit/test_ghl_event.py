@@ -83,6 +83,12 @@ def _patch(
         async def resolve_whatsapp_by_merchant(self, merchant_id):
             return _FakeWA()
 
+    class FakeMarketplaceRepo:
+        def __init__(self, session, *, kek_base64): ...
+        async def merchant_id_for_location(self, location_id):
+            # Marketplace events carry locationId; resolve to a merchant.
+            return uuid.uuid4()
+
     class FakeSettings:
         integrations_kek_base64 = ""
 
@@ -90,6 +96,7 @@ def _patch(
     monkeypatch.setattr(mod, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(mod, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
+    monkeypatch.setattr(mod, "GHLMarketplaceRepository", FakeMarketplaceRepo)
     monkeypatch.setattr(mod, "get_settings", lambda: FakeSettings())
 
 

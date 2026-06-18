@@ -280,6 +280,15 @@ class GHLMarketplaceRepository:
             return None
         return self._to_resolved_location(row)
 
+    async def merchant_id_for_location(self, location_id: str) -> UUID | None:
+        """Lightweight locationId -> merchant_id lookup (no token decrypt).
+
+        Used to route marketplace data webhooks (which carry `locationId`, not
+        our merchant id) to the right merchant. Returns None for unknown or
+        not-yet-linked locations."""
+        row = await self._get_location(location_id)
+        return row.merchant_id if row is not None else None
+
     async def resolve_location_by_merchant(self, merchant_id: UUID) -> ResolvedLocationToken | None:
         stmt = select(GHLLocationToken).where(
             GHLLocationToken.merchant_id == merchant_id,
