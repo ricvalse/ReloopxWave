@@ -54,6 +54,9 @@ class WhatsAppTemplate(Base, TimestampMixin):
     variables: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     # Per-slot source mapping, e.g. {"1": "lead.first_name", "2": "booking.slot"}.
     variable_sources: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
+    # Sample values per {{n}} (Meta's example requirement). Persisted so a draft
+    # keeps the merchant's chosen examples through to submit time.
+    body_examples: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
     # 360dialog / Meta sync
     whatsapp_template_id: Mapped[str | None] = mapped_column(String(128))

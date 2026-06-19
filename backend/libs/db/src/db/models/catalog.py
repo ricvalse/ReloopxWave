@@ -119,3 +119,33 @@ class FaqEntry(Base, TimestampMixin):
         ForeignKey("knowledge_base_docs.id", ondelete="SET NULL"),
     )
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class BotCorrection(Base, TimestampMixin):
+    """A merchant-authored fix for a bad bot reply (UC-08 playground loop).
+
+    Captured when the merchant edits a response in the playground: the customer
+    message that triggered it, what the bot said, and what it should have said.
+    Active rows are matched (word-overlap) against the current customer message
+    and the top few are injected into the system prompt as mandatory overrides
+    — so the bot "learns" the fix immediately, scoped to THIS merchant only.
+    """
+
+    __tablename__ = "bot_corrections"
+    __table_args__ = (
+        Index("ix_bot_corrections_merchant_active", "merchant_id", "is_active"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    merchant_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("merchants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    trigger_message: Mapped[str] = mapped_column(Text, nullable=False)
+    original_response: Mapped[str] = mapped_column(Text, nullable=False)
+    corrected_response: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

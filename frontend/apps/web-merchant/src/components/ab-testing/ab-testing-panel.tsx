@@ -211,7 +211,8 @@ function CreateExperimentForm({
           },
         ],
         primary_metric: primaryMetric,
-        min_sample_size: 100,
+        // Omitted on purpose: the backend falls back to the merchant's
+        // configured `ab_test.min_sample` (Configurazione bot) default.
       };
       const api = getApiClient();
       const { data, error } = await api.POST('/ab-test/', { body: payload });

@@ -26,6 +26,7 @@ from api.routers import (
     analytics,
     appointments,
     auth,
+    automations,
     bot_config,
     catalog,
     conversations,
@@ -165,6 +166,7 @@ def create_app() -> FastAPI:
         whatsapp_templates.router, prefix="/whatsapp-templates", tags=["whatsapp-templates"]
     )
     app.include_router(flows.router, prefix="/flows", tags=["flows"])
+    app.include_router(automations.router, prefix="/automations", tags=["automations"])
     app.include_router(dsar.router, prefix="/dsar", tags=["dsar"])
 
     # Public webhooks (signature-validated, no JWT).

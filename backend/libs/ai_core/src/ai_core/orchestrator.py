@@ -61,6 +61,10 @@ class ConversationContext:
     history: list[ChatMessage] = field(default_factory=list)
     kb_chunks: list[RetrievedChunk] = field(default_factory=list)
     variant_id: str | None = None
+    # Merchant-configured lead score (0-100) at/above which the lead should be
+    # advanced in the pipeline. Surfaced to the model as decision context for
+    # `move_pipeline` (config key `pipeline.advance_threshold`).
+    advance_threshold: int = 60
 
 
 class ConversationOrchestrator:
@@ -107,6 +111,15 @@ class ConversationOrchestrator:
 
     def _build_messages(self, ctx: ConversationContext, user_message: str) -> list[ChatMessage]:
         system_parts = [ctx.system_prompt, _RESPONSE_SCHEMA_HINT]
+        # Qualification context (internal — never repeat the number to the lead):
+        # gives the model the current score + the merchant's configured advance
+        # threshold so `move_pipeline` fires in line with the merchant's setting.
+        system_parts.append(
+            "Stato qualificazione del lead (uso interno, non citarlo al cliente): "
+            f"punteggio attuale {ctx.lead_score}/100; soglia di avanzamento pipeline "
+            f"configurata dal merchant {ctx.advance_threshold}. Emetti `move_pipeline` "
+            "quando il lead è qualificato e il punteggio è vicino o superiore alla soglia."
+        )
         if ctx.kb_chunks:
             kb_snippet = "\n---\n".join(
                 f"[{i + 1}] {c.content}" for i, c in enumerate(ctx.kb_chunks)
@@ -163,7 +176,11 @@ _RESPONSE_SCHEMA_HINT = (
     "asked_for_booking, objection_price, objection_trust, objection_competitor, "
     "dropped_off, profanity.\n"
     '- "escalate_human": quando l\'utente è arrabbiato, minaccia reclami/azioni '
-    "legali, o chiede esplicitamente una persona. payload: {}\n"
+    "legali, o chiede esplicitamente una persona. payload: {\n"
+    '    "reason": "<motivo breve, es. cliente_arrabbiato/richiesta_umano>",\n'
+    '    "customer_message_summary": "<1-2 frasi che riassumono cosa serve al '
+    'cliente, per l\'operatore che prende in carico>"\n'
+    "  }\n"
     '- "none": negli altri casi.\n'
     "Puoi emettere più azioni nello stesso turno (es. update_score + book_slot)."
 )

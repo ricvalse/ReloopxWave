@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
 
+from ai_core.corrections import build_correction_lines
 from ai_core.delivery import compute_typing_delay_s, split_into_bubbles
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import (
@@ -50,6 +51,10 @@ from db import (
 from shared import get_logger
 
 logger = get_logger(__name__)
+
+# How long the bot stays soft-paused after the merchant replies from their phone
+# (360dialog Coexistence). Reset on every echo; auto-resumes when it elapses.
+_PHONE_ECHO_PAUSE = timedelta(hours=2)
 
 
 def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
@@ -252,7 +257,11 @@ _SENTIMENT_FRAGMENTS: dict[str, str] = {
 
 
 async def build_cascade_system_prompt(
-    *, session: Any, merchant_id: UUID, prior_sentiment: str | None = None
+    *,
+    session: Any,
+    merchant_id: UUID,
+    prior_sentiment: str | None = None,
+    customer_message: str | None = None,
 ) -> str:
     """Build the per-merchant system prompt from the config cascade.
 
@@ -267,7 +276,9 @@ async def build_cascade_system_prompt(
     do/dont/examples) map to deterministic Italian fragments; `register ==
     "auto"` falls back to the freeform legacy `bot.tone`. `prior_sentiment`
     (the previous turn's lead.sentiment) optionally injects an empathy/upsell
-    hint, gated by `bot.sentiment_adaptation_enabled`.
+    hint, gated by `bot.sentiment_adaptation_enabled`. `customer_message` (the
+    current inbound text) is matched against the merchant's playground
+    corrections; the top matches are injected as mandatory overrides (UC-08).
     """
     resolver = ConfigResolver(session)
 
@@ -322,6 +333,7 @@ async def build_cascade_system_prompt(
     tone = await _str(ConfigKey.BOT_TONE) or "professionale-amichevole"
     language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
     extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
+    first_message = await _str(ConfigKey.BOT_FIRST_MESSAGE)
 
     formality = await _str(ConfigKey.BOT_FORMALITY) or "auto"
     verbosity = await _str(ConfigKey.BOT_VERBOSITY) or "equilibrato"
@@ -336,6 +348,10 @@ async def build_cascade_system_prompt(
     # Store policies — short, always-relevant facts injected straight into
     # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
     policy_lines = await build_store_policy_lines(session, merchant_id)
+
+    # Playground-trained corrections that match THIS turn's message (UC-08).
+    # Empty when no message is given or nothing scores above the relevance floor.
+    correction_lines = await build_correction_lines(session, merchant_id, customer_message)
 
     # `has_profile` keys off content the merchant actually provided — NOT the
     # always-defaulted enums — so a truly empty merchant keeps the generic
@@ -352,12 +368,14 @@ async def build_cascade_system_prompt(
             pricing_notes,
             website,
             extras,
+            first_message,
             greeting,
             signature,
             do_phrases,
             dont_phrases,
             examples,
             policy_lines,
+            correction_lines,
         ]
     )
     if not has_profile:
@@ -406,6 +424,11 @@ async def build_cascade_system_prompt(
 
     if greeting:
         lines.append(f"Stile di apertura: {greeting}")
+    if first_message:
+        lines.append(
+            "Quando inizi una nuova conversazione (primo messaggio al lead), "
+            f"esordisci con questo messaggio di benvenuto: «{first_message}»"
+        )
     if signature:
         lines.append(f"Chiudi i messaggi con questa firma quando appropriato: {signature}")
     if do_phrases:
@@ -425,6 +448,10 @@ async def build_cascade_system_prompt(
     if extras:
         lines.append("Istruzioni aggiuntive dal merchant:")
         lines.append(extras)
+
+    # Corrections last — highest recency, and each block explicitly states it
+    # overrides everything above (the merchant fixed a specific bad reply).
+    lines.extend(correction_lines)
 
     return "\n\n".join(lines)
 
@@ -526,6 +553,7 @@ class ConversationService:
         text: str,
         wa_message_id: str | None,
         campaign: str | None = None,
+        force_handoff_reason: str | None = None,
     ) -> PersistOutcome:
         """Phase 1: durably persist the inbound and evaluate the auto-reply gate.
 
@@ -605,7 +633,37 @@ class ConversationService:
             merchant_auto_reply = await self._resolve_bool(
                 session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=False
             )
-            auto_reply_on = bool(merchant_auto_reply and conv.auto_reply) and not opted_out
+            # Soft-pause (ai_disabled_until in the future) silences the bot without
+            # flipping auto_reply; it auto-resumes once the timestamp passes.
+            soft_paused = (
+                conv.ai_disabled_until is not None and conv.ai_disabled_until > datetime.now(UTC)
+            )
+            auto_reply_on = (
+                bool(merchant_auto_reply and conv.auto_reply) and not opted_out and not soft_paused
+            )
+
+            # Unsupported media the bot can't act on (video/document): hand off to
+            # a human instead of replying. Persist the inbound, flip the thread to
+            # needs-human, and notify — no LLM turn.
+            if force_handoff_reason:
+                conv.auto_reply = False
+                conv.handoff_at = datetime.now(UTC)
+                conv.handoff_reason = force_handoff_reason
+                conv.handoff_resolved_at = None
+                auto_reply_on = False
+                await analytics.emit(
+                    tenant_id=resolved.tenant_id,
+                    merchant_id=resolved.merchant_id,
+                    event_type="conversation.escalated",
+                    subject_type="conversation",
+                    subject_id=conv.id,
+                    variant_id=conv.variant_id,
+                    properties={
+                        "lead_id": str(lead.id),
+                        "reason": force_handoff_reason,
+                        "conversation_id": str(conv.id),
+                    },
+                )
 
             if already_persisted is None:
                 await msgs.persist_user_message(
@@ -625,6 +683,8 @@ class ConversationService:
                         if opted_out
                         else "merchant_off"
                         if not merchant_auto_reply
+                        else "ai_paused"
+                        if soft_paused
                         else "conversation_off"
                     )
                 await analytics.emit(
@@ -779,6 +839,7 @@ class ConversationService:
                 merchant_id=resolved.merchant_id,
                 variant_id=rc.conv_variant_id,
                 prior_sentiment=rc.lead_sentiment,
+                customer_message=rc.text,
             )
             kb_chunks = []
             if self._embedder is not None:
@@ -799,6 +860,9 @@ class ConversationService:
             hot_threshold = await self._resolve_int(
                 session, resolved.merchant_id, ConfigKey.SCORING_HOT_THRESHOLD, default=80
             )
+            advance_threshold = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.PIPELINE_ADVANCE_THRESHOLD, default=60
+            )
 
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
@@ -810,6 +874,7 @@ class ConversationService:
                 history=rc.chat_history,
                 kb_chunks=kb_chunks,
                 variant_id=rc.conv_variant_id,
+                advance_threshold=advance_threshold,
             )
 
             # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
@@ -829,6 +894,25 @@ class ConversationService:
             else:
                 response = await self._orchestrator.run(ctx, rc.text)
 
+            # Handoff reply policy: when the bot escalates to a human the merchant
+            # can force a fixed message (handoff_message) or hand off silently
+            # (no customer-facing reply). State/scoring/dispatch still run.
+            suppress_reply = False
+            if any(a.kind == "escalate_human" for a in response.actions):
+                if await self._resolve_bool(
+                    session,
+                    resolved.merchant_id,
+                    ConfigKey.ESCALATION_SILENT_HANDOFF,
+                    default=False,
+                ):
+                    suppress_reply = True
+                else:
+                    handoff_message = await self._resolve_optional_str(
+                        session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                    )
+                    if handoff_message:
+                        response.reply_text = handoff_message
+
             # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
             # inbound text. Best-effort — never blocks the reply. Updates the lead
             # so the NEXT turn can adapt (this turn used the prior value).
@@ -842,34 +926,35 @@ class ConversationService:
                 if rc.lead_id is not None and sentiment:
                     await LeadRepository(session).update_sentiment(rc.lead_id, sentiment=sentiment)
 
-            await msgs.persist_assistant_message(
-                conversation_id=rc.conv_id,
-                merchant_id=resolved.merchant_id,
-                content=response.reply_text,
-                model=response.model,
-                tokens_in=response.tokens_in,
-                tokens_out=response.tokens_out,
-                latency_ms=response.latency_ms,
-                variant_id=rc.conv_variant_id,
-            )
-            await convs.touch_last_message(rc.conv_id)
+            if not suppress_reply:
+                await msgs.persist_assistant_message(
+                    conversation_id=rc.conv_id,
+                    merchant_id=resolved.merchant_id,
+                    content=response.reply_text,
+                    model=response.model,
+                    tokens_in=response.tokens_in,
+                    tokens_out=response.tokens_out,
+                    latency_ms=response.latency_ms,
+                    variant_id=rc.conv_variant_id,
+                )
+                await convs.touch_last_message(rc.conv_id)
 
-            await analytics.emit(
-                tenant_id=resolved.tenant_id,
-                merchant_id=resolved.merchant_id,
-                event_type="message.replied",
-                subject_type="conversation",
-                subject_id=rc.conv_id,
-                variant_id=rc.conv_variant_id,
-                properties={
-                    "role": "assistant",
-                    "model": response.model,
-                    "tokens_in": response.tokens_in,
-                    "tokens_out": response.tokens_out,
-                    "latency_ms": response.latency_ms,
-                    "actions": [a.kind for a in response.actions],
-                },
-            )
+                await analytics.emit(
+                    tenant_id=resolved.tenant_id,
+                    merchant_id=resolved.merchant_id,
+                    event_type="message.replied",
+                    subject_type="conversation",
+                    subject_id=rc.conv_id,
+                    variant_id=rc.conv_variant_id,
+                    properties={
+                        "role": "assistant",
+                        "model": response.model,
+                        "tokens_in": response.tokens_in,
+                        "tokens_out": response.tokens_out,
+                        "latency_ms": response.latency_ms,
+                        "actions": [a.kind for a in response.actions],
+                    },
+                )
 
             # Resolve delivery knobs while the session is open; applied below.
             multi_bubble_max = await self._resolve_int(
@@ -908,11 +993,19 @@ class ConversationService:
         # assistant Message row stays single (clean history); we split only on
         # the wire. All bubbles go out within seconds — well inside the 24h
         # window already opened by the inbound.
-        bubbles = split_into_bubbles(
-            response.reply_text, max_bubbles=multi_bubble_max, max_chars=bubble_max_chars
-        ) or [response.reply_text]
+        # Silent handoff: skip the wire entirely (no customer-facing reply).
+        bubbles = (
+            []
+            if suppress_reply
+            else (
+                split_into_bubbles(
+                    response.reply_text, max_bubbles=multi_bubble_max, max_chars=bubble_max_chars
+                )
+                or [response.reply_text]
+            )
+        )
 
-        if typing_indicator_enabled and rc.latest_wa_message_id:
+        if bubbles and typing_indicator_enabled and rc.latest_wa_message_id:
             await self._maybe_send_typing(rc, rc.latest_wa_message_id)
 
         for i, bubble in enumerate(bubbles):
@@ -1070,6 +1163,10 @@ class ConversationService:
                 wa_message_id=wa_message_id,
             )
             await convs.touch_last_message(conv.id)
+            # The merchant just answered from their phone: soft-pause the bot for
+            # a couple of hours so it doesn't talk over the human. Reset on every
+            # echo (each manual reply extends the window); auto-resumes after.
+            conv.ai_disabled_until = datetime.now(UTC) + _PHONE_ECHO_PAUSE
 
         logger.info(
             "uc01.phone_echo.persisted",
@@ -1100,6 +1197,7 @@ class ConversationService:
         merchant_id: UUID,
         variant_id: str | None = None,
         prior_sentiment: str | None = None,
+        customer_message: str | None = None,
     ) -> str:
         """Resolve the system prompt for this turn (UC-09 aware).
 
@@ -1107,7 +1205,8 @@ class ConversationService:
         A/B experiment and the assigned variant has an authored `system`
         template, that template's body is used — this is what makes the two
         arms behave differently (the persona/sentiment block below is
-        deliberately bypassed for variant prompts, to keep experiments clean).
+        deliberately bypassed for variant prompts, to keep experiments clean;
+        playground corrections likewise apply only to the cascade fallback).
         Otherwise the config-cascade prompt below is used as the fallback.
         """
         from ai_core.prompt_manager import PromptManager
@@ -1117,12 +1216,20 @@ class ConversationService:
             merchant_id=merchant_id,
             variant_id=variant_id,
             fallback=lambda: self._cascade_system_prompt(
-                session=session, merchant_id=merchant_id, prior_sentiment=prior_sentiment
+                session=session,
+                merchant_id=merchant_id,
+                prior_sentiment=prior_sentiment,
+                customer_message=customer_message,
             ),
         )
 
     async def _cascade_system_prompt(
-        self, *, session: Any, merchant_id: UUID, prior_sentiment: str | None = None
+        self,
+        *,
+        session: Any,
+        merchant_id: UUID,
+        prior_sentiment: str | None = None,
+        customer_message: str | None = None,
     ) -> str:
         """Thin wrapper over the module-level `build_cascade_system_prompt`.
 
@@ -1131,7 +1238,10 @@ class ConversationService:
         instantiating a full `ConversationService`.
         """
         return await build_cascade_system_prompt(
-            session=session, merchant_id=merchant_id, prior_sentiment=prior_sentiment
+            session=session,
+            merchant_id=merchant_id,
+            prior_sentiment=prior_sentiment,
+            customer_message=customer_message,
         )
 
     async def _store_policy_lines(self, session: Any, merchant_id: UUID) -> list[str]:
@@ -1197,6 +1307,18 @@ class ConversationService:
         if isinstance(value, bool):
             return value
         return default
+
+    async def _resolve_optional_str(
+        self, session: Any, merchant_id: UUID, key: ConfigKey
+    ) -> str | None:
+        try:
+            resolver = ConfigResolver(session)
+            value = await resolver.resolve(key, merchant_id=merchant_id)
+        except Exception:
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
 
 
 def _with_score_action(

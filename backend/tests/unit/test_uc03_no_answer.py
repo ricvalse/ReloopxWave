@@ -102,11 +102,11 @@ def _patch_session(
             if record_reminder_calls is not None:
                 record_reminder_calls.append(conversation_id)
 
-    class FakeFlowRepo:
-        def __init__(self, session): ...
-        async def resolve_step(self, *, merchant_id, key, step_index):
-            # No flow configured → scheduler uses built-in free-text fallback.
-            return None
+    async def fake_resolve_lifecycle_step(
+        session, *, merchant_id, system_key, attempt_index, context
+    ):
+        # No system flow configured → scheduler uses built-in free-text fallback.
+        return None
 
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
@@ -130,7 +130,7 @@ def _patch_session(
     monkeypatch.setattr(no_answer, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(no_answer, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(no_answer, "AnalyticsRepository", FakeAnalyticsRepo)
-    monkeypatch.setattr(no_answer, "FlowRepository", FakeFlowRepo)
+    monkeypatch.setattr(no_answer, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
     monkeypatch.setattr(no_answer, "build_whatsapp_sender", fake_factory)
 
 

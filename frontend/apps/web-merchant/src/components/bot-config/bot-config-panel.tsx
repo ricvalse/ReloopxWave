@@ -343,9 +343,16 @@ const SECTIONS: SectionDef[] = [
   {
     section: 'escalation',
     title: 'Escalation',
-    description: 'Abilita routing a gpt-5.2 per casi complessi.',
+    description: 'Quando passare la chat a un operatore umano.',
     fields: [
       { key: 'escalation.enabled', label: 'Abilitata', kind: 'bool' },
+      {
+        key: 'escalation.handoff_message',
+        label: 'Messaggio di passaggio',
+        kind: 'textarea',
+        placeholder: 'es. “Ti metto subito in contatto con un nostro operatore.” (vuoto = lascia scrivere al bot)',
+      },
+      { key: 'escalation.silent_handoff', label: 'Passaggio silenzioso (nessun messaggio al cliente)', kind: 'bool' },
     ],
   },
   {

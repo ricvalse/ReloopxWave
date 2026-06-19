@@ -68,6 +68,7 @@ class WhatsAppTemplateRepository:
         body: str,
         variables: list[str],
         variable_sources: dict[str, str] | None = None,
+        body_examples: list[str] | None = None,
         header_type: str = "NONE",
         header_text: str | None = None,
         header_image_url: str | None = None,
@@ -85,6 +86,7 @@ class WhatsAppTemplateRepository:
             body=body,
             variables=variables,
             variable_sources=variable_sources or {},
+            body_examples=body_examples or [],
             header_type=header_type,
             header_text=header_text,
             header_image_url=header_image_url,
@@ -97,6 +99,65 @@ class WhatsAppTemplateRepository:
         self._session.add(tpl)
         await self._session.flush()
         return tpl
+
+    async def update(
+        self,
+        template: WhatsAppTemplate,
+        *,
+        category: str,
+        language: str,
+        purpose: str,
+        body: str,
+        variables: list[str],
+        variable_sources: dict[str, str] | None = None,
+        body_examples: list[str] | None = None,
+        header_type: str = "NONE",
+        header_text: str | None = None,
+        header_image_url: str | None = None,
+        footer: str | None = None,
+        buttons: list[dict[str, Any]] | None = None,
+    ) -> WhatsAppTemplate:
+        """Edit a draft/rejected template's content and reset it to a clean draft.
+
+        Meta can't edit a live template, so editing always lands the row back in
+        `draft` and clears any stale Meta sync state — it must be re-submitted.
+        """
+        template.category = category
+        template.language = language
+        template.purpose = purpose
+        template.body = body
+        template.variables = variables
+        template.variable_sources = variable_sources or {}
+        template.body_examples = body_examples or []
+        template.header_type = header_type
+        template.header_text = header_text
+        template.header_image_url = header_image_url
+        template.footer = footer
+        template.buttons = buttons
+        template.status = "draft"
+        template.meta_status = None
+        template.meta_quality = None
+        template.rejection_reason = None
+        template.submitted_at = None
+        template.approved_at = None
+        template.rejected_at = None
+        await self._session.flush()
+        return template
+
+    async def mark_submitted(
+        self, template: WhatsAppTemplate, *, name: str, whatsapp_template_id: str | None = None
+    ) -> WhatsAppTemplate:
+        """Move a draft/rejected template into `pending_approval` after a submit."""
+        template.name = name
+        template.status = "pending_approval"
+        template.meta_status = None
+        template.rejection_reason = None
+        template.rejected_at = None
+        template.submitted_at = datetime.now(tz=UTC)
+        if whatsapp_template_id:
+            template.whatsapp_template_id = whatsapp_template_id
+        await self._session.flush()
+        return template
 
     async def list_pending(self, *, limit: int = 500) -> list[tuple[WhatsAppTemplate, UUID]]:
         """Cross-merchant scan of templates awaiting approval, for the sync cron.

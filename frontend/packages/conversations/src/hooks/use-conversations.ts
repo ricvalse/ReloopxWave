@@ -21,7 +21,7 @@ export function useConversations({ limit = 100 }: { limit?: number } = {}) {
       let req = supabase
         .from('conversations')
         .select(
-          'id, merchant_id, lead_id, wa_contact_phone, wa_phone_number_id, status, last_message_at, last_inbound_at, message_count, auto_reply, meta, created_at',
+          'id, merchant_id, lead_id, wa_contact_phone, wa_phone_number_id, status, last_message_at, last_inbound_at, message_count, auto_reply, ai_disabled_until, assigned_to, handoff_reason, handoff_summary, handoff_at, handoff_resolved_at, internal_note, meta, created_at',
         )
         .order('last_message_at', { ascending: false, nullsFirst: false })
         .limit(limit);

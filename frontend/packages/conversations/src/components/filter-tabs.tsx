@@ -9,14 +9,26 @@ import type { Conversation, InboxFilter } from '../types';
  * belongs to. Exported so the workspace filters the list with the exact same
  * rule used to compute the tab counts.
  */
+/** An escalated thread no human has picked up yet (red, pulsing). */
+function isNeedsHuman(c: Conversation): boolean {
+  return c.status === 'active' && c.auto_reply === false && !c.assigned_to;
+}
+
+/** A thread a human has taken over (green). */
+function isManaged(c: Conversation): boolean {
+  return c.status === 'active' && c.auto_reply === false && !!c.assigned_to;
+}
+
 export function matchesInboxFilter(c: Conversation, filter: InboxFilter): boolean {
   switch (filter) {
     case 'all':
       return true;
     case 'active':
-      return c.status === 'active';
+      return c.status === 'active' && c.auto_reply !== false;
     case 'needs_human':
-      return c.status === 'active' && c.auto_reply === false;
+      return isNeedsHuman(c);
+    case 'managed':
+      return isManaged(c);
     case 'resolved':
       return c.status !== 'active';
   }
@@ -24,8 +36,9 @@ export function matchesInboxFilter(c: Conversation, filter: InboxFilter): boolea
 
 const TABS: { value: InboxFilter; label: string }[] = [
   { value: 'all', label: 'Tutte' },
-  { value: 'active', label: 'Attive' },
+  { value: 'active', label: 'AI attiva' },
   { value: 'needs_human', label: 'Da gestire' },
+  { value: 'managed', label: 'Gestite' },
   { value: 'resolved', label: 'Risolte' },
 ];
 
@@ -38,11 +51,18 @@ interface FilterTabsProps {
 
 export function FilterTabs({ conversations, value, onChange }: FilterTabsProps) {
   const counts = useMemo(() => {
-    const c: Record<InboxFilter, number> = { all: 0, active: 0, needs_human: 0, resolved: 0 };
+    const c: Record<InboxFilter, number> = {
+      all: 0,
+      active: 0,
+      needs_human: 0,
+      managed: 0,
+      resolved: 0,
+    };
     for (const conv of conversations) {
       c.all += 1;
-      if (conv.status === 'active') c.active += 1;
-      if (conv.status === 'active' && conv.auto_reply === false) c.needs_human += 1;
+      if (conv.status === 'active' && conv.auto_reply !== false) c.active += 1;
+      if (isNeedsHuman(conv)) c.needs_human += 1;
+      if (isManaged(conv)) c.managed += 1;
       if (conv.status !== 'active') c.resolved += 1;
     }
     return c;
@@ -53,7 +73,10 @@ export function FilterTabs({ conversations, value, onChange }: FilterTabsProps) 
       <TabsList className="flex h-8 w-full justify-between gap-0.5 overflow-x-auto p-0.5">
         {TABS.map((t) => {
           const count = counts[t.value];
-          const highlight = t.value === 'needs_human' && count > 0;
+          // Escalated-and-unhandled threads pulse red; human-managed ones go
+          // green — both draw the eye, mirroring Amalia's triage badges.
+          const needsHuman = t.value === 'needs_human' && count > 0;
+          const managed = t.value === 'managed' && count > 0;
           return (
             <TabsTrigger
               key={t.value}
@@ -65,9 +88,11 @@ export function FilterTabs({ conversations, value, onChange }: FilterTabsProps) 
                 <span
                   className={cn(
                     'rounded-full px-1 text-[9px] font-semibold leading-4 tabular-nums',
-                    highlight
-                      ? 'bg-warning/20 text-warning'
-                      : 'bg-muted-foreground/15 text-muted-foreground',
+                    needsHuman
+                      ? 'animate-pulse bg-red-500 text-white'
+                      : managed
+                        ? 'bg-emerald-500 text-white'
+                        : 'bg-muted-foreground/15 text-muted-foreground',
                     'data-[state=active]:bg-primary/15 data-[state=active]:text-primary',
                   )}
                 >

@@ -24,7 +24,6 @@ from db import (
     FLOW_NO_ANSWER,
     AnalyticsRepository,
     ConversationRepository,
-    FlowRepository,
     IntegrationRepository,
     ReminderCandidate,
     TenantContext,
@@ -33,6 +32,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
+from workers.automation.lifecycle import resolve_lifecycle_step
 from workers.outbound import MODE_SKIP, decide_outbound, is_within_24h, send_decision
 
 logger = get_logger(__name__)
@@ -107,13 +107,20 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
         if now - reference < timedelta(minutes=threshold_min):
             return False
 
-        # Decide free-text vs template based on the 24h window + optional flow
-        # step. Decide BEFORE consuming the dedup key so a skip (e.g. no approved
-        # template yet) can be retried once a template lands.
-        step = await FlowRepository(session).resolve_step(
-            merchant_id=cand.merchant_id, key=FLOW_NO_ANSWER, step_index=next_attempt - 1
-        )
+        # Decide free-text vs template based on the 24h window + optional system
+        # flow graph. Decide BEFORE consuming the dedup key so a skip (e.g. no
+        # approved template yet) can be retried once a template lands.
         within_window = is_within_24h(cand.last_inbound_at, now)
+        step = await resolve_lifecycle_step(
+            session,
+            merchant_id=cand.merchant_id,
+            system_key=FLOW_NO_ANSWER,
+            attempt_index=next_attempt - 1,
+            context={
+                "within_24h_window": within_window,
+                "minutes_of_day": now.hour * 60 + now.minute,
+            },
+        )
 
         text_key = (
             ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT

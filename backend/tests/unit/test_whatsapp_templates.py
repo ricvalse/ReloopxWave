@@ -36,6 +36,17 @@ def test_lint_rejects_variable_at_start_and_end() -> None:
     assert "VAR_AT_END" in codes_end
 
 
+def test_lint_rejects_adjacent_variables() -> None:
+    # Two placeholders with only whitespace between them → Meta "Invalid Format".
+    codes = {e.code for e in lint_template(body="Ciao {{1}} {{2}} a presto")}
+    assert "VAR_ADJACENT" in codes
+    glued = {e.code for e in lint_template(body="Ciao {{1}}{{2}} a presto")}
+    assert "VAR_ADJACENT" in glued
+    # Static text between variables is fine.
+    ok = {e.code for e in lint_template(body="Ciao {{1}}, il tuo ordine {{2}} è pronto.")}
+    assert "VAR_ADJACENT" not in ok
+
+
 def test_lint_rejects_long_footer_and_footer_variable() -> None:
     codes = {e.code for e in lint_template(body="testo valido qui", footer="x" * 70)}
     assert "FOOTER_TOO_LONG" in codes
@@ -50,9 +61,16 @@ def test_lint_rejects_bad_category_and_empty_body() -> None:
 
 
 def test_lint_button_rules() -> None:
-    too_many = lint_template(
+    # Meta allows up to 10 buttons total — 4 quick replies is fine now.
+    ok = lint_template(
         body="testo valido qui",
         buttons=[{"type": "QUICK_REPLY", "text": f"b{i}"} for i in range(4)],
+    )
+    assert "BUTTONS_TOO_MANY" not in {e.code for e in ok}
+
+    too_many = lint_template(
+        body="testo valido qui",
+        buttons=[{"type": "QUICK_REPLY", "text": f"b{i}"} for i in range(11)],
     )
     assert "BUTTONS_TOO_MANY" in {e.code for e in too_many}
 
@@ -61,6 +79,107 @@ def test_lint_button_rules() -> None:
         buttons=[{"type": "URL", "text": "vai", "url": "https://x/{{1}}/{{2}}"}],
     )
     assert "BUTTON_URL_VARS" in {e.code for e in bad_url}
+
+
+def test_lint_button_subtype_caps_and_format() -> None:
+    codes = {
+        e.code
+        for e in lint_template(
+            body="testo valido qui",
+            buttons=[
+                {"type": "URL", "text": "a", "url": "https://x.it"},
+                {"type": "URL", "text": "b", "url": "https://y.it"},
+                {"type": "URL", "text": "c", "url": "https://z.it"},  # 3rd URL → too many
+                {"type": "PHONE_NUMBER", "text": "p1", "phone_number": "+39055123"},
+                {"type": "PHONE_NUMBER", "text": "p2", "phone_number": "+39055124"},  # 2nd phone
+            ],
+        )
+    }
+    assert "BUTTONS_URL_TOO_MANY" in codes
+    assert "BUTTONS_PHONE_TOO_MANY" in codes
+
+    http_url = {
+        e.code
+        for e in lint_template(
+            body="testo valido qui",
+            buttons=[{"type": "URL", "text": "vai", "url": "http://insecure.it"}],
+        )
+    }
+    assert "BUTTON_URL_NOT_HTTPS" in http_url
+
+    bad_phone = {
+        e.code
+        for e in lint_template(
+            body="testo valido qui",
+            buttons=[{"type": "PHONE_NUMBER", "text": "chiama", "phone_number": "055123456"}],
+        )
+    }
+    assert "BUTTON_PHONE_FORMAT" in bad_phone
+
+
+def test_lint_language_format_and_unsupported() -> None:
+    bad = {e.code for e in lint_template(body="testo valido qui", language="italiano")}
+    assert "LANG_FORMAT" in bad
+
+    valid = lint_template(body="testo valido qui", language="en_US")
+    assert valid == []
+
+    unknown = lint_template(body="testo valido qui", language="xx")
+    assert any(e.code == "LANG_UNSUPPORTED" and e.severity == "warning" for e in unknown)
+
+
+def test_lint_body_format_tabs_and_spaces_are_errors() -> None:
+    codes = {e.code for e in lint_template(body="ciao\tmondo come va oggi")}
+    assert "BODY_TAB" in codes
+    runs = {e.code for e in lint_template(body="ciao      mondo come va")}
+    assert "BODY_SPACE_RUN" in runs
+
+
+def test_lint_example_count_is_warning_when_provided_short() -> None:
+    issues = lint_template(
+        body="Ciao {{1}}, ordine {{2}} pronto", body_examples=["Mario"]
+    )
+    miss = [e for e in issues if e.code == "VAR_EXAMPLE_MISSING"]
+    assert miss and miss[0].severity == "warning"
+    # Omitting examples entirely is fine (caller fills generic placeholders).
+    assert "VAR_EXAMPLE_MISSING" not in {
+        e.code for e in lint_template(body="Ciao {{1}}, ordine {{2}} pronto")
+    }
+
+
+def test_lint_promo_wording_in_utility_is_warning() -> None:
+    issues = lint_template(
+        body="Ciao {{1}}, approfitta dello sconto del 20% solo oggi grazie",
+        category="UTILITY",
+    )
+    promo = [e for e in issues if e.code == "CAT_PROMO_IN_UTILITY"]
+    assert promo and promo[0].severity == "warning"
+    # Same wording under MARKETING is not flagged.
+    assert "CAT_PROMO_IN_UTILITY" not in {
+        e.code
+        for e in lint_template(
+            body="Ciao {{1}}, approfitta dello sconto del 20% solo oggi grazie",
+            category="MARKETING",
+        )
+    }
+
+
+def test_lint_authentication_rejects_links() -> None:
+    codes = {
+        e.code
+        for e in lint_template(
+            body="Il tuo codice {{1}} su https://acme.it grazie",
+            category="AUTHENTICATION",
+        )
+    }
+    assert "AUTH_NO_URL" in codes
+
+
+def test_lint_severity_split() -> None:
+    # A clean template has no errors and no warnings.
+    issues = lint_template(body="Ciao {{1}}, il tuo ordine {{2}} è pronto.", footer="Grazie")
+    assert [e for e in issues if e.severity == "error"] == []
+    assert [e for e in issues if e.severity == "warning"] == []
 
 
 def test_build_submit_components_includes_example_for_variables() -> None:

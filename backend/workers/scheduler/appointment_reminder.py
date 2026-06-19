@@ -23,7 +23,6 @@ from db import (
     AnalyticsRepository,
     AppointmentReminderCandidate,
     AppointmentRepository,
-    FlowRepository,
     IntegrationRepository,
     TenantContext,
     session_scope,
@@ -31,6 +30,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
+from workers.automation.lifecycle import resolve_lifecycle_step
 from workers.outbound import MODE_SKIP, decide_outbound, is_within_24h, send_decision
 
 logger = get_logger(__name__)
@@ -83,11 +83,19 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         when = _format_slot(cand.start_at, cand.tz_name)
         fallback_text = f"Promemoria: hai un appuntamento {when}. A presto!"
 
-        step = await FlowRepository(session).resolve_step(
-            merchant_id=cand.merchant_id, key=FLOW_BOOKING_REMINDER, step_index=0
+        within_window = is_within_24h(cand.last_inbound_at, now)
+        step = await resolve_lifecycle_step(
+            session,
+            merchant_id=cand.merchant_id,
+            system_key=FLOW_BOOKING_REMINDER,
+            attempt_index=0,
+            context={
+                "within_24h_window": within_window,
+                "minutes_of_day": now.hour * 60 + now.minute,
+            },
         )
         decision = decide_outbound(
-            within_window=is_within_24h(cand.last_inbound_at, now),
+            within_window=within_window,
             fallback_text=fallback_text,
             step=step,
             context={"contact.phone": cand.phone, "appointment.datetime": when},

@@ -1,7 +1,7 @@
 'use client';
 
 import { Avatar, AvatarFallback, Button, ScrollArea, Skeleton } from '@reloop/ui';
-import { X } from 'lucide-react';
+import { UserRound, X } from 'lucide-react';
 import { useLeadDetail } from '../../hooks/use-lead-detail';
 import { contactDisplayName, contactInitials } from '../../lib/initials';
 import type { Conversation } from '../../types';
@@ -9,6 +9,52 @@ import { ContactInfo } from './contact-info';
 import { LeadScore } from './lead-score';
 import { NotesEditor } from './notes-editor';
 import { ObjectionsList } from './objections-list';
+
+const HANDOFF_REASON_LABEL: Record<string, string> = {
+  manual_reply: 'Presa in carico manuale',
+  video_message: 'Media non gestibile (video)',
+  document_message: 'Media non gestibile (documento)',
+  angry: 'Cliente insoddisfatto',
+};
+
+function relativeTime(iso: string): string {
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'adesso';
+  if (mins < 60) return `${mins} min fa`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h fa`;
+  return `${Math.floor(hours / 24)} g fa`;
+}
+
+/** Escalation / handoff context for the operator. Hidden while the bot is on. */
+function HandoffSection({ conversation }: { conversation: Conversation }) {
+  if (conversation.auto_reply !== false && !conversation.handoff_at) return null;
+  const reason = conversation.handoff_reason;
+  const label = (reason && HANDOFF_REASON_LABEL[reason]) || 'Passata a un operatore';
+  return (
+    <section className="border-t border-border bg-amber-50/60 px-4 py-4 dark:bg-amber-950/20">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-900 dark:text-amber-200">
+        <UserRound className="h-3.5 w-3.5" />
+        {label}
+        {conversation.handoff_at ? (
+          <span className="font-normal text-amber-800/70 dark:text-amber-200/60">
+            · {relativeTime(conversation.handoff_at)}
+          </span>
+        ) : null}
+      </div>
+      {conversation.handoff_summary ? (
+        <p className="text-xs leading-relaxed text-amber-900/90 dark:text-amber-100/80">
+          {conversation.handoff_summary}
+        </p>
+      ) : null}
+      {conversation.assigned_to ? (
+        <p className="mt-1 text-[11px] text-amber-800/70 dark:text-amber-200/60">
+          Assegnata a {conversation.assigned_to}
+        </p>
+      ) : null}
+    </section>
+  );
+}
 
 interface DetailPanelProps {
   conversation: Conversation;
@@ -66,6 +112,7 @@ export function DetailPanel({ conversation, onClose, hideClose }: DetailPanelPro
             </div>
           ) : (
             <>
+              <HandoffSection conversation={conversation} />
               {lead && (
                 <section className="px-4 py-4">
                   <LeadScore lead={lead} />

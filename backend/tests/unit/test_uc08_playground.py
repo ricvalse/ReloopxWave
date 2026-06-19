@@ -39,6 +39,10 @@ def _fake_resolver(values: dict):
         async def resolve(self, key, *, merchant_id):
             return values.get(key)
 
+        async def resolve_all(self, *, merchant_id):
+            # Mirror the real bag: flat dict keyed by ConfigKey.value (dotted).
+            return {(k.value if isinstance(k, ConfigKey) else k): v for k, v in values.items()}
+
     return _R
 
 
@@ -50,9 +54,12 @@ def wiring(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pg, "tenant_session", lambda ctx: _FakeSessionCtx(sentinel_session))
     monkeypatch.setattr(pg, "ConfigResolver", _fake_resolver({ConfigKey.SCORING_HOT_THRESHOLD: 65}))
 
-    async def _fake_build(*, session, merchant_id, prior_sentiment=None) -> str:
+    async def _fake_build(
+        *, session, merchant_id, prior_sentiment=None, customer_message=None
+    ) -> str:
         captured["prior_sentiment"] = prior_sentiment
         captured["build_merchant_id"] = merchant_id
+        captured["customer_message"] = customer_message
         return "PROMPT-CANONICO"
 
     monkeypatch.setattr(pg, "build_cascade_system_prompt", _fake_build)

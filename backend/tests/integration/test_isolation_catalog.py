@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from db import (
+    BotCorrectionRepository,
     FaqRepository,
     ProductRepository,
     StorePolicyRepository,
@@ -19,7 +20,7 @@ from db import (
     session_scope,
     tenant_session,
 )
-from db.models import FaqEntry, Merchant, Product, StorePolicy, Tenant
+from db.models import BotCorrection, FaqEntry, Merchant, Product, StorePolicy, Tenant
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,6 +54,19 @@ async def _seed_policy(merchant_id: uuid.UUID) -> None:
     async with session_scope() as session:
         session.add(StorePolicy(merchant_id=merchant_id, shipping_info="Spedizione 24h"))
         await session.flush()
+
+
+async def _seed_correction(merchant_id: uuid.UUID, trigger: str) -> uuid.UUID:
+    async with session_scope() as session:
+        row = BotCorrection(
+            merchant_id=merchant_id,
+            trigger_message=trigger,
+            original_response="risposta sbagliata",
+            corrected_response="risposta corretta",
+        )
+        session.add(row)
+        await session.flush()
+        return row.id
 
 
 async def test_tenant_cannot_read_other_tenant_products(two_tenants: TwoTenants) -> None:
@@ -98,6 +112,21 @@ async def test_tenant_cannot_read_other_tenant_policies(two_tenants: TwoTenants)
         assert await repo.get_for_merchant(m2.id) is None
 
         rows = (await session.execute(select(StorePolicy))).scalars().all()
+        assert all(r.merchant_id == m1.id for r in rows)
+
+
+async def test_tenant_cannot_read_other_tenant_corrections(two_tenants: TwoTenants) -> None:
+    t1, m1, _t2, m2 = two_tenants
+    await _seed_correction(m1.id, "scarpe blu")
+    foreign_id = await _seed_correction(m2.id, "orari")
+
+    async with tenant_session(_admin_ctx(t1.id)) as session:
+        repo = BotCorrectionRepository(session)
+        assert len(await repo.list_for_merchant(m1.id)) == 1
+        assert await repo.list_for_merchant(m2.id) == []
+        assert await repo.get(foreign_id) is None
+
+        rows = (await session.execute(select(BotCorrection))).scalars().all()
         assert all(r.merchant_id == m1.id for r in rows)
 
 

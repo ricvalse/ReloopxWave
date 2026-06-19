@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -42,6 +43,10 @@ class FakeConversation:
     merchant_id: uuid.UUID = field(default_factory=uuid.uuid4)
     variant_id: str | None = None
     auto_reply: bool = True
+    ai_disabled_until: Any = None
+    handoff_at: Any = None
+    handoff_reason: str | None = None
+    handoff_resolved_at: Any = None
 
 
 class FakeSession:
@@ -324,7 +329,7 @@ async def test_inbound_persisted_even_when_reply_fails(
         return True
 
     async def fake_resolve_prompt(
-        self, *, session, merchant_id, variant_id=None, prior_sentiment=None
+        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
     ):
         return "system prompt"
 
@@ -428,7 +433,7 @@ async def test_inbound_idempotent_on_redelivery(
         return True
 
     async def fake_resolve_prompt(
-        self, *, session, merchant_id, variant_id=None, prior_sentiment=None
+        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
     ):
         return "system prompt"
 
@@ -505,3 +510,57 @@ async def test_inbound_idempotent_on_redelivery(
 
     assert result.handled is True
     assert user_calls == []  # no re-insert
+
+
+async def test_soft_pause_silences_bot(service) -> None:
+    """A future `ai_disabled_until` (soft-pause) gates auto-reply off without
+    flipping auto_reply — the bot resumes on its own when the window elapses."""
+    svc, _sender, _dispatcher, conv, _lead = service
+    conv.ai_disabled_until = datetime.now(UTC) + timedelta(hours=1)
+
+    outcome = await svc.handle_inbound_persist(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ci sei?",
+        wa_message_id="wamid.pause.1",
+    )
+
+    assert outcome.handled is True
+    assert outcome.auto_reply_on is False
+    # Soft-pause does NOT flip the per-thread takeover flag.
+    assert conv.auto_reply is True
+
+
+async def test_expired_soft_pause_lets_bot_reply(service) -> None:
+    """A past `ai_disabled_until` no longer pauses — the bot is back on."""
+    svc, _sender, _dispatcher, conv, _lead = service
+    conv.ai_disabled_until = datetime.now(UTC) - timedelta(minutes=1)
+
+    outcome = await svc.handle_inbound_persist(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao",
+        wa_message_id="wamid.pause.2",
+    )
+
+    assert outcome.auto_reply_on is True
+
+
+async def test_force_handoff_media_marks_needs_human(service) -> None:
+    """Unsupported media (video/document) hands the thread to a human: persist
+    the inbound, flip needs-human, and skip the reply."""
+    svc, _sender, _dispatcher, conv, _lead = service
+
+    outcome = await svc.handle_inbound_persist(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="[Il cliente ha inviato un video]",
+        wa_message_id="wamid.media.1",
+        force_handoff_reason="video_message",
+    )
+
+    assert outcome.handled is True
+    assert outcome.auto_reply_on is False
+    assert conv.auto_reply is False
+    assert conv.handoff_reason == "video_message"
+    assert conv.handoff_at is not None

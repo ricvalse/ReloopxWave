@@ -83,7 +83,11 @@ async def reindex_catalog(ctx: dict[str, Any], *, merchant_id: str) -> dict[str,
             merchant_uuid, active_only=True
         )
         faq_records = [
-            (f"Domanda: {f.question}\nRisposta: {f.answer}", {"kind": "faq", "faq_id": str(f.id)})
+            (
+                (f"Categoria: {f.category}\n" if f.category else "")
+                + f"Domanda: {f.question}\nRisposta: {f.answer}",
+                {"kind": "faq", "faq_id": str(f.id)},
+            )
             for f in faq_entries
         ]
 
@@ -153,6 +157,40 @@ def _product_text(p: Product) -> str:
         lines.append(f"Prezzo: {p.price} {p.currency}")
     if p.tags:
         lines.append(f"Tag: {', '.join(p.tags)}")
+    variant_labels = [label for v in (p.variants or []) if (label := _variant_label(v))]
+    if variant_labels:
+        lines.append(f"Varianti: {'; '.join(variant_labels)}")
     if p.description:
         lines.append(p.description)
+    images = [str(u).strip() for u in (p.images or []) if str(u).strip()]
+    if images:
+        lines.append(f"Immagini: {', '.join(images)}")
     return "\n".join(lines)
+
+
+def _variant_label(v: Any) -> str:
+    """Human-readable label for one free-form product variant.
+
+    Variants are merchant/import-defined dicts (Shopify-style), so we pull the
+    common keys when present and fall back to joining scalar values — nothing is
+    silently dropped from the indexed text.
+    """
+    if not isinstance(v, dict):
+        return str(v).strip()
+    name = str(v.get("title") or v.get("name") or "").strip()
+    options = [
+        str(v[k]).strip()
+        for k in ("option1", "option2", "option3")
+        if v.get(k) and str(v[k]).strip()
+    ]
+    label = name or " / ".join(options)
+    if not label:
+        label = " / ".join(
+            str(val).strip()
+            for val in v.values()
+            if isinstance(val, str | int | float) and str(val).strip()
+        )
+    price = v.get("price")
+    if label and price not in (None, ""):
+        label = f"{label} ({price})"
+    return label

@@ -89,10 +89,10 @@ def _patch(monkeypatch, *, step: FakeStep | None, records: list, sends: list) ->
                 "reactivation.max_attempts": 3,
             }.get(getattr(key, "value", str(key)))
 
-    class FakeFlowRepo:
-        def __init__(self, session): ...
-        async def resolve_step(self, *, merchant_id, key, step_index):
-            return step
+    async def fake_resolve_lifecycle_step(
+        session, *, merchant_id, system_key, attempt_index, context
+    ):
+        return step
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -128,7 +128,7 @@ def _patch(monkeypatch, *, step: FakeStep | None, records: list, sends: list) ->
 
     monkeypatch.setattr(reactivation, "tenant_session", fake_tenant_session)
     monkeypatch.setattr(reactivation, "ConfigResolver", FakeConfig)
-    monkeypatch.setattr(reactivation, "FlowRepository", FakeFlowRepo)
+    monkeypatch.setattr(reactivation, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
     monkeypatch.setattr(reactivation, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(reactivation, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(reactivation, "AnalyticsRepository", FakeAnalyticsRepo)

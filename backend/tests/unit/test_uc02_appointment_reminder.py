@@ -45,10 +45,10 @@ def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool
         async def mark_reminded(self, appointment_id, *, at):
             marked.append(appointment_id)
 
-    class FakeFlowRepo:
-        def __init__(self, session): ...
-        async def resolve_step(self, *, merchant_id, key, step_index):
-            return None  # no flow → built-in free-text fallback
+    async def fake_resolve_lifecycle_step(
+        session, *, merchant_id, system_key, attempt_index, context
+    ):
+        return None  # no system flow → built-in free-text fallback
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -80,7 +80,7 @@ def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool
 
     monkeypatch.setattr(mod, "tenant_session", fake_tenant_session)
     monkeypatch.setattr(mod, "AppointmentRepository", FakeApptRepo)
-    monkeypatch.setattr(mod, "FlowRepository", FakeFlowRepo)
+    monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
     monkeypatch.setattr(

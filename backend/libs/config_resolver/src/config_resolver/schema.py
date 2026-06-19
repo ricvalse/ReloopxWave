@@ -63,6 +63,8 @@ class ConfigKey(StrEnum):
 
     # Escalation
     ESCALATION_ENABLED = "escalation.enabled"
+    ESCALATION_HANDOFF_MESSAGE = "escalation.handoff_message"
+    ESCALATION_SILENT_HANDOFF = "escalation.silent_handoff"
 
     # Privacy
     PRIVACY_RETENTION_MONTHS = "privacy.retention_months"
@@ -170,6 +172,8 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOT_LANGUAGE: "it",
     ConfigKey.BOT_TONE: "professionale-amichevole",
     ConfigKey.ESCALATION_ENABLED: True,
+    ConfigKey.ESCALATION_HANDOFF_MESSAGE: None,
+    ConfigKey.ESCALATION_SILENT_HANDOFF: False,
     ConfigKey.PRIVACY_RETENTION_MONTHS: 24,
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
@@ -322,6 +326,10 @@ class BusinessConfig(_StrictModel):
 
 class EscalationConfig(_StrictModel):
     enabled: bool = True
+    # Fixed message sent to the customer on handoff. None → keep the LLM's line.
+    handoff_message: str | None = Field(default=None, max_length=1000)
+    # When true, hand off silently (no customer-facing message at all).
+    silent_handoff: bool = False
 
 
 class PrivacyConfig(_StrictModel):

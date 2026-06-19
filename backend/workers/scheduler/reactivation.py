@@ -19,7 +19,6 @@ from config_resolver import ConfigKey, ConfigResolver
 from db import (
     FLOW_REACTIVATION,
     AnalyticsRepository,
-    FlowRepository,
     IntegrationRepository,
     LeadRepository,
     ReactivationCandidate,
@@ -29,6 +28,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
+from workers.automation.lifecycle import resolve_lifecycle_step
 from workers.outbound import MODE_SKIP, decide_outbound, send_decision
 
 logger = get_logger(__name__)
@@ -119,8 +119,20 @@ async def _maybe_send(
         # Dormant leads are by definition outside the 24h window, so reactivation
         # requires an approved template. Decide before the dedup so a skip (no
         # template yet) can be retried once one is approved.
-        step = await FlowRepository(session).resolve_step(
-            merchant_id=cand.merchant_id, key=FLOW_REACTIVATION, step_index=next_attempt - 1
+        # Dormant leads are always outside the 24h window; conditions can branch
+        # on the lead's score (carried by the candidate) and the time of day.
+        temperature = "hot" if cand.score >= 80 else "warm" if cand.score >= 40 else "cold"
+        step = await resolve_lifecycle_step(
+            session,
+            merchant_id=cand.merchant_id,
+            system_key=FLOW_REACTIVATION,
+            attempt_index=next_attempt - 1,
+            context={
+                "within_24h_window": False,
+                "minutes_of_day": now.hour * 60 + now.minute,
+                "score": cand.score,
+                "temperature": temperature,
+            },
         )
         override = await config.resolve(
             ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id

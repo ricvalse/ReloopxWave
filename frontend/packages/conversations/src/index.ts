@@ -16,12 +16,14 @@ export { StatusTicks } from './components/status-ticks';
 export { Composer } from './components/composer';
 export { FilterTabs, matchesInboxFilter } from './components/filter-tabs';
 export { DetailPanel } from './components/detail/detail-panel';
+export { AiHandoffBanner } from './components/ai-handoff-banner';
 
 // Hooks
 export { useConversations } from './hooks/use-conversations';
 export { useThread, threadQueryKey } from './hooks/use-thread';
 export { useSendMessage } from './hooks/use-send-message';
 export { useToggleAutoReply } from './hooks/use-toggle-auto-reply';
+export { useAiPause, useAiResume } from './hooks/use-ai-pause';
 export { useLeadDetail } from './hooks/use-lead-detail';
 export { useUpdateNotes } from './hooks/use-update-notes';
 

@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import FaqEntry, Product, StorePolicy
+from db.models import BotCorrection, FaqEntry, Product, StorePolicy
 
 
 class ProductRepository:
@@ -160,5 +160,62 @@ class FaqRepository:
         if entry is None:
             return False
         await self._session.delete(entry)
+        await self._session.flush()
+        return True
+
+
+class BotCorrectionRepository:
+    """CRUD for the playground response-fix loop (UC-08). Reads are used by both
+    the API (management list) and the prompt builder (active-only matching)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        merchant_id: UUID,
+        trigger_message: str,
+        original_response: str,
+        corrected_response: str,
+        context: str | None = None,
+    ) -> BotCorrection:
+        row = BotCorrection(
+            merchant_id=merchant_id,
+            trigger_message=trigger_message,
+            original_response=original_response,
+            corrected_response=corrected_response,
+            context=context,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get(self, correction_id: UUID) -> BotCorrection | None:
+        return await self._session.get(BotCorrection, correction_id)
+
+    async def list_for_merchant(
+        self, merchant_id: UUID, *, active_only: bool = False
+    ) -> list[BotCorrection]:
+        stmt = select(BotCorrection).where(BotCorrection.merchant_id == merchant_id)
+        if active_only:
+            stmt = stmt.where(BotCorrection.is_active.is_(True))
+        stmt = stmt.order_by(BotCorrection.created_at.desc())
+        return list((await self._session.execute(stmt)).scalars())
+
+    async def update(self, correction_id: UUID, **fields: Any) -> BotCorrection | None:
+        row = await self._session.get(BotCorrection, correction_id)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            setattr(row, key, value)
+        await self._session.flush()
+        return row
+
+    async def delete(self, correction_id: UUID) -> bool:
+        row = await self._session.get(BotCorrection, correction_id)
+        if row is None:
+            return False
+        await self._session.delete(row)
         await self._session.flush()
         return True

@@ -49,8 +49,10 @@ def _patch(monkeypatch, *, escalation_enabled: bool):
 
     class FakeConvRepo:
         def __init__(self, session): ...
-        async def mark_escalated(self, conversation_id, *, reason=None):
-            escalated.append({"conversation_id": conversation_id, "reason": reason})
+        async def mark_escalated(self, conversation_id, *, reason=None, summary=None):
+            escalated.append(
+                {"conversation_id": conversation_id, "reason": reason, "summary": summary}
+            )
 
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
@@ -71,16 +73,25 @@ async def test_escalate_takes_bot_off_thread_and_emits(
 
     handler = EscalateHumanHandler()
     await handler(
-        OrchestratorAction(kind="escalate_human", payload={"reason": "angry"}),
+        OrchestratorAction(
+            kind="escalate_human",
+            payload={
+                "reason": "angry",
+                "customer_message_summary": "Vuole un rimborso, è insoddisfatto.",
+            },
+        ),
         turn_ctx,
     )
 
     assert len(escalated) == 1
     assert escalated[0]["conversation_id"] == turn_ctx.conversation_id
     assert escalated[0]["reason"] == "angry"
+    # The AI's operator brief flows through to the handoff_summary column.
+    assert escalated[0]["summary"] == "Vuole un rimborso, è insoddisfatto."
     assert len(events) == 1
     assert events[0]["event_type"] == "conversation.escalated"
     assert events[0]["subject_id"] == turn_ctx.conversation_id
+    assert events[0]["properties"]["summary"] == "Vuole un rimborso, è insoddisfatto."
 
 
 async def test_escalate_noop_when_disabled(

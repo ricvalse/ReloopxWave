@@ -1,7 +1,13 @@
 from db.repositories.ab import ABRepository, VariantMetric
 from db.repositories.analytics import AnalyticsRepository
 from db.repositories.appointment import AppointmentReminderCandidate, AppointmentRepository
-from db.repositories.catalog import FaqRepository, ProductRepository, StorePolicyRepository
+from db.repositories.automation import AutomationRepository
+from db.repositories.catalog import (
+    BotCorrectionRepository,
+    FaqRepository,
+    ProductRepository,
+    StorePolicyRepository,
+)
 from db.repositories.conversation import ConversationRepository, ReminderCandidate
 from db.repositories.flow import (
     FLOW_BOOKING_REMINDER,
@@ -43,6 +49,8 @@ __all__ = [
     "AnalyticsRepository",
     "AppointmentReminderCandidate",
     "AppointmentRepository",
+    "AutomationRepository",
+    "BotCorrectionRepository",
     "BotTemplateRepository",
     "CategoryCount",
     "ConversationRepository",

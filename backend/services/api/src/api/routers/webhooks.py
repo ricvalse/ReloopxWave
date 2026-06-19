@@ -48,6 +48,11 @@ _MEDIA_PLACEHOLDER = {
     "contacts": "[Il cliente ha inviato un contatto]",
 }
 
+# Media the bot can't meaningfully act on → hand straight to a human (Amalia
+# pattern) instead of replying with a placeholder. Lighter media (image/audio/
+# location/…) still get a graceful bot reply via `_MEDIA_PLACEHOLDER`.
+_HANDOFF_MEDIA = {"video", "document"}
+
 _CAMPAIGN_MAX_LEN = 200
 
 
@@ -115,6 +120,8 @@ async def whatsapp_inbound(
         text = ev.text if ev.text is not None else _MEDIA_PLACEHOLDER.get(ev.kind)
         if text is None:
             continue  # unknown/empty event with no text and no known media kind
+        # Rich media (video/document) the bot can't act on → hand off to a human.
+        handoff_reason = f"{ev.kind}_message" if ev.kind in _HANDOFF_MEDIA else None
         await arq.enqueue_job(
             "handle_inbound_message",
             ev.phone_number_id,
@@ -122,6 +129,7 @@ async def whatsapp_inbound(
             text,
             ev.message_id,
             _extract_campaign(ev.raw),  # UC-11 click-to-WhatsApp ad attribution
+            handoff_reason,
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )
         enqueued_msgs += 1

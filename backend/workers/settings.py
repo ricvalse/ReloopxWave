@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 from config_resolver import set_shared_redis
 from db import get_engine
 from shared import configure_logging, get_settings, init_sentry
+from workers.automation.engine import automation_dispatch, automation_run
 from workers.conversation.handlers import (
     flush_inbound_reply,
     handle_ghl_event,
@@ -105,6 +106,9 @@ class WorkerSettings:
         # WhatsApp template approval-status sync (webhook-driven + cron fallback)
         apply_template_status_event,
         template_status_sync,
+        # Automazioni — visual flow builder dispatch + run
+        automation_dispatch,
+        automation_run,
         # queue: ft:pipeline
         fine_tune_run,
         fine_tune_train,
@@ -151,4 +155,6 @@ class WorkerSettings:
         # UC-02: send appointment reminders ahead of the slot. Every 30 min,
         # offset from the reconcile poll; per-appointment dedup via meta marker.
         cron(send_appointment_reminders, minute={5, 35}, timeout=300, max_tries=1),
+        # Automazioni: tail analytics_events every minute and fan out flow runs.
+        cron(automation_dispatch, minute=set(range(60)), timeout=120, max_tries=1),
     ]

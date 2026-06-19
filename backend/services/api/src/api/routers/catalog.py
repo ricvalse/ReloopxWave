@@ -9,6 +9,7 @@ FAQ writes enqueue `catalog_reindex` so the RAG corpus stays in sync.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -17,7 +18,12 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
-from db import FaqRepository, ProductRepository, StorePolicyRepository
+from db import (
+    BotCorrectionRepository,
+    FaqRepository,
+    ProductRepository,
+    StorePolicyRepository,
+)
 from db.session import TenantContext
 from shared import NotFoundError, PermissionDeniedError, get_logger
 
@@ -26,6 +32,8 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 _FAQ_MAX_ENTRIES = 50
+# Active corrections are loaded + scored on every turn, so keep the set bounded.
+_CORRECTION_MAX_ACTIVE = 200
 
 
 # ---- Schemas -------------------------------------------------------------
@@ -94,6 +102,28 @@ class PolicyIn(BaseModel):
 
 class PolicyOut(PolicyIn):
     pass
+
+
+class CorrectionIn(BaseModel):
+    trigger_message: str = Field(max_length=4000)
+    original_response: str = Field(max_length=8000)
+    corrected_response: str = Field(max_length=8000)
+    context: str | None = Field(default=None, max_length=2000)
+
+
+class CorrectionPatch(BaseModel):
+    corrected_response: str | None = Field(default=None, max_length=8000)
+    is_active: bool | None = None
+
+
+class CorrectionOut(BaseModel):
+    id: UUID
+    trigger_message: str
+    original_response: str
+    corrected_response: str
+    context: str | None
+    is_active: bool
+    created_at: datetime
 
 
 # ---- Products ------------------------------------------------------------
@@ -294,6 +324,72 @@ async def update_policies(
     return PolicyOut(**payload.model_dump())
 
 
+# ---- Corrections (playground response-fix loop, UC-08) -------------------
+
+
+@router.get("/{merchant_id}/corrections", response_model=list[CorrectionOut])
+async def list_corrections(
+    merchant_id: UUID, session: DBSession, ctx: CurrentContext
+) -> list[CorrectionOut]:
+    _assert_merchant_scope(ctx, merchant_id)
+    rows = await BotCorrectionRepository(session).list_for_merchant(merchant_id)
+    return [_correction_out(r) for r in rows]
+
+
+@router.post("/{merchant_id}/corrections", response_model=CorrectionOut)
+async def create_correction(
+    merchant_id: UUID, payload: CorrectionIn, session: DBSession, ctx: CurrentContext
+) -> CorrectionOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = BotCorrectionRepository(session)
+    active = await repo.list_for_merchant(merchant_id, active_only=True)
+    if len(active) >= _CORRECTION_MAX_ACTIVE:
+        raise PermissionDeniedError(
+            f"Max {_CORRECTION_MAX_ACTIVE} active corrections reached",
+            error_code="correction_limit_reached",
+        )
+    row = await repo.create(
+        merchant_id=merchant_id,
+        trigger_message=payload.trigger_message,
+        original_response=payload.original_response,
+        corrected_response=payload.corrected_response,
+        context=payload.context,
+    )
+    return _correction_out(row)
+
+
+@router.patch("/{merchant_id}/corrections/{correction_id}", response_model=CorrectionOut)
+async def update_correction(
+    merchant_id: UUID,
+    correction_id: UUID,
+    payload: CorrectionPatch,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> CorrectionOut:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = BotCorrectionRepository(session)
+    existing = await repo.get(correction_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("Correction not found")
+    fields = payload.model_dump(exclude_none=True)
+    row = await repo.update(correction_id, **fields) if fields else existing
+    assert row is not None
+    return _correction_out(row)
+
+
+@router.delete("/{merchant_id}/corrections/{correction_id}")
+async def delete_correction(
+    merchant_id: UUID, correction_id: UUID, session: DBSession, ctx: CurrentContext
+) -> dict[str, Any]:
+    _assert_merchant_scope(ctx, merchant_id)
+    repo = BotCorrectionRepository(session)
+    existing = await repo.get(correction_id)
+    if existing is None or existing.merchant_id != merchant_id:
+        raise NotFoundError("Correction not found")
+    await repo.delete(correction_id)
+    return {"deleted": True, "id": str(correction_id)}
+
+
 # ---- helpers -------------------------------------------------------------
 
 
@@ -344,4 +440,16 @@ def _faq_out(e: Any) -> FaqOut:
         category=e.category,
         sort_order=e.sort_order,
         is_active=e.is_active,
+    )
+
+
+def _correction_out(c: Any) -> CorrectionOut:
+    return CorrectionOut(
+        id=c.id,
+        trigger_message=c.trigger_message,
+        original_response=c.original_response,
+        corrected_response=c.corrected_response,
+        context=c.context,
+        is_active=c.is_active,
+        created_at=c.created_at,
     )

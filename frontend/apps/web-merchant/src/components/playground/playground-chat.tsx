@@ -1,9 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
-import { Check, Save, Send, Sparkles } from 'lucide-react';
-import { getApiClient } from '@/lib/api';
+import { useQueryClient } from '@tanstack/react-query';
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Textarea } from '@reloop/ui';
+import { Check, Pencil, Save, Send, Sparkles, X } from 'lucide-react';
+import { apiErrorMessage, getApiClient } from '@/lib/api';
+import { useMerchantId } from '@/hooks/use-merchant-id';
+import { CorrectionsPanel } from './corrections-panel';
 
 const parseRules = (raw: string): string[] =>
   raw
@@ -16,7 +19,8 @@ type ChatTurn = { role: 'user' | 'assistant'; content: string };
 type EventData = { kind: string; summary: string; detail: Record<string, unknown> };
 
 type DisplayItem =
-  | { id: number; kind: 'user' | 'bot'; text: string }
+  | { id: number; kind: 'user'; text: string }
+  | { id: number; kind: 'bot'; text: string; trigger: string; corrected?: boolean }
   | { id: number; kind: 'event'; event: EventData };
 
 type LeadState = {
@@ -56,9 +60,16 @@ const SENTIMENT_LABEL: Record<string, string> = {
 };
 
 export function PlaygroundChat() {
+  const { merchantId } = useMerchantId();
+  const queryClient = useQueryClient();
   const [history, setHistory] = useState<ChatTurn[]>([]);
   const [items, setItems] = useState<DisplayItem[]>([]);
   const [input, setInput] = useState('');
+  // Per-response correction editing (UC-08 feedback loop).
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState('');
+  const [savingCorrection, setSavingCorrection] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [leadState, setLeadState] = useState<LeadState | null>(null);
   const [temperature, setTemperature] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
@@ -135,7 +146,7 @@ export function PlaygroundChat() {
       if (showTyping) setTyping(true);
       for (const bubble of bubbles) {
         if (bubble.delay_ms > 0) await sleep(bubble.delay_ms);
-        setItems((prev) => [...prev, { id: nextId(), kind: 'bot', text: bubble.text }]);
+        setItems((prev) => [...prev, { id: nextId(), kind: 'bot', text: bubble.text, trigger: text }]);
       }
       setTyping(false);
 
@@ -174,6 +185,58 @@ export function PlaygroundChat() {
     setTemperature(null);
     setLastMeta(null);
     setError(null);
+    setEditingId(null);
+  };
+
+  const startEdit = (item: Extract<DisplayItem, { kind: 'bot' }>) => {
+    setEditingId(item.id);
+    setEditText(item.text);
+    setCorrectionError(null);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText('');
+    setCorrectionError(null);
+  };
+
+  // Save the merchant's fix: trigger (the user message) + original + corrected.
+  // The matched correction is re-injected as a mandatory rule on future turns.
+  const saveCorrection = async (item: Extract<DisplayItem, { kind: 'bot' }>) => {
+    const corrected = editText.trim();
+    if (!corrected || savingCorrection) return;
+    if (!merchantId) {
+      setCorrectionError('Merchant context mancante');
+      return;
+    }
+    setSavingCorrection(true);
+    setCorrectionError(null);
+    try {
+      const api = getApiClient();
+      const { error: apiError } = await api.POST('/catalog/{merchant_id}/corrections', {
+        params: { path: { merchant_id: merchantId } },
+        body: {
+          trigger_message: item.trigger,
+          original_response: item.text,
+          corrected_response: corrected,
+        },
+      });
+      if (apiError) throw new Error(apiErrorMessage(apiError));
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === item.id && it.kind === 'bot'
+            ? { ...it, text: corrected, corrected: true }
+            : it,
+        ),
+      );
+      setEditingId(null);
+      setEditText('');
+      void queryClient.invalidateQueries({ queryKey: ['corrections', merchantId] });
+    } catch (e) {
+      setCorrectionError(apiErrorMessage(e));
+    } finally {
+      setSavingCorrection(false);
+    }
   };
 
   const saveRules = async () => {
@@ -219,26 +282,79 @@ export function PlaygroundChat() {
                 reale, nessun messaggio inviato o salvato.
               </p>
             ) : (
-              items.map((item) =>
-                item.kind === 'event' ? (
-                  <div key={item.id} className="mx-auto max-w-[90%] text-center">
-                    <span className="inline-block rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-                      {EVENT_ICON[item.event.kind] ?? '•'} {item.event.summary}
-                    </span>
+              items.map((item) => {
+                if (item.kind === 'event') {
+                  return (
+                    <div key={item.id} className="mx-auto max-w-[90%] text-center">
+                      <span className="inline-block rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+                        {EVENT_ICON[item.event.kind] ?? '•'} {item.event.summary}
+                      </span>
+                    </div>
+                  );
+                }
+                if (item.kind === 'user') {
+                  return (
+                    <div
+                      key={item.id}
+                      className="ml-auto max-w-[80%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                    >
+                      {item.text}
+                    </div>
+                  );
+                }
+                const isEditing = editingId === item.id;
+                return (
+                  <div key={item.id} className="mr-auto flex max-w-[80%] flex-col gap-1">
+                    {isEditing ? (
+                      <div className="space-y-2 rounded-lg border border-input bg-background p-2">
+                        <Textarea
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          rows={3}
+                          className="text-sm"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            disabled={savingCorrection || !editText.trim()}
+                            onClick={() => saveCorrection(item)}
+                          >
+                            <Check className="mr-1 h-3.5 w-3.5" />
+                            {savingCorrection ? 'Salvataggio…' : 'Salva correzione'}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={cancelEdit}>
+                            <X className="mr-1 h-3.5 w-3.5" /> Annulla
+                          </Button>
+                        </div>
+                        {correctionError ? (
+                          <p className="text-xs text-destructive">{correctionError}</p>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 text-sm">
+                          {item.text}
+                        </div>
+                        <div className="flex items-center gap-2 pl-1">
+                          {item.corrected ? (
+                            <Badge variant="success" className="gap-1">
+                              <Check className="h-3 w-3" /> corretta
+                            </Badge>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => startEdit(item)}
+                              className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                            >
+                              <Pencil className="h-3 w-3" /> Modifica
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
-                ) : (
-                  <div
-                    key={item.id}
-                    className={
-                      item.kind === 'user'
-                        ? 'ml-auto max-w-[80%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground'
-                        : 'mr-auto max-w-[80%] whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 text-sm'
-                    }
-                  >
-                    {item.text}
-                  </div>
-                ),
-              )
+                );
+              })
             )}
             {typing ? (
               <div className="mr-auto rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
@@ -308,6 +424,8 @@ export function PlaygroundChat() {
             {rulesError ? <p className="text-xs text-destructive">{rulesError}</p> : null}
           </CardContent>
         </Card>
+
+        <CorrectionsPanel />
 
         <Card>
           <CardHeader>

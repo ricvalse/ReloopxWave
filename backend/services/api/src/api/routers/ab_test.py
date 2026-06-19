@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ai_core.ab_stats import evaluate_significance
 from api.dependencies.session import CurrentContext, DBSession
+from config_resolver import ConfigKey, ConfigResolver
 from db import ABRepository, PromptRepository
 from db.session import TenantContext
 from shared import NotFoundError, PermissionDeniedError
@@ -34,7 +35,9 @@ class ExperimentIn(BaseModel):
     description: str | None = None
     variants: list[VariantIn]
     primary_metric: str
-    min_sample_size: int = 100
+    # When omitted, falls back to the merchant's configured `ab_test.min_sample`
+    # (the bot-config knob) so that per-merchant default is actually honoured.
+    min_sample_size: int | None = None
 
 
 class ExperimentOut(BaseModel):
@@ -92,7 +95,7 @@ async def create_experiment(
         description=payload.description,
         variants=variants_payload,
         primary_metric=payload.primary_metric,
-        min_sample_size=payload.min_sample_size,
+        min_sample_size=await _resolve_min_sample(session, merchant_id, payload.min_sample_size),
     )
     return _to_out(exp)
 
@@ -179,6 +182,15 @@ async def experiment_metrics(
             for m in metrics
         ],
     }
+
+
+async def _resolve_min_sample(session: Any, merchant_id: UUID, explicit: int | None) -> int:
+    """Explicit per-experiment value wins; otherwise the merchant's configured
+    `ab_test.min_sample` default (UC-09), falling back to the system default."""
+    if explicit is not None:
+        return explicit
+    value = await ConfigResolver(session).resolve(ConfigKey.AB_MIN_SAMPLE, merchant_id=merchant_id)
+    return value if isinstance(value, int) else 100
 
 
 def _require_merchant(ctx: TenantContext) -> UUID:

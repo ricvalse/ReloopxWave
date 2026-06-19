@@ -44,6 +44,19 @@ class Conversation(Base, TimestampMixin):
     # Per-thread bot takeover. AND-ed with bot_configs.overrides.bot.auto_reply_enabled
     # in ConversationService.handle_inbound — either off → no assistant turn.
     auto_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Soft-pause with auto-resume (migration 0025). When set in the future the
+    # bot stays silent WITHOUT flipping auto_reply, and resumes on its own once
+    # the timestamp passes. Set by phone-echo (merchant typed from their app) and
+    # by the operator's timed "disattiva AI per X" toggle.
+    ai_disabled_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Structured human-handoff state (migration 0025) — drives inbox triage,
+    # assignment and SLA. `handoff_summary` is the 1-2 sentence brief the AI
+    # writes for the operator when it escalates.
+    assigned_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    handoff_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    handoff_summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    handoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    handoff_resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Free-text internal note shown in the inbox detail panel. Per-thread,
     # edited by an agent; NULL when empty. See migration 0012.
     internal_note: Mapped[str | None] = mapped_column(String, nullable=True)

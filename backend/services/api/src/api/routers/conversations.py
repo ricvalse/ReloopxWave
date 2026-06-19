@@ -10,7 +10,7 @@ callbacks (delivered/read) come back through `routers/webhooks.py`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -204,6 +204,17 @@ async def send_message(
         meta=meta,
     )
     session.add(msg)
+
+    # Auto-takeover: a human replying to a bot-active thread takes it over
+    # (Amalia pattern — sending IS taking over). The idempotent path above
+    # already returned, so this only runs on a genuinely new human message.
+    actor = str(ctx.actor_id) if ctx.actor_id is not None else None
+    if conv.auto_reply:
+        conv.auto_reply = False
+        conv.handoff_at = datetime.now(UTC)
+        conv.handoff_reason = "manual_reply"
+    conv.assigned_to = actor
+
     await session.flush()
     await session.commit()
 
@@ -275,6 +286,67 @@ async def update_note(
     return ConversationNoteOut(id=conv.id, internal_note=conv.internal_note)
 
 
+class AiPauseIn(BaseModel):
+    # Soft-pause duration. Default 7 days (Amalia's manual-disable window).
+    hours: int = Field(default=168, ge=1, le=720)
+
+
+@router.post("/{conversation_id}/ai-pause")
+async def pause_ai(
+    conversation_id: UUID,
+    body: AiPauseIn,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> dict[str, Any]:
+    """Soft-pause the bot on this thread until `now + hours` (auto-resumes).
+
+    Unlike toggling `auto_reply`, this is time-boxed: the bot comes back on its
+    own when the window elapses. Used by the inbox "Disattiva AI per…" control.
+    """
+    if ctx.merchant_id is None and ctx.role != "agency_admin":
+        raise PermissionDeniedError("Merchant context required", error_code="no_merchant_context")
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    conv.ai_disabled_until = datetime.now(UTC) + timedelta(hours=body.hours)
+    if ctx.actor_id is not None:
+        conv.assigned_to = str(ctx.actor_id)
+    await session.commit()
+    logger.info(
+        "conversations.ai_paused",
+        conversation_id=str(conversation_id),
+        hours=body.hours,
+    )
+    return _conv_to_dict(conv)
+
+
+@router.post("/{conversation_id}/ai-resume")
+async def resume_ai(
+    conversation_id: UUID,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> dict[str, Any]:
+    """Hand the thread back to the bot: clear the soft-pause, re-enable
+    auto-reply and mark the handoff resolved. Used by the "Riattiva AI" button."""
+    if ctx.merchant_id is None and ctx.role != "agency_admin":
+        raise PermissionDeniedError("Merchant context required", error_code="no_merchant_context")
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    conv.ai_disabled_until = None
+    conv.auto_reply = True
+    conv.handoff_resolved_at = datetime.now(UTC)
+    await session.commit()
+    logger.info("conversations.ai_resumed", conversation_id=str(conversation_id))
+    return _conv_to_dict(conv)
+
+
 def _conv_to_dict(c: Conversation) -> dict[str, Any]:
     return {
         "id": str(c.id),
@@ -290,6 +362,13 @@ def _conv_to_dict(c: Conversation) -> dict[str, Any]:
         "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
         # Drives the composer's 24h-window banner / template selector (CC-WA).
         "last_inbound_at": c.last_inbound_at.isoformat() if c.last_inbound_at else None,
+        # Handoff / triage state (migration 0025).
+        "ai_disabled_until": c.ai_disabled_until.isoformat() if c.ai_disabled_until else None,
+        "assigned_to": c.assigned_to,
+        "handoff_reason": c.handoff_reason,
+        "handoff_summary": c.handoff_summary,
+        "handoff_at": c.handoff_at.isoformat() if c.handoff_at else None,
+        "handoff_resolved_at": c.handoff_resolved_at.isoformat() if c.handoff_resolved_at else None,
         "meta": dict(c.meta) if c.meta else None,
     }
 

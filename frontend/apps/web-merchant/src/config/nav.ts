@@ -14,7 +14,7 @@ import {
   ScrollText,
   Settings,
   Store,
-  Workflow,
+  Waypoints,
 } from 'lucide-react';
 import type { NavSection } from '@reloop/ui';
 
@@ -48,7 +48,7 @@ export const merchantNav: NavSection[] = [
     title: 'Messaggistica',
     items: [
       { href: '/whatsapp-templates', label: 'Template WhatsApp', icon: LayoutTemplate },
-      { href: '/flussi', label: 'Flussi', icon: Workflow },
+      { href: '/automazioni', label: 'Automazioni', icon: Waypoints },
     ],
   },
   {

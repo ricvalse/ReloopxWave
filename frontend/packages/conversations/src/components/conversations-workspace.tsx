@@ -9,6 +9,7 @@ import { useThread } from '../hooks/use-thread';
 import { useConversationsContext } from '../lib/context';
 import { useResizablePanels } from '../lib/use-resizable-panels';
 import type { InboxFilter, Message } from '../types';
+import { AiHandoffBanner } from './ai-handoff-banner';
 import { Composer } from './composer';
 import { DetailPanel } from './detail/detail-panel';
 import { FilterTabs, matchesInboxFilter } from './filter-tabs';
@@ -167,6 +168,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
               onToggleDetail={customerDetailEnabled ? handleToggleDetail : undefined}
               detailActive={showDesktopDetail || (isMobile && mobileDetailOpen)}
             />
+            <AiHandoffBanner conversation={selectedConversation} />
             <div className="min-h-0 flex-1">
               <MessageList
                 messages={threadQuery.data ?? []}

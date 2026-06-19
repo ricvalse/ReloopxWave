@@ -62,8 +62,9 @@ class EscalateHumanHandler:
                 return
 
             reason = action.payload.get("reason")
+            summary = action.payload.get("customer_message_summary")
             convs = ConversationRepository(session)
-            await convs.mark_escalated(turn_ctx.conversation_id, reason=reason)
+            await convs.mark_escalated(turn_ctx.conversation_id, reason=reason, summary=summary)
 
             analytics = AnalyticsRepository(session)
             await analytics.emit(
@@ -75,6 +76,7 @@ class EscalateHumanHandler:
                 properties={
                     "lead_id": str(turn_ctx.lead_id),
                     "reason": reason,
+                    "summary": summary,
                     "conversation_id": str(turn_ctx.conversation_id),
                 },
             )

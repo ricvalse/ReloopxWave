@@ -15,6 +15,17 @@ export interface Conversation {
   message_count: number;
   /** Per-thread bot takeover. AND-ed with merchant `bot.auto_reply_enabled`. */
   auto_reply: boolean;
+  /** Soft-pause with auto-resume (ISO). In the future = bot silenced until then. */
+  ai_disabled_until?: string | null;
+  /** Operator who took the thread over (auto-takeover or timed pause). */
+  assigned_to?: string | null;
+  /** Why the thread was handed off (e.g. "manual_reply", "video_message", "angry"). */
+  handoff_reason?: string | null;
+  /** The AI's 1-2 sentence brief for the operator on escalation. */
+  handoff_summary?: string | null;
+  /** When the handoff started / was resolved (ISO). */
+  handoff_at?: string | null;
+  handoff_resolved_at?: string | null;
   /** Agent's free-text internal note, shown in the detail panel. NULL when empty. */
   internal_note?: string | null;
   meta: Record<string, unknown> | null;
@@ -67,11 +78,12 @@ export interface ThreadFilters {
  * agent-meaningful buckets without leaking DB vocabulary into the UI.
  *
  *   all          — everything
- *   active       — bot/active threads (status === 'active')
- *   needs_human  — active but the bot is paused (auto_reply === false): waiting on an agent
+ *   active       — bot/active threads (status === 'active', bot still answering)
+ *   needs_human  — escalated, no human yet (auto_reply false, unassigned): waiting on an agent
+ *   managed      — a human took over (auto_reply false, assigned_to set)
  *   resolved     — anything no longer active (closed/archived/…)
  */
-export type InboxFilter = 'all' | 'active' | 'needs_human' | 'resolved';
+export type InboxFilter = 'all' | 'active' | 'needs_human' | 'managed' | 'resolved';
 
 /**
  * Lead linked to a conversation, surfaced in the detail panel. Mirrors the

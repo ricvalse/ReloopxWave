@@ -220,20 +220,32 @@ class ConversationRepository:
         await self._session.execute(delete(Conversation).where(Conversation.id.in_(ids)))
         return len(ids)
 
-    async def mark_escalated(self, conversation_id: UUID, *, reason: str | None = None) -> None:
+    async def mark_escalated(
+        self,
+        conversation_id: UUID,
+        *,
+        reason: str | None = None,
+        summary: str | None = None,
+    ) -> None:
         """Human takeover (escalate_human action): silence the bot on this thread
-        and stamp escalation metadata so the merchant inbox can surface it.
+        and stamp handoff state so the merchant inbox can triage it.
 
         Sets `auto_reply = false` (AND-ed with the merchant master switch in the
-        worker, so the bot stays silent regardless) and records `escalated`,
-        `escalated_at` and the escalation `reason` in `conversation.meta`. The
-        thread stays `active` — it still needs a human, it isn't closed.
+        worker, so the bot stays silent regardless) and writes the structured
+        handoff columns (`handoff_at`, `handoff_reason`, `handoff_summary` — the
+        AI's brief for the operator). The legacy `meta.escalated*` keys are kept
+        for backward compatibility. The thread stays `active` — it still needs a
+        human, it isn't closed.
         """
         await self._session.execute(
             text(
                 """
                 UPDATE conversations
                 SET auto_reply = false,
+                    handoff_at = now(),
+                    handoff_resolved_at = NULL,
+                    handoff_reason = :reason,
+                    handoff_summary = coalesce(:summary, handoff_summary),
                     meta = jsonb_set(
                         jsonb_set(
                             jsonb_set(
@@ -247,7 +259,7 @@ class ConversationRepository:
                 WHERE id = :conversation_id
                 """
             ),
-            {"conversation_id": str(conversation_id), "reason": reason},
+            {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
         )
 
     async def record_reminder_sent(self, conversation_id: UUID) -> None:

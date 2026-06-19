@@ -24,6 +24,7 @@ no analytics. Only config reads + read-only LLM calls.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -107,55 +108,56 @@ class PlaygroundRunner:
         async with tenant_session(ctx) as session:
             resolver = ConfigResolver(session)
 
-            async def _int(key: ConfigKey, default: int) -> int:
-                try:
-                    value = await resolver.resolve(key, merchant_id=req.merchant_id)
-                except Exception:
-                    return default
+            # Resolve the whole config bag in ONE pass (1 Redis read on a hit, or
+            # ≤3 DB queries cold) instead of a resolve() round-trip per key — the
+            # playground reads ~14 keys, and a cold cache (right after a config or
+            # /apply write invalidates it) would otherwise mean dozens of serial
+            # DB queries. Cascade + None-skip semantics match resolve() exactly.
+            try:
+                cfg = await resolver.resolve_all(merchant_id=req.merchant_id)
+            except Exception as e:
+                logger.warning("uc08.config_resolve_failed", error=str(e))
+                cfg = {}
+
+            def _int(key: ConfigKey, default: int) -> int:
+                value = cfg.get(key.value)
                 return value if isinstance(value, int) and not isinstance(value, bool) else default
 
-            async def _float(key: ConfigKey, default: float) -> float:
-                try:
-                    value = await resolver.resolve(key, merchant_id=req.merchant_id)
-                except Exception:
-                    return default
+            def _float(key: ConfigKey, default: float) -> float:
+                value = cfg.get(key.value)
                 if isinstance(value, int | float) and not isinstance(value, bool):
                     return float(value)
                 return default
 
-            async def _bool(key: ConfigKey, default: bool) -> bool:
-                try:
-                    value = await resolver.resolve(key, merchant_id=req.merchant_id)
-                except Exception:
-                    return default
+            def _bool(key: ConfigKey, default: bool) -> bool:
+                value = cfg.get(key.value)
                 return value if isinstance(value, bool) else default
 
-            async def _str(key: ConfigKey) -> str | None:
-                try:
-                    value = await resolver.resolve(key, merchant_id=req.merchant_id)
-                except Exception:
-                    return None
+            def _str(key: ConfigKey) -> str | None:
+                value = cfg.get(key.value)
                 return value.strip() if isinstance(value, str) and value.strip() else None
 
-            # This turn's sentiment (read-only LLM call). The PRIOR turn's
-            # sentiment (carried in state) is what adapts the prompt below.
-            current_sentiment: str | None = None
+            # This turn's sentiment is a read-only LLM call that only feeds the
+            # SIMULATED lead state afterwards (the prompt adapts to the PRIOR
+            # turn's sentiment, carried in state). So kick it off now and let it
+            # run concurrently with RAG + the orchestrator — it stays off the
+            # critical path and is awaited just before the dry-run simulation.
+            sentiment_task: asyncio.Task[str] | None = None
             if self._sentiment is not None:
-                try:
-                    current_sentiment = await self._sentiment.analyze(
+                sentiment_task = asyncio.ensure_future(
+                    self._sentiment.analyze(
                         merchant_id=req.merchant_id,
                         tenant_id=req.tenant_id,
                         text=req.user_message,
                     )
-                except Exception as e:
-                    logger.warning("uc08.sentiment_failed", error=str(e))
+                )
 
             # RAG retrieval — always on when an embedder is configured.
             kb_chunks = []
             if self._embedder is not None:
                 try:
-                    top_k = await _int(ConfigKey.RAG_TOP_K, 5)
-                    min_score = await _float(ConfigKey.RAG_MIN_SCORE, 0.7)
+                    top_k = _int(ConfigKey.RAG_TOP_K, 5)
+                    min_score = _float(ConfigKey.RAG_MIN_SCORE, 0.7)
                     rag = RAGEngine(session, self._embedder)
                     kb_chunks = await rag.retrieve(
                         req.user_message,
@@ -176,14 +178,16 @@ class PlaygroundRunner:
                 session=session,
                 merchant_id=req.merchant_id,
                 prior_sentiment=state_in.lead_sentiment,
+                customer_message=req.user_message,
             )
             # The tester's ad-hoc rules ride on top of the canonical prompt for
             # this turn only, so the preview reflects them before they are saved.
             system_prompt = apply_playground_rule_overrides(system_prompt, req.override_rules)
 
-            hot_threshold = await _int(ConfigKey.SCORING_HOT_THRESHOLD, 80)
-            cold_threshold = await _int(ConfigKey.SCORING_COLD_THRESHOLD, 30)
-            qualified_stage = await _str(ConfigKey.PIPELINE_QUALIFIED_STAGE_ID)
+            hot_threshold = _int(ConfigKey.SCORING_HOT_THRESHOLD, 80)
+            cold_threshold = _int(ConfigKey.SCORING_COLD_THRESHOLD, 30)
+            advance_threshold = _int(ConfigKey.PIPELINE_ADVANCE_THRESHOLD, 60)
+            qualified_stage = _str(ConfigKey.PIPELINE_QUALIFIED_STAGE_ID)
 
             orchestrator_ctx = ConversationContext(
                 merchant_id=req.merchant_id,
@@ -197,11 +201,28 @@ class PlaygroundRunner:
                 history=to_chat_history(req.history),
                 kb_chunks=kb_chunks,
                 variant_id=None,
+                advance_threshold=advance_threshold,
             )
 
-            response: OrchestratorResponse = await self._orchestrator.run(
-                orchestrator_ctx, req.user_message
-            )
+            try:
+                response: OrchestratorResponse = await self._orchestrator.run(
+                    orchestrator_ctx, req.user_message
+                )
+            except BaseException:
+                # Don't leave the concurrent sentiment call dangling if the reply
+                # itself failed (e.g. the provider 429s).
+                if sentiment_task is not None and not sentiment_task.done():
+                    sentiment_task.cancel()
+                raise
+
+            # Collect this turn's sentiment (kicked off before RAG). analyze()
+            # degrades to "neutral" internally, so this only guards a cancel/edge.
+            current_sentiment: str | None = None
+            if sentiment_task is not None:
+                try:
+                    current_sentiment = await sentiment_task
+                except Exception as e:
+                    logger.warning("uc08.sentiment_failed", error=str(e))
 
             # Side-effect-free dry-run of the emitted actions.
             sim = simulate_turn(
@@ -216,14 +237,14 @@ class PlaygroundRunner:
             sim.state.lead_sentiment = current_sentiment
 
             # WhatsApp-style delivery: split into bubbles + per-bubble delay.
-            multi_bubble_max = await _int(ConfigKey.DELIVERY_MULTI_BUBBLE_MAX, 1)
-            bubble_max_chars = await _int(ConfigKey.DELIVERY_BUBBLE_MAX_CHARS, 600)
-            typing_indicator = await _bool(ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED, False)
-            delay_base = await _float(ConfigKey.DELIVERY_TYPING_DELAY_BASE_S, 0.0)
-            delay_per_char = await _float(ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S, 0.0)
-            delay_min = await _float(ConfigKey.DELIVERY_TYPING_DELAY_MIN_S, 0.0)
-            delay_max = await _float(ConfigKey.DELIVERY_TYPING_DELAY_MAX_S, 0.0)
-            jitter = await _float(ConfigKey.DELIVERY_TYPING_JITTER_FRAC, 0.0)
+            multi_bubble_max = _int(ConfigKey.DELIVERY_MULTI_BUBBLE_MAX, 1)
+            bubble_max_chars = _int(ConfigKey.DELIVERY_BUBBLE_MAX_CHARS, 600)
+            typing_indicator = _bool(ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED, False)
+            delay_base = _float(ConfigKey.DELIVERY_TYPING_DELAY_BASE_S, 0.0)
+            delay_per_char = _float(ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S, 0.0)
+            delay_min = _float(ConfigKey.DELIVERY_TYPING_DELAY_MIN_S, 0.0)
+            delay_max = _float(ConfigKey.DELIVERY_TYPING_DELAY_MAX_S, 0.0)
+            jitter = _float(ConfigKey.DELIVERY_TYPING_JITTER_FRAC, 0.0)
 
             texts = split_into_bubbles(
                 response.reply_text, max_bubbles=multi_bubble_max, max_chars=bubble_max_chars

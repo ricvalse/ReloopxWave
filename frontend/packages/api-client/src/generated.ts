@@ -542,6 +542,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/catalog/{merchant_id}/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Corrections */
+        get: operations["list_corrections_catalog__merchant_id__corrections_get"];
+        put?: never;
+        /** Create Correction */
+        post: operations["create_correction_catalog__merchant_id__corrections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/{merchant_id}/corrections/{correction_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Correction */
+        delete: operations["delete_correction_catalog__merchant_id__corrections__correction_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Correction */
+        patch: operations["update_correction_catalog__merchant_id__corrections__correction_id__patch"];
+        trace?: never;
+    };
     "/conversations/": {
         parameters: {
             query?: never;
@@ -643,6 +679,50 @@ export interface paths {
          *     frontend's optimistic write through the list subscription.
          */
         patch: operations["update_note_conversations__conversation_id__notes_patch"];
+        trace?: never;
+    };
+    "/conversations/{conversation_id}/ai-pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause Ai
+         * @description Soft-pause the bot on this thread until `now + hours` (auto-resumes).
+         *
+         *     Unlike toggling `auto_reply`, this is time-boxed: the bot comes back on its
+         *     own when the window elapses. Used by the inbox "Disattiva AI per…" control.
+         */
+        post: operations["pause_ai_conversations__conversation_id__ai_pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{conversation_id}/ai-resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume Ai
+         * @description Hand the thread back to the bot: clear the soft-pause, re-enable
+         *     auto-reply and mark the handoff resolved. Used by the "Riattiva AI" button.
+         */
+        post: operations["resume_ai_conversations__conversation_id__ai_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/appointments/{appointment_id}/reschedule": {
@@ -1206,6 +1286,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/whatsapp-templates/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Template
+         * @description Server-authoritative pre-submit lint. The form calls this before sending.
+         *
+         *     Mirrors the exact rules `create`/`submit` enforce so the merchant never
+         *     discovers a blocking error only at submit time. Warnings are advisory.
+         */
+        post: operations["validate_template_whatsapp_templates_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/whatsapp-templates/{template_id}": {
         parameters: {
             query?: never;
@@ -1215,10 +1318,39 @@ export interface paths {
         };
         /** Get Template */
         get: operations["get_template_whatsapp_templates__template_id__get"];
-        put?: never;
+        /**
+         * Update Template
+         * @description Edit a draft or rejected template. Meta can't edit a live template, so we
+         *     only allow editing locally-held rows (draft | rejected) and reset them to a
+         *     clean draft — the merchant then re-submits with one click.
+         */
+        put: operations["update_template_whatsapp_templates__template_id__put"];
         post?: never;
         /** Delete Template */
         delete: operations["delete_template_whatsapp_templates__template_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/whatsapp-templates/{template_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Template
+         * @description Submit a draft (or rejected) template to 360dialog for approval.
+         *
+         *     A fresh Meta-safe name is minted so a previously-rejected name (reserved by
+         *     Meta for 30 days) never blocks the resubmit.
+         */
+        post: operations["submit_template_whatsapp_templates__template_id__submit_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1273,6 +1405,63 @@ export interface paths {
         put: operations["upsert_flow_flows__key__put"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Catalog
+         * @description The node taxonomy that drives the editor palette (keeps FE/BE in sync).
+         */
+        get: operations["catalog_automations_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Automations */
+        get: operations["list_automations_automations_get"];
+        put?: never;
+        /** Create Automation */
+        post: operations["create_automation_automations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/automations/{automation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Automation */
+        get: operations["get_automation_automations__automation_id__get"];
+        /** Update Automation */
+        put: operations["update_automation_automations__automation_id__put"];
+        post?: never;
+        /** Delete Automation */
+        delete: operations["delete_automation_automations__automation_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1434,6 +1623,14 @@ export interface components {
             /** Expires At */
             expires_at: number | null;
         };
+        /** AiPauseIn */
+        AiPauseIn: {
+            /**
+             * Hours
+             * @default 168
+             */
+            hours: number;
+        };
         /** AppointmentOut */
         AppointmentOut: {
             /**
@@ -1450,6 +1647,138 @@ export interface components {
             start_at: string;
             /** End At */
             end_at: string | null;
+        };
+        /** AutomationCatalogOut */
+        AutomationCatalogOut: {
+            /** Triggers */
+            triggers: string[];
+            /** Conditions */
+            conditions: string[];
+            /** Actions */
+            actions: string[];
+        };
+        /** AutomationEdgeIn */
+        AutomationEdgeIn: {
+            /** Source Key */
+            source_key: string;
+            /** Target Key */
+            target_key: string;
+            /**
+             * Branch
+             * @default default
+             */
+            branch: string;
+        };
+        /** AutomationEdgeOut */
+        AutomationEdgeOut: {
+            /** Source Key */
+            source_key: string;
+            /** Target Key */
+            target_key: string;
+            /** Branch */
+            branch: string;
+        };
+        /** AutomationNodeIn */
+        AutomationNodeIn: {
+            /** Node Key */
+            node_key: string;
+            /** Kind */
+            kind: string;
+            /** Type */
+            type: string;
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Position X
+             * @default 0
+             */
+            position_x: number;
+            /**
+             * Position Y
+             * @default 0
+             */
+            position_y: number;
+        };
+        /** AutomationNodeOut */
+        AutomationNodeOut: {
+            /** Node Key */
+            node_key: string;
+            /** Kind */
+            kind: string;
+            /** Type */
+            type: string;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /** Position X */
+            position_x: number;
+            /** Position Y */
+            position_y: number;
+        };
+        /** AutomationOut */
+        AutomationOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** System Key */
+            system_key: string | null;
+            /** Is System */
+            is_system: boolean;
+            /** Trigger Type */
+            trigger_type: string | null;
+            /** Trigger Config */
+            trigger_config: {
+                [key: string]: unknown;
+            };
+            /** Canvas */
+            canvas: {
+                [key: string]: unknown;
+            };
+            /** Nodes */
+            nodes: components["schemas"]["AutomationNodeOut"][];
+            /** Edges */
+            edges: components["schemas"]["AutomationEdgeOut"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** AutomationUpsertIn */
+        AutomationUpsertIn: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Nodes */
+            nodes?: components["schemas"]["AutomationNodeIn"][];
+            /** Edges */
+            edges?: components["schemas"]["AutomationEdgeIn"][];
+            /** Canvas */
+            canvas?: {
+                [key: string]: unknown;
+            };
         };
         /** Body_upload_doc_knowledge_base__merchant_id__upload_post */
         Body_upload_doc_knowledge_base__merchant_id__upload_post: {
@@ -1652,6 +1981,47 @@ export interface components {
             /** Internal Note */
             internal_note: string | null;
         };
+        /** CorrectionIn */
+        CorrectionIn: {
+            /** Trigger Message */
+            trigger_message: string;
+            /** Original Response */
+            original_response: string;
+            /** Corrected Response */
+            corrected_response: string;
+            /** Context */
+            context?: string | null;
+        };
+        /** CorrectionOut */
+        CorrectionOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Trigger Message */
+            trigger_message: string;
+            /** Original Response */
+            original_response: string;
+            /** Corrected Response */
+            corrected_response: string;
+            /** Context */
+            context: string | null;
+            /** Is Active */
+            is_active: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** CorrectionPatch */
+        CorrectionPatch: {
+            /** Corrected Response */
+            corrected_response?: string | null;
+            /** Is Active */
+            is_active?: boolean | null;
+        };
         /** CustomPolicy */
         CustomPolicy: {
             /** Title */
@@ -1718,6 +2088,13 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /** Handoff Message */
+            handoff_message?: string | null;
+            /**
+             * Silent Handoff
+             * @default false
+             */
+            silent_handoff: boolean;
         };
         /** ExperimentIn */
         ExperimentIn: {
@@ -1729,11 +2106,8 @@ export interface components {
             variants: components["schemas"]["VariantIn"][];
             /** Primary Metric */
             primary_metric: string;
-            /**
-             * Min Sample Size
-             * @default 100
-             */
-            min_sample_size: number;
+            /** Min Sample Size */
+            min_sample_size?: number | null;
         };
         /** ExperimentOut */
         ExperimentOut: {
@@ -2003,6 +2377,17 @@ export interface components {
              * Format: uuid
              */
             merchant_id: string;
+        };
+        /** LintIssueOut */
+        LintIssueOut: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Severity */
+            severity: string;
+            /** Field */
+            field: string;
         };
         /** LocationOut */
         LocationOut: {
@@ -2688,6 +3073,15 @@ export interface components {
             /** Full Name */
             full_name: string | null;
         };
+        /** ValidateResultOut */
+        ValidateResultOut: {
+            /** Valid */
+            valid: boolean;
+            /** Errors */
+            errors: components["schemas"]["LintIssueOut"][];
+            /** Warnings */
+            warnings: components["schemas"]["LintIssueOut"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2782,6 +3176,11 @@ export interface components {
             } | null;
             /** Body Examples */
             body_examples?: string[] | null;
+            /**
+             * As Draft
+             * @default false
+             */
+            as_draft: boolean;
         };
         /** WhatsAppTemplateOut */
         WhatsAppTemplateOut: {
@@ -2826,6 +3225,8 @@ export interface components {
             variable_sources: {
                 [key: string]: string;
             };
+            /** Body Examples */
+            body_examples: string[];
             /** Whatsapp Template Id */
             whatsapp_template_id: string | null;
             /**
@@ -2838,6 +3239,48 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * WhatsAppTemplateUpdateIn
+         * @description Edit a draft or rejected template. Resets it to a clean editable draft.
+         */
+        WhatsAppTemplateUpdateIn: {
+            /**
+             * Purpose
+             * @default custom
+             */
+            purpose: string;
+            /**
+             * Category
+             * @default UTILITY
+             */
+            category: string;
+            /**
+             * Language
+             * @default it
+             */
+            language: string;
+            /** Body */
+            body: string;
+            /**
+             * Header Type
+             * @default NONE
+             */
+            header_type: string;
+            /** Header Text */
+            header_text?: string | null;
+            /** Header Image Url */
+            header_image_url?: string | null;
+            /** Footer */
+            footer?: string | null;
+            /** Buttons */
+            buttons?: components["schemas"]["WhatsAppButtonIn"][] | null;
+            /** Variable Sources */
+            variable_sources?: {
+                [key: string]: string;
+            } | null;
+            /** Body Examples */
+            body_examples?: string[] | null;
         };
     };
     responses: never;
@@ -4191,6 +4634,150 @@ export interface operations {
             };
         };
     };
+    list_corrections_catalog__merchant_id__corrections_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_correction_catalog__merchant_id__corrections_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_correction_catalog__merchant_id__corrections__correction_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_correction_catalog__merchant_id__corrections__correction_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                correction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_conversations_conversations__get: {
         parameters: {
             query?: never;
@@ -4320,6 +4907,80 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationNoteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pause_ai_conversations__conversation_id__ai_pause_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AiPauseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_ai_conversations__conversation_id__ai_resume_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -5390,6 +6051,41 @@ export interface operations {
             };
         };
     };
+    validate_template_whatsapp_templates_validate_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WhatsAppTemplateCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidateResultOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_template_whatsapp_templates__template_id__get: {
         parameters: {
             query?: never;
@@ -5402,6 +6098,43 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_template_whatsapp_templates__template_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WhatsAppTemplateUpdateIn"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -5442,6 +6175,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_template_whatsapp_templates__template_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5543,6 +6309,204 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["FlowOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    catalog_automations_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationCatalogOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_automations_automations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_automation_automations_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationUpsertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_automation_automations__automation_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                automation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_automation_automations__automation_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                automation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutomationUpsertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_automation_automations__automation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                automation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -5767,10 +6731,16 @@ export enum ApiPaths {
     delete_faq_catalog__merchant_id__faq__faq_id__delete = "/catalog/{merchant_id}/faq/{faq_id}",
     get_policies_catalog__merchant_id__policies_get = "/catalog/{merchant_id}/policies",
     update_policies_catalog__merchant_id__policies_put = "/catalog/{merchant_id}/policies",
+    list_corrections_catalog__merchant_id__corrections_get = "/catalog/{merchant_id}/corrections",
+    create_correction_catalog__merchant_id__corrections_post = "/catalog/{merchant_id}/corrections",
+    update_correction_catalog__merchant_id__corrections__correction_id__patch = "/catalog/{merchant_id}/corrections/{correction_id}",
+    delete_correction_catalog__merchant_id__corrections__correction_id__delete = "/catalog/{merchant_id}/corrections/{correction_id}",
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
     send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
+    pause_ai_conversations__conversation_id__ai_pause_post = "/conversations/{conversation_id}/ai-pause",
+    resume_ai_conversations__conversation_id__ai_resume_post = "/conversations/{conversation_id}/ai-resume",
     reschedule_appointments__appointment_id__reschedule_post = "/appointments/{appointment_id}/reschedule",
     cancel_appointments__appointment_id__cancel_post = "/appointments/{appointment_id}/cancel",
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",
@@ -5802,11 +6772,20 @@ export enum ApiPaths {
     integration_status_integrations_status_get = "/integrations/status",
     list_templates_whatsapp_templates_get = "/whatsapp-templates",
     create_template_whatsapp_templates_post = "/whatsapp-templates",
+    validate_template_whatsapp_templates_validate_post = "/whatsapp-templates/validate",
+    update_template_whatsapp_templates__template_id__put = "/whatsapp-templates/{template_id}",
     get_template_whatsapp_templates__template_id__get = "/whatsapp-templates/{template_id}",
     delete_template_whatsapp_templates__template_id__delete = "/whatsapp-templates/{template_id}",
+    submit_template_whatsapp_templates__template_id__submit_post = "/whatsapp-templates/{template_id}/submit",
     sync_template_whatsapp_templates__template_id__sync_post = "/whatsapp-templates/{template_id}/sync",
     list_flows_flows_get = "/flows",
     upsert_flow_flows__key__put = "/flows/{key}",
+    catalog_automations_catalog_get = "/automations/catalog",
+    list_automations_automations_get = "/automations",
+    create_automation_automations_post = "/automations",
+    get_automation_automations__automation_id__get = "/automations/{automation_id}",
+    update_automation_automations__automation_id__put = "/automations/{automation_id}",
+    delete_automation_automations__automation_id__delete = "/automations/{automation_id}",
     export_lead_dsar_leads__lead_id__export_get = "/dsar/leads/{lead_id}/export",
     erase_lead_dsar_leads__lead_id__erase_post = "/dsar/leads/{lead_id}/erase",
     whatsapp_inbound_webhooks_whatsapp_post = "/webhooks/whatsapp",

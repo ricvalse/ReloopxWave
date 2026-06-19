@@ -290,3 +290,35 @@ Gli step esistono ma scollegati: `collect`/`export` non sono job ARQ e non hanno
 - **Nessun evento di "chiusura conversazione"** esiste oggi (`conversation.status` default `active`): UC-13 auto-trigger e l'evaluation FT dipendono dall'introdurre uno stato `closed`/`idle` via sweep (1.6). È un prerequisito trasversale.
 - **Deviazione canale WhatsApp:** la spec parla di "WhatsApp Cloud API (Meta) BSP diretto", il codice usa **360dialog** (`integrations/whatsapp/d360_client.py`) con coexistence e un layer `integrations/router`. Il piano assume 360dialog come canale di produzione; aggiornare la spec o un ADR per ufficializzare la scelta.
 - **Prompt Manager è il cardine:** 1.1 sblocca UC-09 *e* la qualità di UC-02/04/05 (steering azioni) *e* il rollout FT (2.5). Va fatto presto.
+
+## Estensione — Automazioni (lavagnetta) + validazione template (2026-06-19)
+
+Vedi [ADR 0011](decisions/0011-automation-flow-builder-and-template-validation.md).
+
+**A. Lavagnetta automazioni (visual flow builder).** Nuovo modello a grafo distinto
+dai `flows`/`flow_steps` lineari: tabelle `automation_flows` / `automation_nodes` /
+`automation_edges` (migrazione **0027**, RLS pattern 0014). Nodi `trigger | condition |
+action`; logica grafo pura condivisa in `ai_core/automations.py` (validazione, eval
+condizioni, traversata, rilevamento cicli) — unit-testata (`test_automations_graph.py`).
+Router `/automations` (CRUD; bozza salvabile incompleta, abilitazione richiede grafo
+valido). Motore worker `workers/automation/engine.py`: cron `automation_dispatch` che fa
+tail di `analytics_events` (cursore Redis, zero modifiche al path conversazione) + job
+`automation_run` che cammina il grafo, valuta condizioni, esegue azioni (template/messaggio
+via 24h-window, `wait` con deferral ARQ). Trigger V1: `message_received`, `no_answer`,
+`booking_created/failed`, `lead_dormant`. UI: route `/automazioni` con canvas React Flow
+(`@xyflow/react`) — palette, nodi custom, rami sì/no, pannello config, salvataggio.
+
+**B. Validazione template WhatsApp completa.** `lint_template` ora ritorna `LintIssue` con
+`severity` (error blocca, warning avvisa) e `field`; copre l'intero ruleset Meta: formato
+lingua + codice supportato, whitespace body (tab/spazi/righe = errore), esempi per `{{n}}`,
+caps bottoni completi (≤10, URL≤2, phone≤1, copy-code≤1, https, label≤25, E.164),
+AUTHENTICATION, warning promo-in-UTILITY. Endpoint nuovi: `POST /whatsapp-templates/validate`,
+`PUT /{id}` (modifica draft/rifiutato), `POST /{id}/submit`, `as_draft` su create;
+`body_examples` persistito (migrazione **0026**). UI: form completo (header testo, bottoni,
+esempi per variabile), **anteprima a bolla WhatsApp**, percorso bozza→modifica→invio.
+Unit test estesi (`test_whatsapp_templates.py`).
+
+Stato: backend + frontend implementati, 356 unit test verdi, client OpenAPI rigenerato,
+web-merchant typecheck + lint puliti. Migrazioni 0026/0027 riallineate a valle di
+`0025_conversation_handoff`. Verifica end-to-end con servizi reali (360dialog, Postgres/Redis)
+ancora da fare; estendere gli isolation test 2-tenant alle 3 nuove tabelle automation.

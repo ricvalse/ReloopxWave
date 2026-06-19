@@ -142,6 +142,25 @@ async def test_examples_few_shot_block(monkeypatch) -> None:
     assert "Cliente: «Quanto costa?» → Tu: «Dipende dal servizio.»" in prompt
 
 
+async def test_first_message_reaches_prompt(monkeypatch) -> None:
+    """The merchant's welcome message (`bot.first_message`) must be injected as
+    opening guidance so the agent actually uses it (previously orphaned)."""
+    prompt = await _build(
+        monkeypatch,
+        {**_BIZ, ConfigKey.BOT_FIRST_MESSAGE: "Ciao! Come posso aiutarti oggi?"},
+    )
+    assert "messaggio di benvenuto" in prompt
+    assert "Ciao! Come posso aiutarti oggi?" in prompt
+
+
+async def test_first_message_alone_triggers_assembled_prompt(monkeypatch) -> None:
+    """A merchant who set only the welcome message still opts into the assembled
+    prompt (not the generic default)."""
+    prompt = await _build(monkeypatch, {ConfigKey.BOT_FIRST_MESSAGE: "Benvenuto da noi!"})
+    assert prompt != DEFAULT_SYSTEM_PROMPT
+    assert "Benvenuto da noi!" in prompt
+
+
 async def test_persona_field_alone_triggers_assembled_prompt(monkeypatch) -> None:
     """Setting only a persona field (no business profile) still produces the
     assembled prompt, not the generic default."""

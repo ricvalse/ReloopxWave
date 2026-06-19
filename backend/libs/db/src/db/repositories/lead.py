@@ -22,6 +22,7 @@ class ReactivationCandidate:
     attempts_sent: int
     last_reactivation_at: datetime | None
     name: str | None = None
+    score: int = 0
 
 
 class LeadRepository:
@@ -214,6 +215,7 @@ class LeadRepository:
                 Merchant.tenant_id,
                 Lead.phone,
                 Lead.name,
+                Lead.score,
                 last_conv.c.wa_phone_number_id,
                 latest_conv_subq.c.last_interaction,
                 attempts_expr.label("attempts_sent"),
@@ -250,6 +252,7 @@ class LeadRepository:
                     attempts_sent=int(row["attempts_sent"]),
                     last_reactivation_at=row["last_reactivation_at"],
                     name=row["name"],
+                    score=int(row["score"] or 0),
                 )
             )
         return results

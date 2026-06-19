@@ -76,18 +76,22 @@ async def handle_inbound_message(
     text: str,
     wa_message_id: str,
     campaign: str | None = None,
+    force_handoff_reason: str | None = None,
 ) -> dict[str, Any]:
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
 
     # Phase 1: always persist the inbound durably and read the auto-reply gate +
     # the per-merchant debounce window. The reply itself is gated below.
+    # `force_handoff_reason` (unsupported media) flips the thread to needs-human
+    # so the gate returns auto_reply_on=False and we skip the orchestrator.
     outcome = await service.handle_inbound_persist(
         phone_number_id=phone_number_id,
         from_phone=from_phone,
         text=text,
         wa_message_id=wa_message_id,
         campaign=campaign,
+        force_handoff_reason=force_handoff_reason,
     )
 
     if not (outcome.handled and outcome.auto_reply_on):
