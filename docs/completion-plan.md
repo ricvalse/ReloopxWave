@@ -1,13 +1,18 @@
 # Reloop AI — Piano di completamento a V1 al 100%
 
-**Stato documento:** vivo · creato 2026-05-28
+> ⚠️ **DOCUMENTO STORICO — stato corrente verificato in [`docs/audit-completamento-2026-06-22.md`](audit-completamento-2026-06-22.md).**
+> Le righe "Stato attuale" / "Stato di implementazione" qui sotto sono di **maggio 2026** e sono in larga parte **superate**: il codice è andato molto avanti (tutti i 13 UC end-to-end) ma sono emersi gap nuovi che questo piano non vede (DSAR rotto, CI rientrata in rosso, persistenza messaggi proattivi, rollout FT codice morto, copertura RLS test). Per la to-do reale e lo stato confermato file:line, usa l'audit del 2026-06-22, non questa tabella.
+
+**Stato documento:** storico · creato 2026-05-28 · superato da `audit-completamento-2026-06-22.md`
 **Base:** audit dei 13 casi d'uso vs `reloop-ai-architettura.md` (sez. 10). Questo piano porta la piattaforma da "9/13 UC completi, 4 parziali + pipeline FT incompleta" a **tutti i 13 UC funzionanti end-to-end + pipeline fine-tuning + hardening di produzione**.
 
 > Convenzione: ogni task ha **Obiettivo · File · Approccio · Done quando · Effort (S/M/L) · Dipende da**. Effort è giornate-uomo indicative per uno sviluppatore: S ≈ ≤0.5gg, M ≈ 1–2gg, L ≈ 3–5gg.
 
 ---
 
-## Stato di implementazione — branch `feat/complete-use-cases` (2026-05-28)
+## Stato di implementazione — branch `feat/complete-use-cases` (2026-05-28) — ⚠️ SUPERATO
+
+> Questa tabella riportava quasi tutto ✅ a maggio. È **storica**: alcuni "✅" sono regrediti o avevano gap non visti (es. CI rientrata in rosso, eval FT sullo stesso train, rollout FT A/B codice morto). Verifica sempre contro `audit-completamento-2026-06-22.md`.
 
 Tutto il piano è stato implementato su questo branch. Riepilogo:
 
