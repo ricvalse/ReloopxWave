@@ -8,7 +8,7 @@ export type NodeKind = 'trigger' | 'condition' | 'action';
 export interface FieldDef {
   key: string;
   label: string;
-  kind: 'text' | 'number' | 'select' | 'keywords' | 'template';
+  kind: 'text' | 'number' | 'select' | 'keywords' | 'template' | 'clauses' | 'multiselect' | 'bool';
   options?: { value: string; label: string }[];
   placeholder?: string;
 }
@@ -76,12 +76,52 @@ export const CONDITION_DEFS: TypeDef[] = [
     label: 'Messaggio contiene',
     fields: [{ key: 'keywords', label: 'Parole chiave', kind: 'keywords', placeholder: 'prezzo, costo' }],
   },
+  {
+    type: 'condition_group',
+    label: 'Se (E / O)',
+    description: 'Combina più condizioni con E (tutte) oppure O (almeno una).',
+    fields: [
+      {
+        key: 'operator',
+        label: 'Combinazione',
+        kind: 'select',
+        options: [
+          { value: 'and', label: 'Tutte (E)' },
+          { value: 'or', label: 'Almeno una (O)' },
+        ],
+      },
+      { key: 'clauses', label: 'Condizioni', kind: 'clauses' },
+    ],
+  },
 ];
+
+// Atomic condition defs a `condition_group` clause may use (everything except itself).
+export const ATOMIC_CONDITION_DEFS: TypeDef[] = CONDITION_DEFS.filter(
+  (d) => d.type !== 'condition_group',
+);
 
 const WINDOW_POLICY_OPTIONS = [
   { value: 'auto', label: 'Auto (testo se entro 24h, altrimenti template)' },
   { value: 'require_template', label: 'Solo template approvato' },
   { value: 'freeform_only', label: 'Solo testo libero (entro 24h)' },
+];
+
+const SET_FIELD_OPTIONS = [
+  { value: 'tag', label: 'Tag' },
+  { value: 'score_delta', label: 'Punteggio (delta)' },
+  { value: 'custom_field', label: 'Campo personalizzato' },
+];
+
+// Subset of orchestrator ActionKinds an ai_reply node may let the AI dispatch.
+// Mirrors AI_REPLY_DISPATCHABLE_ACTIONS in backend ai_core/automations.py.
+const ALLOWED_ACTION_OPTIONS = [
+  { value: 'propose_slots', label: 'Proponi slot' },
+  { value: 'book_slot', label: 'Prenota appuntamento' },
+  { value: 'reschedule_slot', label: 'Riprogramma' },
+  { value: 'cancel_slot', label: 'Annulla appuntamento' },
+  { value: 'move_pipeline', label: 'Avanza in pipeline' },
+  { value: 'update_score', label: 'Aggiorna punteggio' },
+  { value: 'escalate_human', label: 'Passa a operatore' },
 ];
 
 export const ACTION_DEFS: TypeDef[] = [
@@ -93,6 +133,38 @@ export const ACTION_DEFS: TypeDef[] = [
       { key: 'window_policy', label: 'Politica finestra 24h', kind: 'select', options: WINDOW_POLICY_OPTIONS },
       { key: 'free_text', label: 'Testo libero (entro 24h)', kind: 'text', placeholder: 'Ciao {name}, …' },
       { key: 'template_id', label: 'Template approvato (fuori 24h)', kind: 'template' },
+    ],
+  },
+  {
+    type: 'ai_reply',
+    label: 'Risposta AI',
+    description: "L'AI genera e invia un messaggio mirato (testo entro 24h, template di fallback fuori).",
+    fields: [
+      { key: 'objective', label: 'Obiettivo', kind: 'text', placeholder: "Es. riproponi l'appuntamento" },
+      { key: 'extra_instructions', label: 'Istruzioni extra', kind: 'text', placeholder: 'Tono, dettagli…' },
+      { key: 'window_policy', label: 'Politica finestra 24h', kind: 'select', options: WINDOW_POLICY_OPTIONS },
+      { key: 'fallback_template_id', label: 'Template di fallback (fuori 24h)', kind: 'template' },
+      { key: 'allowed_actions', label: 'Azioni AI consentite', kind: 'multiselect', options: ALLOWED_ACTION_OPTIONS },
+      { key: 'model_override', label: 'Modello (opzionale)', kind: 'text', placeholder: 'auto' },
+    ],
+  },
+  {
+    type: 'set_lead_field',
+    label: 'Aggiorna lead/CRM',
+    description: 'Aggiorna un campo del lead: tag, punteggio (delta) o campo personalizzato.',
+    fields: [
+      { key: 'field', label: 'Campo', kind: 'select', options: SET_FIELD_OPTIONS },
+      { key: 'key', label: 'Nome campo (per campo personalizzato)', kind: 'text', placeholder: 'es. citta' },
+      { key: 'value', label: 'Valore', kind: 'text', placeholder: 'es. VIP, oppure 10 / -5 per il punteggio' },
+      { key: 'ghl_sync', label: 'Sincronizza su GHL', kind: 'bool', placeholder: 'Propaga tag/campo su GHL' },
+    ],
+  },
+  {
+    type: 'human_handoff',
+    label: 'Passa a operatore',
+    description: 'Mette la conversazione in gestione umana (takeover): l’AI smette di rispondere.',
+    fields: [
+      { key: 'reason', label: 'Motivo', kind: 'text', placeholder: 'es. richiesta complessa' },
     ],
   },
   {
@@ -133,6 +205,11 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
       return Array.isArray(kw) ? kw.join(', ') : '';
     }
     if (type === 'within_24h_window') return 'finestra aperta';
+    if (type === 'condition_group') {
+      const cl = config.clauses;
+      const n = Array.isArray(cl) ? cl.length : 0;
+      return `${n} condizioni (${config.operator === 'or' ? 'O' : 'E'})`;
+    }
   }
   if (kind === 'action') {
     if (type === 'send') {
@@ -141,6 +218,10 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
       if (config.template_id) parts.push('template');
       return parts.length ? parts.join(' + ') : String(config.window_policy ?? 'auto');
     }
+    if (type === 'ai_reply') return String(config.objective || 'AI');
+    if (type === 'set_lead_field')
+      return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}`;
+    if (type === 'human_handoff') return String(config.reason || 'operatore umano');
     if (type === 'send_message') return String(config.text ?? '');
     if (type === 'wait') return `${config.minutes ?? 0} min`;
     if (type === 'send_template') return config.template_id ? 'template selezionato' : 'nessun template';

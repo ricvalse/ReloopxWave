@@ -22,6 +22,7 @@ import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
 import {
   ACTION_DEFS,
+  ATOMIC_CONDITION_DEFS,
   CONDITION_DEFS,
   DEFS_BY_KIND,
   TRIGGER_DEFS,
@@ -47,12 +48,24 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
     if (type === 'lead_score') return { op: '>=', value: 80 };
     if (type === 'time_of_day') return { from: '09:00', to: '18:00' };
     if (type === 'message_contains') return { keywords: [] };
+    if (type === 'condition_group') return { operator: 'and', clauses: [] };
   }
   if (kind === 'action') {
     if (type === 'wait') return { minutes: 60 };
     if (type === 'send') return { window_policy: 'auto', free_text: '', template_id: '', variable_mapping: {} };
     if (type === 'send_message') return { text: '' };
     if (type === 'send_template') return { template_id: '', variable_mapping: {} };
+    if (type === 'ai_reply')
+      return {
+        objective: '',
+        extra_instructions: '',
+        window_policy: 'auto',
+        fallback_template_id: '',
+        allowed_actions: [],
+        model_override: '',
+      };
+    if (type === 'set_lead_field') return { field: 'tag', key: '', value: '', ghl_sync: false };
+    if (type === 'human_handoff') return { reason: '' };
   }
   return {};
 }
@@ -428,7 +441,119 @@ function ConfigField({
             </option>
           ))}
         </select>
+      ) : field.kind === 'bool' ? (
+        <label className="flex items-center gap-1.5 text-xs">
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          {field.placeholder ?? 'Attivo'}
+        </label>
+      ) : field.kind === 'clauses' ? (
+        <ClausesEditor value={value} approvedTemplates={approvedTemplates} onChange={onChange} />
+      ) : field.kind === 'multiselect' ? (
+        <div className="space-y-1">
+          {(field.options ?? []).map((o) => {
+            const current = Array.isArray(value) ? (value as string[]) : [];
+            return (
+              <label key={o.value} className="flex items-center gap-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={current.includes(o.value)}
+                  onChange={(e) =>
+                    onChange(
+                      e.target.checked
+                        ? [...current, o.value]
+                        : current.filter((v) => v !== o.value),
+                    )
+                  }
+                />
+                {o.label}
+              </label>
+            );
+          })}
+        </div>
       ) : null}
+    </div>
+  );
+}
+
+type Clause = { type: string; negate?: boolean; [key: string]: unknown };
+
+function clauseDefaults(type: string): Clause {
+  return { type, ...defaultConfig('condition', type) };
+}
+
+// Editor for a `condition_group`'s clauses: a flat list of atomic conditions
+// combined (in the node config) with AND/OR. Each clause reuses the atomic type's
+// own fields via ConfigField, writing into the clause object.
+function ClausesEditor({
+  value,
+  approvedTemplates,
+  onChange,
+}: {
+  value: unknown;
+  approvedTemplates: Template[];
+  onChange: (value: unknown) => void;
+}) {
+  const clauses: Clause[] = Array.isArray(value) ? (value as Clause[]) : [];
+  const update = (i: number, next: Clause) =>
+    onChange(clauses.map((c, idx) => (idx === i ? next : c)));
+  const remove = (i: number) => onChange(clauses.filter((_, idx) => idx !== i));
+  const firstType = ATOMIC_CONDITION_DEFS[0]?.type ?? 'lead_score';
+  const add = () => onChange([...clauses, clauseDefaults(firstType)]);
+
+  return (
+    <div className="space-y-2">
+      {clauses.map((clause, i) => {
+        const def = ATOMIC_CONDITION_DEFS.find((d) => d.type === clause.type);
+        const subFields = def?.fields ?? [];
+        return (
+          <div key={i} className="space-y-1.5 rounded-md border border-input p-2">
+            <div className="flex items-center gap-2">
+              <select
+                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                value={clause.type}
+                onChange={(e) => update(i, { negate: clause.negate, ...clauseDefaults(e.target.value) })}
+              >
+                {ATOMIC_CONDITION_DEFS.map((d) => (
+                  <option key={d.type} value={d.type}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+              <Button variant="ghost" size="icon" onClick={() => remove(i)} aria-label="Rimuovi condizione">
+                <Trash2 size={14} />
+              </Button>
+            </div>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={Boolean(clause.negate)}
+                onChange={(e) => update(i, { ...clause, negate: e.target.checked })}
+              />
+              Nega (NOT)
+            </label>
+            {subFields.map((sub) => (
+              <ConfigField
+                key={sub.key}
+                field={sub}
+                value={clause[sub.key]}
+                approvedTemplates={approvedTemplates}
+                onChange={(v) => update(i, { ...clause, [sub.key]: v })}
+              />
+            ))}
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        onClick={add}
+        className="block w-full rounded-md border border-dashed border-input bg-background px-2 py-1.5 text-center text-xs hover:bg-accent"
+      >
+        + Aggiungi condizione
+      </button>
     </div>
   );
 }

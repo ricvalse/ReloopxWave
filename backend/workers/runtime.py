@@ -89,6 +89,11 @@ class WhatsAppReplySender:
 class Runtime:
     settings: Settings
     conversation_service: ConversationService
+    # Exposed so event-driven jobs (the automation engine's `ai_reply` node) can
+    # reuse the very same orchestrator + dispatcher the inbound turn uses, with
+    # all action handlers already registered.
+    orchestrator: ConversationOrchestrator
+    action_dispatcher: ActionDispatcher
     embedder: Embedder | None = None
 
 
@@ -169,4 +174,10 @@ def build_runtime(settings: Settings) -> Runtime:
         sentiment=sentiment,
         kek_base64=settings.integrations_kek_base64,
     )
-    return Runtime(settings=settings, conversation_service=service, embedder=embedder)
+    return Runtime(
+        settings=settings,
+        conversation_service=service,
+        orchestrator=orchestrator,
+        action_dispatcher=dispatcher,
+        embedder=embedder,
+    )

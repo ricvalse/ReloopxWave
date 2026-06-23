@@ -44,6 +44,11 @@ CONDITION_TYPES = (
     "within_24h_window",  # cfg: {} — true when the 24h service window is open
     "time_of_day",  # cfg: {"from": "09:00", "to": "18:00"}
     "message_contains",  # cfg: {"keywords": ["prezzo", "costo"]}
+    # Composite "se": combine atomic clauses with AND/OR (+ per-clause negate).
+    # cfg: {"operator": "and|or",
+    #       "clauses": [{"type": <atomic CONDITION_TYPE>, "negate": bool, ...atomic cfg keys}]}
+    # Clauses carry their atomic config flat (op/value/keywords/from/to). No nesting in V1.
+    "condition_group",
 )
 ACTION_TYPES = (
     # Unified send carrying the full ResolvedFlowStep surface — used by the system
@@ -54,6 +59,20 @@ ACTION_TYPES = (
     "send_template",  # cfg: {"template_id": uuid, "variable_mapping": {...}}
     "send_message",  # cfg: {"text": "..."} — free-text, only inside 24h window
     "wait",  # cfg: {"minutes": int}
+    # AI-generated proactive reply (one-shot): the AI agent writes a contextual
+    # message and the engine sends it (honouring the 24h window) + dispatches the
+    # CRM actions the AI emits (filtered by allowed_actions).
+    # cfg: {"objective": str, "extra_instructions": str, "allowed_actions": [<ActionKind>],
+    #       "window_policy": "auto|require_template|freeform_only",
+    #       "fallback_template_id": uuid|None, "model_override": str|None}
+    "ai_reply",
+    # Update a lead/CRM field without involving the AI.
+    # cfg: {"field": "tag|score_delta|custom_field|stage", "key": str (custom_field),
+    #       "value": Any, "ghl_sync": bool}
+    "set_lead_field",
+    # Hand the conversation to a human operator (takeover), as an explicit flow step.
+    # cfg: {"reason": str}
+    "human_handoff",
 )
 
 # The 4 lifecycle flows that were the legacy linear `flows` (db/models/flow.py).

@@ -23,6 +23,26 @@ _VALID_TYPES: dict[str, set[str]] = {
     "action": set(ACTION_TYPES),
 }
 
+# Atomic conditions a `condition_group` clause may reference (everything except the
+# composite itself — no nesting in V1).
+_ATOMIC_CONDITION_TYPES: frozenset[str] = frozenset(
+    t for t in CONDITION_TYPES if t != "condition_group"
+)
+
+# ActionKinds an `ai_reply` node may let the AI dispatch (mirrors the orchestrator
+# ActionKind set minus "none"). Kept here so graph validation stays IO-free.
+AI_REPLY_DISPATCHABLE_ACTIONS: frozenset[str] = frozenset(
+    {
+        "propose_slots",
+        "book_slot",
+        "reschedule_slot",
+        "cancel_slot",
+        "move_pipeline",
+        "update_score",
+        "escalate_human",
+    }
+)
+
 
 @dataclass(slots=True)
 class GraphValidation:
@@ -38,6 +58,14 @@ class GraphValidation:
 def _positive_int(value: Any) -> bool:
     try:
         return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_int(value: Any) -> bool:
+    try:
+        int(value)
+        return True
     except (TypeError, ValueError):
         return False
 
@@ -69,6 +97,8 @@ def validate_graph(
             errors.append(f"node {n.get('node_key')!r}: invalid {kind} type {n.get('type')!r}")
         if kind == "action":
             errors.extend(_action_config_errors(n))
+        if kind == "condition":
+            errors.extend(_condition_config_errors(n))
 
     triggers = [n for n in nodes if n.get("kind") == "trigger"]
     if not triggers:
@@ -111,6 +141,53 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
         return [f"node {key!r}: send_message needs text"]
     if atype == "wait" and not _positive_int(cfg.get("minutes")):
         return [f"node {key!r}: wait needs minutes > 0"]
+    if atype == "ai_reply":
+        if not str(cfg.get("objective", "")).strip():
+            return [f"node {key!r}: ai_reply needs an objective"]
+        policy = str(cfg.get("window_policy", "auto"))
+        if policy not in ("auto", "require_template", "freeform_only"):
+            return [f"node {key!r}: ai_reply has an invalid window_policy"]
+        if policy == "require_template" and not cfg.get("fallback_template_id"):
+            return [f"node {key!r}: ai_reply with require_template needs a fallback template"]
+        allowed = cfg.get("allowed_actions")
+        if allowed is not None and (
+            not isinstance(allowed, list)
+            or any(a not in AI_REPLY_DISPATCHABLE_ACTIONS for a in allowed)
+        ):
+            return [f"node {key!r}: ai_reply has an invalid allowed_actions entry"]
+        return []
+    if atype == "set_lead_field":
+        field = str(cfg.get("field", ""))
+        if field not in ("tag", "score_delta", "custom_field", "stage"):
+            return [f"node {key!r}: set_lead_field has an invalid field"]
+        if field == "custom_field" and not str(cfg.get("key", "")).strip():
+            return [f"node {key!r}: set_lead_field custom_field needs a key"]
+        if field == "score_delta" and not _is_int(cfg.get("value")):
+            return [f"node {key!r}: set_lead_field score_delta needs an integer value"]
+        return []
+    return []
+
+
+def _condition_config_errors(node: dict[str, Any]) -> list[str]:
+    """Validate condition config. Only `condition_group` is checked (atomic
+    conditions stay lax, matching the existing behaviour). Structural-only:
+    operator in {and,or} and a non-empty list of clauses with atomic types."""
+    if node.get("type") != "condition_group":
+        return []
+    cfg = node.get("config") or {}
+    key = node.get("node_key")
+    operator = str(cfg.get("operator", "and")).lower()
+    if operator not in ("and", "or"):
+        return [f"node {key!r}: condition_group operator must be 'and' or 'or'"]
+    clauses = cfg.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        return [f"node {key!r}: condition_group needs at least one clause"]
+    for clause in clauses:
+        if (
+            not isinstance(clause, dict)
+            or str(clause.get("type", "")) not in _ATOMIC_CONDITION_TYPES
+        ):
+            return [f"node {key!r}: condition_group has a clause with an invalid type"]
     return []
 
 
@@ -161,8 +238,16 @@ def evaluate_condition(
 
     `context` keys: temperature (str), score (int), within_24h_window (bool),
     minutes_of_day (int), last_message (str). Unknown types fail closed (False).
+    `condition_group` combines atomic clauses with AND/OR (+ per-clause negate).
     """
     cfg = config or {}
+    if node_type == "condition_group":
+        return _evaluate_group(cfg, context)
+    return _evaluate_atomic(node_type, cfg, context)
+
+
+def _evaluate_atomic(node_type: str, cfg: dict[str, Any], context: dict[str, Any]) -> bool:
+    """Evaluate one of the 5 atomic conditions. Unknown types fail closed (False)."""
     if node_type == "lead_temperature":
         op = str(cfg.get("op", "=="))
         value = str(cfg.get("value", ""))
@@ -181,6 +266,29 @@ def evaluate_condition(
         keywords = [str(k).lower() for k in (cfg.get("keywords") or [])]
         return any(k and k in text for k in keywords)
     return False
+
+
+def _evaluate_group(cfg: dict[str, Any], context: dict[str, Any]) -> bool:
+    """Evaluate a composite condition: flat clauses combined with AND/OR.
+
+    Each clause is `{"type": <atomic type>, "negate": bool, ...atomic cfg keys}` —
+    the clause dict *is* the atomic config, so we pass it straight to
+    `_evaluate_atomic`. An empty group or a clause with a non-atomic `type` (e.g. a
+    nested `condition_group`) fails closed, matching the unknown-type behaviour.
+    """
+    clauses = cfg.get("clauses") or []
+    if not clauses:
+        return False
+    operator = str(cfg.get("operator", "and")).lower()
+    results: list[bool] = []
+    for clause in clauses:
+        ctype = str(clause.get("type", ""))
+        if ctype not in _ATOMIC_CONDITION_TYPES:
+            results.append(False)
+            continue
+        value = _evaluate_atomic(ctype, clause, context)
+        results.append(not value if clause.get("negate") else value)
+    return any(results) if operator == "or" else all(results)
 
 
 def _compare_number(actual: Any, op: Any, expected: Any) -> bool:

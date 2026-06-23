@@ -130,6 +130,95 @@ class ConversationOrchestrator:
         messages.append(ChatMessage(role="user", content=user_message))
         return messages
 
+    async def run_proactive(
+        self,
+        ctx: ConversationContext,
+        *,
+        objective: str,
+        extra_instructions: str = "",
+        allowed_actions: set[str] | None = None,
+        force_model: str | None = None,
+    ) -> OrchestratorResponse:
+        """Generate a single bot-initiated message for an automation node.
+
+        Unlike `run`, there is no inbound user turn: the model is instructed to
+        start/continue the conversation toward `objective`, using `ctx.history`
+        for context. `allowed_actions`, when given, filters the parsed actions so
+        an automation can restrict which side effects the AI may trigger;
+        `force_model` pins a specific model (the node's `model_override`).
+        """
+        messages = self._build_proactive_messages(ctx, objective, extra_instructions)
+        context_tokens = sum(len(m.content) for m in messages) // 4  # rough estimate
+
+        req = RoutingRequest(
+            merchant_id=ctx.merchant_id,
+            tenant_id=ctx.tenant_id,
+            context_tokens=context_tokens,
+            turn_count=len(ctx.history),
+            lead_score=ctx.lead_score,
+            hot_threshold=ctx.hot_threshold,
+            escalate_keywords_matched=False,
+            variant_id=ctx.variant_id,
+            force_model=force_model,
+        )
+        client: LLMClient = await self._router.select(req)
+
+        try:
+            result = await client.complete(
+                messages=messages,
+                response_format={"type": "json_object"},
+            )
+        except Exception as e:
+            logger.warning("orchestrator.proactive_llm_failed", error=str(e), model=client.model)
+            fallback = await self._router.fallback()
+            if fallback is None:
+                raise
+            result = await fallback.complete(messages=messages)
+
+        parsed = _parse_structured(result.content)
+        actions = parsed.actions
+        if allowed_actions is not None:
+            actions = [a for a in actions if a.kind in allowed_actions]
+        return OrchestratorResponse(
+            reply_text=parsed.reply_text,
+            actions=actions,
+            model=result.model,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            latency_ms=result.latency_ms,
+        )
+
+    def _build_proactive_messages(
+        self, ctx: ConversationContext, objective: str, extra_instructions: str
+    ) -> list[ChatMessage]:
+        system_parts = [ctx.system_prompt, _RESPONSE_SCHEMA_HINT]
+        system_parts.append(
+            "Stato qualificazione del lead (uso interno, non citarlo al cliente): "
+            f"punteggio attuale {ctx.lead_score}/100; soglia di avanzamento pipeline "
+            f"configurata dal merchant {ctx.advance_threshold}."
+        )
+        if ctx.kb_chunks:
+            kb_snippet = "\n---\n".join(
+                f"[{i + 1}] {c.content}" for i, c in enumerate(ctx.kb_chunks)
+            )
+            system_parts.append(f"Knowledge base context:\n{kb_snippet}")
+        directive = (
+            "Sei tu ad avviare/riprendere la conversazione: NON è arrivato un nuovo "
+            f"messaggio dal cliente. Obiettivo di questo messaggio: {objective.strip()}."
+        )
+        if extra_instructions.strip():
+            directive += f"\nIstruzioni aggiuntive: {extra_instructions.strip()}"
+        directive += (
+            "\nGenera un unico messaggio WhatsApp proattivo, coerente con la storia qui "
+            "sopra e con il tono dell'assistente, e rispetta lo schema JSON."
+        )
+        messages = [ChatMessage(role="system", content="\n\n".join(system_parts))]
+        messages.extend(ctx.history)
+        # No inbound user turn — the directive is delivered as the final user-role
+        # message for maximum provider compatibility (avoids a trailing system msg).
+        messages.append(ChatMessage(role="user", content=directive))
+        return messages
+
 
 class _StructuredResponse(BaseModel):
     reply_text: str

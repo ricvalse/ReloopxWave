@@ -111,6 +111,118 @@ def test_evaluate_conditions() -> None:
     assert not evaluate_condition("astrology", {}, {})
 
 
+def test_condition_group_and_or() -> None:
+    ctx = {"score": 90, "within_24h_window": False}
+    and_cfg = {
+        "operator": "and",
+        "clauses": [
+            {"type": "lead_score", "op": ">=", "value": 80},
+            {"type": "within_24h_window"},
+        ],
+    }
+    # AND with one false clause → False.
+    assert not evaluate_condition("condition_group", and_cfg, ctx)
+    or_cfg = {**and_cfg, "operator": "or"}
+    # OR with one true clause → True.
+    assert evaluate_condition("condition_group", or_cfg, ctx)
+    # Empty clauses → fail closed.
+    assert not evaluate_condition("condition_group", {"operator": "and", "clauses": []}, ctx)
+
+
+def test_condition_group_negate() -> None:
+    ctx = {"score": 50}
+    cfg = {
+        "operator": "and",
+        "clauses": [{"type": "lead_score", "op": ">=", "value": 80, "negate": True}],
+    }
+    # score 50 is NOT >= 80, negate flips the False result to True.
+    assert evaluate_condition("condition_group", cfg, ctx)
+
+
+def test_condition_group_unknown_clause_fails_closed() -> None:
+    ctx = {"score": 90}
+    cfg = {
+        "operator": "and",
+        "clauses": [
+            {"type": "lead_score", "op": ">=", "value": 80},
+            {"type": "condition_group", "clauses": []},  # nesting not allowed → False
+        ],
+    }
+    assert not evaluate_condition("condition_group", cfg, ctx)
+
+
+def test_condition_group_reuses_atomic() -> None:
+    ctx = {"score": 90, "within_24h_window": True}
+    # A group of two clauses must match calling evaluate_condition on each atomic type.
+    assert evaluate_condition("lead_score", {"op": ">=", "value": 80}, ctx)
+    assert evaluate_condition("within_24h_window", {}, ctx)
+    cfg = {
+        "operator": "and",
+        "clauses": [
+            {"type": "lead_score", "op": ">=", "value": 80},
+            {"type": "within_24h_window"},
+        ],
+    }
+    assert evaluate_condition("condition_group", cfg, ctx)
+
+
+def test_validate_condition_group_config() -> None:
+    def _group(**cfg: object) -> dict:
+        return {"node_key": "c", "kind": "condition", "type": "condition_group", "config": cfg}
+
+    bad_op = validate_graph([_trigger(), _group(operator="xor", clauses=[{"type": "lead_score"}])], [])
+    assert any("operator must be" in e for e in bad_op.errors)
+    empty = validate_graph([_trigger(), _group(operator="and", clauses=[])], [])
+    assert any("at least one clause" in e for e in empty.errors)
+    bad_clause = validate_graph(
+        [_trigger(), _group(operator="and", clauses=[{"type": "telepathy"}])], []
+    )
+    assert any("invalid type" in e for e in bad_clause.errors)
+    ok = validate_graph(
+        [_trigger(), _group(operator="or", clauses=[{"type": "lead_score", "op": ">=", "value": 80}])],
+        [],
+    )
+    assert ok.ok
+
+
+def test_validate_ai_reply_config() -> None:
+    def _ai(**cfg: object) -> dict:
+        return {"node_key": "a", "kind": "action", "type": "ai_reply", "config": cfg}
+
+    missing_obj = validate_graph([_trigger(), _ai(window_policy="auto")], [])
+    assert any("ai_reply needs an objective" in e for e in missing_obj.errors)
+    bad_policy = validate_graph([_trigger(), _ai(objective="recupera", window_policy="whenever")], [])
+    assert any("invalid window_policy" in e for e in bad_policy.errors)
+    needs_tpl = validate_graph(
+        [_trigger(), _ai(objective="recupera", window_policy="require_template")], []
+    )
+    assert any("needs a fallback template" in e for e in needs_tpl.errors)
+    bad_action = validate_graph([_trigger(), _ai(objective="recupera", allowed_actions=["fly"])], [])
+    assert any("invalid allowed_actions" in e for e in bad_action.errors)
+    ok = validate_graph(
+        [_trigger(), _ai(objective="recupera", allowed_actions=["update_score"])], []
+    )
+    assert ok.ok
+
+
+def test_validate_set_lead_field_and_handoff_config() -> None:
+    def _slf(**cfg: object) -> dict:
+        return {"node_key": "a", "kind": "action", "type": "set_lead_field", "config": cfg}
+
+    assert any("invalid field" in e for e in validate_graph([_trigger(), _slf(field="laser")], []).errors)
+    needs_key = validate_graph([_trigger(), _slf(field="custom_field")], [])
+    assert any("needs a key" in e for e in needs_key.errors)
+    bad_delta = validate_graph([_trigger(), _slf(field="score_delta", value="lots")], [])
+    assert any("integer value" in e for e in bad_delta.errors)
+    assert validate_graph([_trigger(), _slf(field="score_delta", value=10)], []).ok
+    # human_handoff needs no config — a bare node is valid.
+    handoff = validate_graph(
+        [_trigger(), {"node_key": "h", "kind": "action", "type": "human_handoff", "config": {}}],
+        [],
+    )
+    assert handoff.ok
+
+
 def test_outgoing_targets_branch_filter() -> None:
     edges = [
         {"source_key": "c", "target_key": "hot", "branch": "true"},
