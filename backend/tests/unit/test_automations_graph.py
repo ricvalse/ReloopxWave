@@ -51,7 +51,9 @@ def test_validate_rejects_dangling_edge() -> None:
 def test_validate_rejects_incoming_to_trigger() -> None:
     nodes = [_trigger(), _action("a")]
     edges = [{"source_key": "a", "target_key": "t", "branch": "default"}]
-    assert "the trigger node cannot have incoming connections" in validate_graph(nodes, edges).errors
+    assert (
+        "the trigger node cannot have incoming connections" in validate_graph(nodes, edges).errors
+    )
 
 
 def test_validate_rejects_cycle() -> None:
@@ -81,7 +83,12 @@ def test_validate_action_config_required() -> None:
 def test_validate_allows_branch_edges_from_condition() -> None:
     nodes = [
         _trigger(),
-        {"node_key": "c", "kind": "condition", "type": "lead_score", "config": {"op": ">=", "value": 80}},
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "lead_score",
+            "config": {"op": ">=", "value": 80},
+        },
         _action("hot"),
         _action("cold"),
     ]
@@ -96,7 +103,9 @@ def test_validate_allows_branch_edges_from_condition() -> None:
 def test_evaluate_conditions() -> None:
     assert evaluate_condition("lead_score", {"op": ">=", "value": 80}, {"score": 90})
     assert not evaluate_condition("lead_score", {"op": ">=", "value": 80}, {"score": 50})
-    assert evaluate_condition("lead_temperature", {"op": "==", "value": "hot"}, {"temperature": "hot"})
+    assert evaluate_condition(
+        "lead_temperature", {"op": "==", "value": "hot"}, {"temperature": "hot"}
+    )
     assert evaluate_condition("within_24h_window", {}, {"within_24h_window": True})
     assert evaluate_condition(
         "message_contains", {"keywords": ["Prezzo"]}, {"last_message": "quanto è il PREZZO?"}
@@ -105,8 +114,12 @@ def test_evaluate_conditions() -> None:
         "time_of_day", {"from": "09:00", "to": "18:00"}, {"minutes_of_day": 600}
     )
     # Overnight window 22:00→06:00 includes 23:00 (1380) but not 12:00 (720).
-    assert evaluate_condition("time_of_day", {"from": "22:00", "to": "06:00"}, {"minutes_of_day": 1380})
-    assert not evaluate_condition("time_of_day", {"from": "22:00", "to": "06:00"}, {"minutes_of_day": 720})
+    assert evaluate_condition(
+        "time_of_day", {"from": "22:00", "to": "06:00"}, {"minutes_of_day": 1380}
+    )
+    assert not evaluate_condition(
+        "time_of_day", {"from": "22:00", "to": "06:00"}, {"minutes_of_day": 720}
+    )
     # Unknown condition type fails closed.
     assert not evaluate_condition("astrology", {}, {})
 
@@ -170,7 +183,9 @@ def test_validate_condition_group_config() -> None:
     def _group(**cfg: object) -> dict:
         return {"node_key": "c", "kind": "condition", "type": "condition_group", "config": cfg}
 
-    bad_op = validate_graph([_trigger(), _group(operator="xor", clauses=[{"type": "lead_score"}])], [])
+    bad_op = validate_graph(
+        [_trigger(), _group(operator="xor", clauses=[{"type": "lead_score"}])], []
+    )
     assert any("operator must be" in e for e in bad_op.errors)
     empty = validate_graph([_trigger(), _group(operator="and", clauses=[])], [])
     assert any("at least one clause" in e for e in empty.errors)
@@ -179,7 +194,10 @@ def test_validate_condition_group_config() -> None:
     )
     assert any("invalid type" in e for e in bad_clause.errors)
     ok = validate_graph(
-        [_trigger(), _group(operator="or", clauses=[{"type": "lead_score", "op": ">=", "value": 80}])],
+        [
+            _trigger(),
+            _group(operator="or", clauses=[{"type": "lead_score", "op": ">=", "value": 80}]),
+        ],
         [],
     )
     assert ok.ok
@@ -191,13 +209,17 @@ def test_validate_ai_reply_config() -> None:
 
     missing_obj = validate_graph([_trigger(), _ai(window_policy="auto")], [])
     assert any("ai_reply needs an objective" in e for e in missing_obj.errors)
-    bad_policy = validate_graph([_trigger(), _ai(objective="recupera", window_policy="whenever")], [])
+    bad_policy = validate_graph(
+        [_trigger(), _ai(objective="recupera", window_policy="whenever")], []
+    )
     assert any("invalid window_policy" in e for e in bad_policy.errors)
     needs_tpl = validate_graph(
         [_trigger(), _ai(objective="recupera", window_policy="require_template")], []
     )
     assert any("needs a fallback template" in e for e in needs_tpl.errors)
-    bad_action = validate_graph([_trigger(), _ai(objective="recupera", allowed_actions=["fly"])], [])
+    bad_action = validate_graph(
+        [_trigger(), _ai(objective="recupera", allowed_actions=["fly"])], []
+    )
     assert any("invalid allowed_actions" in e for e in bad_action.errors)
     ok = validate_graph(
         [_trigger(), _ai(objective="recupera", allowed_actions=["update_score"])], []
@@ -209,7 +231,9 @@ def test_validate_set_lead_field_and_handoff_config() -> None:
     def _slf(**cfg: object) -> dict:
         return {"node_key": "a", "kind": "action", "type": "set_lead_field", "config": cfg}
 
-    assert any("invalid field" in e for e in validate_graph([_trigger(), _slf(field="laser")], []).errors)
+    assert any(
+        "invalid field" in e for e in validate_graph([_trigger(), _slf(field="laser")], []).errors
+    )
     needs_key = validate_graph([_trigger(), _slf(field="custom_field")], [])
     assert any("needs a key" in e for e in needs_key.errors)
     bad_delta = validate_graph([_trigger(), _slf(field="score_delta", value="lots")], [])
@@ -241,9 +265,7 @@ def _send(key: str, **cfg: object) -> dict:
 def test_validate_send_action_config() -> None:
     ok = validate_graph([_trigger(), _send("s", window_policy="auto", free_text="ciao")], [])
     assert not any("send" in e for e in ok.errors)
-    bad = validate_graph(
-        [_trigger(), _send("s", window_policy="require_template")], []
-    )
+    bad = validate_graph([_trigger(), _send("s", window_policy="require_template")], [])
     assert any("require_template needs a template" in e for e in bad.errors)
     invalid_policy = validate_graph([_trigger(), _send("s", window_policy="whenever")], [])
     assert any("invalid window_policy" in e for e in invalid_policy.errors)
@@ -272,7 +294,10 @@ def test_resolve_send_node_at_skips_wait() -> None:
         {"source_key": "w", "target_key": "s0", "branch": "default"},
     ]
     # wait is traversed but not counted: the send is still attempt 0.
-    assert resolve_send_node_at(nodes, edges, attempt_index=0, context={})["free_text"] == "dopo-attesa"
+    assert (
+        resolve_send_node_at(nodes, edges, attempt_index=0, context={})["free_text"]
+        == "dopo-attesa"
+    )
 
 
 def test_resolve_send_node_at_follows_condition_branch() -> None:
@@ -287,14 +312,23 @@ def test_resolve_send_node_at_follows_condition_branch() -> None:
         {"source_key": "c", "target_key": "yes", "branch": "true"},
         {"source_key": "c", "target_key": "no", "branch": "false"},
     ]
-    open_window = resolve_send_node_at(nodes, edges, attempt_index=0, context={"within_24h_window": True})
+    open_window = resolve_send_node_at(
+        nodes, edges, attempt_index=0, context={"within_24h_window": True}
+    )
     assert open_window["free_text"] == "dentro-finestra"
-    closed = resolve_send_node_at(nodes, edges, attempt_index=0, context={"within_24h_window": False})
+    closed = resolve_send_node_at(
+        nodes, edges, attempt_index=0, context={"within_24h_window": False}
+    )
     assert closed["free_text"] == "fuori-finestra"
     # Missing score data → lead_score condition fails closed (false branch).
     score_nodes = [
         _trigger(),
-        {"node_key": "c", "kind": "condition", "type": "lead_score", "config": {"op": ">=", "value": 80}},
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "lead_score",
+            "config": {"op": ">=", "value": 80},
+        },
         _send("hot", free_text="caldo"),
         _send("cold", free_text="freddo"),
     ]
@@ -303,4 +337,7 @@ def test_resolve_send_node_at_follows_condition_branch() -> None:
         {"source_key": "c", "target_key": "hot", "branch": "true"},
         {"source_key": "c", "target_key": "cold", "branch": "false"},
     ]
-    assert resolve_send_node_at(score_nodes, score_edges, attempt_index=0, context={})["free_text"] == "freddo"
+    assert (
+        resolve_send_node_at(score_nodes, score_edges, attempt_index=0, context={})["free_text"]
+        == "freddo"
+    )

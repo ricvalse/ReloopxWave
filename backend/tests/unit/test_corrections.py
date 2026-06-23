@@ -32,9 +32,7 @@ def test_score_exact_substring_is_one() -> None:
 
 def test_score_partial_overlap() -> None:
     # trigger tokens (>2 chars): avete, scarpe, blu, taglia -> 2 of 4 overlap
-    score = score_correction(
-        "avete scarpe blu in taglia M", "come faccio per le scarpe blu"
-    )
+    score = score_correction("avete scarpe blu in taglia M", "come faccio per le scarpe blu")
     assert score == pytest.approx(0.5)
 
 

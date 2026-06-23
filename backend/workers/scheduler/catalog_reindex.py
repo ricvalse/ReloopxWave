@@ -13,7 +13,7 @@ prompt (see `conversation_service._cascade_system_prompt`).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -49,9 +49,7 @@ async def reindex_catalog(ctx: dict[str, Any], *, merchant_id: str) -> dict[str,
 
     async with session_scope() as session:
         tenant_id = (
-            await session.execute(
-                select(Merchant.tenant_id).where(Merchant.id == merchant_uuid)
-            )
+            await session.execute(select(Merchant.tenant_id).where(Merchant.id == merchant_uuid))
         ).scalar_one_or_none()
     if tenant_id is None:
         logger.info("catalog.reindex.missing_merchant", merchant_id=merchant_id)
@@ -122,20 +120,22 @@ async def reindex_catalog(ctx: dict[str, Any], *, merchant_id: str) -> dict[str,
         }
 
 
-async def _ensure_corpus_doc(
-    session: Any, merchant_id: UUID, source: str
-) -> KnowledgeBaseDoc:
+async def _ensure_corpus_doc(session: Any, merchant_id: UUID, source: str) -> KnowledgeBaseDoc:
     """Find-or-create the synthetic KB doc backing one corpus for a merchant."""
     existing = (
-        await session.execute(
-            select(KnowledgeBaseDoc).where(
-                KnowledgeBaseDoc.merchant_id == merchant_id,
-                KnowledgeBaseDoc.source == source,
+        (
+            await session.execute(
+                select(KnowledgeBaseDoc).where(
+                    KnowledgeBaseDoc.merchant_id == merchant_id,
+                    KnowledgeBaseDoc.source == source,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if existing is not None:
-        return existing
+        return cast(KnowledgeBaseDoc, existing)
     doc = KnowledgeBaseDoc(
         merchant_id=merchant_id,
         title=_CORPORA[source],

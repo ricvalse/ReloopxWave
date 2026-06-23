@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -216,7 +216,10 @@ POLICY: dict[str, Any] = {
     "warranty_info": "Garanzia legale di conformità di 24 mesi su difetti di fabbricazione.",
     "contact_info": "WhatsApp e supporto@amalia.example, Lun-Sab 9:00-19:30.",
     "custom_policies": [
-        {"title": "Confezione regalo", "body": "Gratuita su richiesta, con biglietto personalizzato."},
+        {
+            "title": "Confezione regalo",
+            "body": "Gratuita su richiesta, con biglietto personalizzato.",
+        },
     ],
 }
 
@@ -236,16 +239,14 @@ async def _upsert_tenant_merchant(session: Any) -> Merchant:
         await session.flush()
     merchant = (
         await session.execute(
-            select(Merchant).where(
-                Merchant.tenant_id == tenant.id, Merchant.slug == MERCHANT_SLUG
-            )
+            select(Merchant).where(Merchant.tenant_id == tenant.id, Merchant.slug == MERCHANT_SLUG)
         )
     ).scalar_one_or_none()
     if merchant is None:
         merchant = Merchant(tenant_id=tenant.id, slug=MERCHANT_SLUG, name="Amalia")
         session.add(merchant)
         await session.flush()
-    return merchant
+    return cast(Merchant, merchant)
 
 
 async def _upsert_bot_config(session: Any, merchant_id: UUID) -> None:
@@ -264,9 +265,7 @@ async def _upsert_products(session: Any, merchant_id: UUID) -> int:
         handle = _slugify(spec["title"])
         existing = (
             await session.execute(
-                select(Product).where(
-                    Product.merchant_id == merchant_id, Product.handle == handle
-                )
+                select(Product).where(Product.merchant_id == merchant_id, Product.handle == handle)
             )
         ).scalar_one_or_none()
         fields: dict[str, Any] = {
@@ -307,9 +306,7 @@ async def _upsert_faq(session: Any, merchant_id: UUID) -> int:
             "is_active": True,
         }
         if existing is None:
-            session.add(
-                FaqEntry(merchant_id=merchant_id, question=spec["question"], **fields)
-            )
+            session.add(FaqEntry(merchant_id=merchant_id, question=spec["question"], **fields))
         else:
             for key, value in fields.items():
                 setattr(existing, key, value)
@@ -319,9 +316,7 @@ async def _upsert_faq(session: Any, merchant_id: UUID) -> int:
 
 async def _upsert_policy(session: Any, merchant_id: UUID) -> None:
     row = (
-        await session.execute(
-            select(StorePolicy).where(StorePolicy.merchant_id == merchant_id)
-        )
+        await session.execute(select(StorePolicy).where(StorePolicy.merchant_id == merchant_id))
     ).scalar_one_or_none()
     if row is None:
         session.add(StorePolicy(merchant_id=merchant_id, **POLICY))
@@ -357,7 +352,9 @@ async def main() -> None:
     from workers.runtime import build_runtime
     from workers.scheduler.catalog_reindex import reindex_catalog
 
-    result = await reindex_catalog({"runtime": build_runtime(settings)}, merchant_id=str(merchant_id))
+    result = await reindex_catalog(
+        {"runtime": build_runtime(settings)}, merchant_id=str(merchant_id)
+    )
     print(f"Reindex: {result}")
 
 

@@ -152,9 +152,7 @@ def upgrade() -> None:
         *_ts_columns(),
     )
     op.create_index("ix_faq_entries_merchant_id", "faq_entries", ["merchant_id"])
-    op.create_index(
-        "ix_faq_entries_merchant_sort", "faq_entries", ["merchant_id", "sort_order"]
-    )
+    op.create_index("ix_faq_entries_merchant_sort", "faq_entries", ["merchant_id", "sort_order"])
 
     # ---- Row-Level Security (mirror 0001_initial / 0014 merchant-scoped) ----
     def _merchant_scoped_predicate(table: str) -> str:

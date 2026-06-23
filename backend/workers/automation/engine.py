@@ -334,7 +334,9 @@ async def _walk(
             continue
 
         if node.kind == "condition":
-            passed = evaluate_condition(node.type, node.config or {}, run_ctx.as_condition_context())
+            passed = evaluate_condition(
+                node.type, node.config or {}, run_ctx.as_condition_context()
+            )
             queue.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
         elif node.kind == "action":
             if node.type == "wait":
@@ -440,7 +442,9 @@ async def _do_action(
             return False
         tpl = await templates.get(UUID(str(template_id)))
         if tpl is None or tpl.status != "approved":
-            logger.info("automation.action.skipped", node=node.node_key, reason="template_not_ready")
+            logger.info(
+                "automation.action.skipped", node=node.node_key, reason="template_not_ready"
+            )
             return False
         body_params = resolve_body_params(
             variables=list(tpl.variables or []),
@@ -448,7 +452,9 @@ async def _do_action(
             context=run_ctx.as_template_context(),
         )
         if tpl.variables and any(p == "" for p in body_params):
-            logger.info("automation.action.skipped", node=node.node_key, reason="incomplete_mapping")
+            logger.info(
+                "automation.action.skipped", node=node.node_key, reason="incomplete_mapping"
+            )
             return False
         await sender.send_template(
             to_phone=run_ctx.phone,
@@ -776,7 +782,9 @@ async def _resolve_context(
     )
 
 
-async def _latest_conversation_for_lead(session: AsyncSession, lead_id: UUID) -> Conversation | None:
+async def _latest_conversation_for_lead(
+    session: AsyncSession, lead_id: UUID
+) -> Conversation | None:
     stmt = (
         select(Conversation)
         .where(Conversation.lead_id == lead_id)

@@ -76,9 +76,14 @@ def upgrade() -> None:
         sa.Column("enabled", sa.Boolean, nullable=False, server_default=sa.text("false")),
         sa.Column("trigger_type", sa.String(64)),
         sa.Column(
-            "trigger_config", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+            "trigger_config",
+            postgresql.JSONB,
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
         ),
-        sa.Column("canvas", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column(
+            "canvas", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
         *_ts_columns(),
     )
     op.create_index("ix_automation_flows_merchant_id", "automation_flows", ["merchant_id"])
@@ -112,7 +117,9 @@ def upgrade() -> None:
         sa.Column("node_key", sa.String(64), nullable=False),
         sa.Column("kind", sa.String(16), nullable=False),
         sa.Column("type", sa.String(64), nullable=False),
-        sa.Column("config", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column(
+            "config", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+        ),
         sa.Column("position_x", sa.Float, nullable=False, server_default="0"),
         sa.Column("position_y", sa.Float, nullable=False, server_default="0"),
         *_ts_columns(),

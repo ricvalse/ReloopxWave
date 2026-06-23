@@ -83,9 +83,7 @@ def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool
     monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
-    monkeypatch.setattr(
-        mod, "build_whatsapp_sender", lambda **kw: FakeWAClient()
-    )
+    monkeypatch.setattr(mod, "build_whatsapp_sender", lambda **kw: FakeWAClient())
 
 
 async def test_sends_reminder_inside_window(monkeypatch: pytest.MonkeyPatch) -> None:

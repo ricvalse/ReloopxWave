@@ -98,9 +98,7 @@ class FaqEntry(Base, TimestampMixin):
     """A structured Q&A pair. Active entries are indexed into `kb_chunks`."""
 
     __tablename__ = "faq_entries"
-    __table_args__ = (
-        Index("ix_faq_entries_merchant_sort", "merchant_id", "sort_order"),
-    )
+    __table_args__ = (Index("ix_faq_entries_merchant_sort", "merchant_id", "sort_order"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     merchant_id: Mapped[uuid.UUID] = mapped_column(
@@ -132,9 +130,7 @@ class BotCorrection(Base, TimestampMixin):
     """
 
     __tablename__ = "bot_corrections"
-    __table_args__ = (
-        Index("ix_bot_corrections_merchant_active", "merchant_id", "is_active"),
-    )
+    __table_args__ = (Index("ix_bot_corrections_merchant_active", "merchant_id", "is_active"),)
 
     id: Mapped[uuid.UUID] = uuid_pk()
     merchant_id: Mapped[uuid.UUID] = mapped_column(

@@ -237,9 +237,7 @@ async def update_automation(
 
 
 @router.delete("/{automation_id}", status_code=204)
-async def delete_automation(
-    automation_id: UUID, ctx: CurrentContext, session: DBSession
-) -> None:
+async def delete_automation(automation_id: UUID, ctx: CurrentContext, session: DBSession) -> None:
     _require_merchant_scope(ctx)
     repo = AutomationRepository(session)
     flow = await repo.get(automation_id)
@@ -298,7 +296,9 @@ def _guard_system_flow_edit(flow: AutomationFlow, payload: AutomationUpsertIn) -
         raise HTTPException(
             status_code=422, detail="the trigger of a system flow cannot be changed"
         )
-    if any(n.kind == "action" and n.type in ("send_template", "send_message") for n in payload.nodes):
+    if any(
+        n.kind == "action" and n.type in ("send_template", "send_message") for n in payload.nodes
+    ):
         raise HTTPException(
             status_code=422,
             detail="system flows use the 'send' action, not send_template/send_message",

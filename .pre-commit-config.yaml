@@ -1,0 +1,25 @@
+# Gate locale per il backend (uv workspace in ./backend): blocca prima del commit il debito ruff/mypy che fa diventare rossa la CI — installa con `pre-commit install`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (backend)
+        entry: bash -c 'cd backend && uv run ruff check "$@"' --
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format --check (backend)
+        entry: bash -c 'cd backend && uv run ruff format --check .'
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false
+      - id: mypy
+        name: mypy (backend)
+        entry: bash -c 'cd backend && uv run --all-packages --group dev mypy .'
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false

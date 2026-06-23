@@ -39,22 +39,103 @@ VALID_BUTTON_TYPES = ("QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE")
 # valid code degrades to a *warning* — the enum drifts, so we don't hard-block.
 SUPPORTED_LANGUAGES = frozenset(
     {
-        "af", "sq", "ar", "az", "bn", "bg", "ca", "zh_CN", "zh_HK", "zh_TW",
-        "hr", "cs", "da", "nl", "en", "en_GB", "en_US", "et", "fil", "fi",
-        "fr", "ka", "de", "el", "gu", "ha", "he", "hi", "hu", "id", "ga",
-        "it", "ja", "kn", "kk", "rw_RW", "ko", "ky_KG", "lo", "lv", "lt",
-        "mk", "ms", "ml", "mr", "nb", "fa", "pl", "pt_BR", "pt_PT", "pa",
-        "ro", "ru", "sr", "sk", "sl", "es", "es_AR", "es_ES", "es_MX", "sw",
-        "sv", "ta", "te", "th", "tr", "uk", "ur", "uz", "vi", "zu",
+        "af",
+        "sq",
+        "ar",
+        "az",
+        "bn",
+        "bg",
+        "ca",
+        "zh_CN",
+        "zh_HK",
+        "zh_TW",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "en",
+        "en_GB",
+        "en_US",
+        "et",
+        "fil",
+        "fi",
+        "fr",
+        "ka",
+        "de",
+        "el",
+        "gu",
+        "ha",
+        "he",
+        "hi",
+        "hu",
+        "id",
+        "ga",
+        "it",
+        "ja",
+        "kn",
+        "kk",
+        "rw_RW",
+        "ko",
+        "ky_KG",
+        "lo",
+        "lv",
+        "lt",
+        "mk",
+        "ms",
+        "ml",
+        "mr",
+        "nb",
+        "fa",
+        "pl",
+        "pt_BR",
+        "pt_PT",
+        "pa",
+        "ro",
+        "ru",
+        "sr",
+        "sk",
+        "sl",
+        "es",
+        "es_AR",
+        "es_ES",
+        "es_MX",
+        "sw",
+        "sv",
+        "ta",
+        "te",
+        "th",
+        "tr",
+        "uk",
+        "ur",
+        "uz",
+        "vi",
+        "zu",
     }
 )
 
 # Promotional wording that often gets a UTILITY template reclassified/rejected.
 _PROMO_KEYWORDS = (
-    "sconto", "offerta", "promo", "promozione", "gratis", "saldi", "buono",
-    "coupon", "regalo", "omaggio", "% di sconto", "black friday", "occasione",
-    "affare", "imperdibile", "acquista ora", "compra ora", "discount", "sale",
-    "free", "% off",
+    "sconto",
+    "offerta",
+    "promo",
+    "promozione",
+    "gratis",
+    "saldi",
+    "buono",
+    "coupon",
+    "regalo",
+    "omaggio",
+    "% di sconto",
+    "black friday",
+    "occasione",
+    "affare",
+    "imperdibile",
+    "acquista ora",
+    "compra ora",
+    "discount",
+    "sale",
+    "free",
+    "% off",
 )
 
 _VAR_RE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
@@ -123,7 +204,9 @@ def lint_template(
 
     if category not in VALID_CATEGORIES:
         issues.append(
-            LintIssue("CATEGORY_INVALID", f"category must be one of {VALID_CATEGORIES}", field="category")
+            LintIssue(
+                "CATEGORY_INVALID", f"category must be one of {VALID_CATEGORIES}", field="category"
+            )
         )
 
     issues.extend(_lint_language(language))
@@ -139,14 +222,18 @@ def lint_template(
 
     if header_type not in VALID_HEADER_TYPES:
         issues.append(
-            LintIssue("HEADER_TYPE_INVALID", f"header_type must be {VALID_HEADER_TYPES}", field="header")
+            LintIssue(
+                "HEADER_TYPE_INVALID", f"header_type must be {VALID_HEADER_TYPES}", field="header"
+            )
         )
     if header_type == "IMAGE":
         # The send path (build_send_components) cannot supply an image handle at
         # send time, so an IMAGE-header template would be registered but rejected
         # by Meta on send. Disallow until media-header send support lands (V2).
         issues.append(
-            LintIssue("HEADER_IMAGE_UNSUPPORTED", "IMAGE headers are not supported in V1", field="header")
+            LintIssue(
+                "HEADER_IMAGE_UNSUPPORTED", "IMAGE headers are not supported in V1", field="header"
+            )
         )
     if header_type == "TEXT":
         if not header_text or not header_text.strip():
@@ -157,18 +244,24 @@ def lint_template(
             if len(header_text) > MAX_HEADER_TEXT_LEN:
                 issues.append(
                     LintIssue(
-                        "HEADER_TOO_LONG", f"header exceeds {MAX_HEADER_TEXT_LEN} chars", field="header"
+                        "HEADER_TOO_LONG",
+                        f"header exceeds {MAX_HEADER_TEXT_LEN} chars",
+                        field="header",
                     )
                 )
             if _VAR_RE.search(header_text):
                 issues.append(
-                    LintIssue("HEADER_HAS_VARIABLE", "header variables unsupported in V1", field="header")
+                    LintIssue(
+                        "HEADER_HAS_VARIABLE", "header variables unsupported in V1", field="header"
+                    )
                 )
 
     if footer is not None:
         if len(footer) > MAX_FOOTER_LEN:
             issues.append(
-                LintIssue("FOOTER_TOO_LONG", f"footer exceeds {MAX_FOOTER_LEN} chars", field="footer")
+                LintIssue(
+                    "FOOTER_TOO_LONG", f"footer exceeds {MAX_FOOTER_LEN} chars", field="footer"
+                )
             )
         if _VAR_RE.search(footer):
             issues.append(
@@ -243,7 +336,9 @@ def _lint_body_format(body: str) -> list[LintIssue]:
     if "\t" in body:
         issues.append(LintIssue("BODY_TAB", "body cannot contain tab characters"))
     if re.search(r" {5,}", body):
-        issues.append(LintIssue("BODY_SPACE_RUN", "body cannot contain more than 4 consecutive spaces"))
+        issues.append(
+            LintIssue("BODY_SPACE_RUN", "body cannot contain more than 4 consecutive spaces")
+        )
     if re.search(r"\n{5,}", body):
         issues.append(
             LintIssue("BODY_NEWLINE_RUN", "body cannot contain more than 4 consecutive newlines")
@@ -291,7 +386,9 @@ def _lint_category_semantics(body: str, footer: str | None, category: str) -> li
     return []
 
 
-def _lint_authentication(category: str, body: str, buttons: list[dict[str, Any]]) -> list[LintIssue]:
+def _lint_authentication(
+    category: str, body: str, buttons: list[dict[str, Any]]
+) -> list[LintIssue]:
     """AUTHENTICATION templates follow Meta's rigid OTP format (no links/media)."""
     if category != "AUTHENTICATION":
         return []
@@ -325,20 +422,26 @@ def _lint_buttons(buttons: list[dict[str, Any]]) -> list[LintIssue]:
         return issues
     if len(buttons) > MAX_BUTTONS_TOTAL:
         issues.append(
-            LintIssue("BUTTONS_TOO_MANY", f"at most {MAX_BUTTONS_TOTAL} buttons allowed", field="buttons")
+            LintIssue(
+                "BUTTONS_TOO_MANY", f"at most {MAX_BUTTONS_TOTAL} buttons allowed", field="buttons"
+            )
         )
     counts: dict[str, int] = {}
     for i, btn in enumerate(buttons):
         btype = str(btn.get("type", "")).upper()
         if btype not in VALID_BUTTON_TYPES:
             issues.append(
-                LintIssue("BUTTON_TYPE_INVALID", f"button[{i}] type {btype!r} invalid", field="buttons")
+                LintIssue(
+                    "BUTTON_TYPE_INVALID", f"button[{i}] type {btype!r} invalid", field="buttons"
+                )
             )
             continue
         counts[btype] = counts.get(btype, 0) + 1
         text = str(btn.get("text", ""))
         if btype != "COPY_CODE" and not text.strip():
-            issues.append(LintIssue("BUTTON_TEXT_REQUIRED", f"button[{i}] needs text", field="buttons"))
+            issues.append(
+                LintIssue("BUTTON_TEXT_REQUIRED", f"button[{i}] needs text", field="buttons")
+            )
         if len(text) > MAX_BUTTON_TEXT_LEN:
             issues.append(
                 LintIssue(
@@ -350,7 +453,9 @@ def _lint_buttons(buttons: list[dict[str, Any]]) -> list[LintIssue]:
         if btype == "URL":
             url = str(btn.get("url", ""))
             if not url:
-                issues.append(LintIssue("BUTTON_URL_REQUIRED", f"button[{i}] needs url", field="buttons"))
+                issues.append(
+                    LintIssue("BUTTON_URL_REQUIRED", f"button[{i}] needs url", field="buttons")
+                )
             else:
                 if not url.lower().startswith("https://"):
                     issues.append(
@@ -372,7 +477,9 @@ def _lint_buttons(buttons: list[dict[str, Any]]) -> list[LintIssue]:
             phone = str(btn.get("phone_number", "")).strip()
             if not phone:
                 issues.append(
-                    LintIssue("BUTTON_PHONE_REQUIRED", f"button[{i}] needs phone_number", field="buttons")
+                    LintIssue(
+                        "BUTTON_PHONE_REQUIRED", f"button[{i}] needs phone_number", field="buttons"
+                    )
                 )
             elif not phone.startswith("+") or len(phone) > MAX_PHONE_LEN:
                 issues.append(
@@ -384,16 +491,24 @@ def _lint_buttons(buttons: list[dict[str, Any]]) -> list[LintIssue]:
                 )
     if counts.get("URL", 0) > MAX_URL_BUTTONS:
         issues.append(
-            LintIssue("BUTTONS_URL_TOO_MANY", f"at most {MAX_URL_BUTTONS} URL buttons", field="buttons")
+            LintIssue(
+                "BUTTONS_URL_TOO_MANY", f"at most {MAX_URL_BUTTONS} URL buttons", field="buttons"
+            )
         )
     if counts.get("PHONE_NUMBER", 0) > MAX_PHONE_BUTTONS:
         issues.append(
-            LintIssue("BUTTONS_PHONE_TOO_MANY", f"at most {MAX_PHONE_BUTTONS} phone button", field="buttons")
+            LintIssue(
+                "BUTTONS_PHONE_TOO_MANY",
+                f"at most {MAX_PHONE_BUTTONS} phone button",
+                field="buttons",
+            )
         )
     if counts.get("COPY_CODE", 0) > MAX_COPY_CODE_BUTTONS:
         issues.append(
             LintIssue(
-                "BUTTONS_COPY_TOO_MANY", f"at most {MAX_COPY_CODE_BUTTONS} copy-code button", field="buttons"
+                "BUTTONS_COPY_TOO_MANY",
+                f"at most {MAX_COPY_CODE_BUTTONS} copy-code button",
+                field="buttons",
             )
         )
     return issues
@@ -452,7 +567,10 @@ def _submit_button(btn: dict[str, Any]) -> dict[str, Any]:
     btype = str(btn.get("type", "")).upper()
     if btype == "COPY_CODE":
         # Meta copy-code buttons carry no label, just an example coupon/OTP code.
-        return {"type": "COPY_CODE", "example": [str(btn.get("example") or btn.get("text") or "123456")]}
+        return {
+            "type": "COPY_CODE",
+            "example": [str(btn.get("example") or btn.get("text") or "123456")],
+        }
     out: dict[str, Any] = {"type": btype, "text": btn.get("text", "")}
     if btype == "URL":
         out["url"] = btn.get("url", "")

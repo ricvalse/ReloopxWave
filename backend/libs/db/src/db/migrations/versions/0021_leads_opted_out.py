@@ -24,9 +24,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "leads", sa.Column("opted_out_at", sa.DateTime(timezone=True), nullable=True)
-    )
+    op.add_column("leads", sa.Column("opted_out_at", sa.DateTime(timezone=True), nullable=True))
     op.create_index("ix_leads_merchant_opted_out", "leads", ["merchant_id", "opted_out_at"])
 
 

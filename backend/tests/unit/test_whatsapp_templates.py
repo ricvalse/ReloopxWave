@@ -136,9 +136,7 @@ def test_lint_body_format_tabs_and_spaces_are_errors() -> None:
 
 
 def test_lint_example_count_is_warning_when_provided_short() -> None:
-    issues = lint_template(
-        body="Ciao {{1}}, ordine {{2}} pronto", body_examples=["Mario"]
-    )
+    issues = lint_template(body="Ciao {{1}}, ordine {{2}} pronto", body_examples=["Mario"])
     miss = [e for e in issues if e.code == "VAR_EXAMPLE_MISSING"]
     assert miss and miss[0].severity == "warning"
     # Omitting examples entirely is fine (caller fills generic placeholders).

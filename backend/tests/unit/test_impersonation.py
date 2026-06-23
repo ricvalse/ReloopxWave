@@ -25,15 +25,15 @@ _SECRET = "unit-test-jwt-secret"
 
 
 def _mint(secret: str = _SECRET, **overrides):
-    kwargs = dict(
-        jwt_secret=secret,
-        supabase_url="https://proj.supabase.co",
-        admin_user_id=uuid4(),
-        admin_email="admin@agency.example",
-        tenant_id=uuid4(),
-        merchant_id=uuid4(),
-        merchant_name="Studio Rossi",
-    )
+    kwargs = {
+        "jwt_secret": secret,
+        "supabase_url": "https://proj.supabase.co",
+        "admin_user_id": uuid4(),
+        "admin_email": "admin@agency.example",
+        "tenant_id": uuid4(),
+        "merchant_id": uuid4(),
+        "merchant_name": "Studio Rossi",
+    }
     kwargs.update(overrides)
     return mint_impersonation_token(**kwargs)
 

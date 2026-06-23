@@ -119,9 +119,7 @@ class Indexer:
 
         embeddings = await self._embedder.embed_batch(contents)
         total_chars = 0
-        for index, ((content, meta), emb) in enumerate(
-            zip(records, embeddings, strict=True)
-        ):
+        for index, ((content, meta), emb) in enumerate(zip(records, embeddings, strict=True)):
             total_chars += len(content)
             self._session.add(
                 KBChunk(

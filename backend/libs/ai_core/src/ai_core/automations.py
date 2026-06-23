@@ -70,9 +70,7 @@ def _is_int(value: Any) -> bool:
         return False
 
 
-def validate_graph(
-    nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
-) -> GraphValidation:
+def validate_graph(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> GraphValidation:
     """Validate an automation graph; return errors + the derived trigger.
 
     Enforces: unique node keys, valid kind/type, exactly one trigger with no
@@ -231,9 +229,7 @@ def outgoing_targets(
     return out
 
 
-def evaluate_condition(
-    node_type: str, config: dict[str, Any], context: dict[str, Any]
-) -> bool:
+def evaluate_condition(node_type: str, config: dict[str, Any], context: dict[str, Any]) -> bool:
     """Evaluate a condition node against a run-time context.
 
     `context` keys: temperature (str), score (int), within_24h_window (bool),
@@ -258,9 +254,7 @@ def _evaluate_atomic(node_type: str, cfg: dict[str, Any], context: dict[str, Any
     if node_type == "within_24h_window":
         return bool(context.get("within_24h_window"))
     if node_type == "time_of_day":
-        return _within_time_window(
-            context.get("minutes_of_day"), cfg.get("from"), cfg.get("to")
-        )
+        return _within_time_window(context.get("minutes_of_day"), cfg.get("from"), cfg.get("to"))
     if node_type == "message_contains":
         text = str(context.get("last_message", "")).lower()
         keywords = [str(k).lower() for k in (cfg.get("keywords") or [])]

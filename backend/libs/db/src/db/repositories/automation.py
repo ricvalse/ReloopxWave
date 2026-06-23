@@ -53,9 +53,7 @@ class AutomationRepository:
         return list((await self._session.execute(stmt)).scalars())
 
     async def get(self, automation_id: UUID) -> AutomationFlow | None:
-        stmt = self._with_graph(
-            select(AutomationFlow).where(AutomationFlow.id == automation_id)
-        )
+        stmt = self._with_graph(select(AutomationFlow).where(AutomationFlow.id == automation_id))
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def list_enabled_by_trigger(
@@ -77,9 +75,7 @@ class AutomationRepository:
         )
         return list((await self._session.execute(stmt)).scalars())
 
-    async def get_by_system_key(
-        self, merchant_id: UUID, system_key: str
-    ) -> AutomationFlow | None:
+    async def get_by_system_key(self, merchant_id: UUID, system_key: str) -> AutomationFlow | None:
         """The merchant's system lifecycle flow for `system_key` (with its graph)."""
         stmt = self._with_graph(
             select(AutomationFlow).where(
