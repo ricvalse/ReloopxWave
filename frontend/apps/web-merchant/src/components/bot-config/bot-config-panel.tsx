@@ -373,17 +373,15 @@ const SECTIONS: SectionDef[] = [
   },
 ];
 
-// Sezioni temporaneamente nascoste dal pannello Configurazione (richiesta
-// "per ora"). Le definizioni restano in SECTIONS sopra: per riattivarle basta
-// togliere la chiave da questo set.
+// Sezioni nascoste dal pannello Configurazione. Le definizioni restano in
+// SECTIONS sopra: per riattivarne una basta togliere la chiave da questo set.
+// Le sezioni operative (no_answer/reactivation/scoring/booking) sono ora
+// esposte: erano il gap percepito più grande rispetto alla console di Amalia.
+// Restano nascoste solo quelle gestite altrove o puramente tecniche.
 const HIDDEN_SECTIONS = new Set<string>([
   'business', // Spostato nella pagina dedicata "Brand → Informazioni"
-  'no_answer', // No answer (UC-03)
-  'reactivation', // Reactivation (UC-06)
-  'scoring', // Scoring (UC-05)
-  'rag', // RAG (UC-07)
-  'pipeline', // Pipeline (UC-04)
-  'booking', // Booking (UC-02)
+  'rag', // RAG (UC-07) — parametri tecnici, gestiti dalla Knowledge Base
+  'pipeline', // Pipeline (UC-04) — richiede gli ID GHL, gestiti dalle Integrazioni
 ]);
 
 const VISIBLE_SECTIONS = SECTIONS.filter((s) => !HIDDEN_SECTIONS.has(s.section));

@@ -14,6 +14,10 @@ class WhatsAppInboundEvent:
     kind: str  # text | interactive | image | audio | location | ...
     text: str | None
     raw: dict[str, Any]
+    # Unix seconds Meta stamped on the message (`messages[].timestamp`). Drives
+    # the inbound-staleness gate so the bot doesn't answer a backlog out of
+    # context after downtime. None when absent/unparseable.
+    timestamp_unix: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -168,9 +172,20 @@ def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]
                         kind=kind,
                         text=text,
                         raw=msg,
+                        timestamp_unix=_parse_ts(msg.get("timestamp")),
                     )
                 )
     return events
+
+
+def _parse_ts(raw: Any) -> int | None:
+    """Meta stamps `messages[].timestamp` as a unix-seconds string."""
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_message_echo_payload(payload: dict[str, Any]) -> list[WhatsAppPhoneEchoEvent]:

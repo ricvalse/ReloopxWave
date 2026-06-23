@@ -30,6 +30,7 @@ from ai_core.orchestrator import (
     ConversationOrchestrator,
     OrchestratorAction,
     OrchestratorResponse,
+    ToolExecutor,
 )
 from ai_core.rag import Embedder, RAGEngine
 from ai_core.scheduling import is_within_active_hours
@@ -214,6 +215,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "di prenotare. Se mancano informazioni critiche (nome, email, esigenza), "
     "chiedile in modo naturale, una alla volta. Non inventare fatti sull'azienda: "
     "se non sai qualcosa, dillo e offri di far contattare una persona."
+)
+
+# Fail-safe reply: when the LLM turn errors out hard (both the primary model and
+# the fallback failed, or any unexpected exception), the customer must still get
+# something rather than silence — we send this and hand the thread to a human.
+# Mirrors Amalia's `handle_ai_conversation_safe`.
+_LLM_FAILURE_MESSAGE = (
+    "Grazie per il tuo messaggio! Lo passo subito a un nostro operatore che ti "
+    "risponderà a brevissimo."
 )
 
 # Deterministic persona fragments: each structured enum value maps to a constant
@@ -504,6 +514,7 @@ class ConversationService:
         reply_sender: ReplySender,
         embedder: Embedder | None = None,
         sentiment: SentimentAnalyzer | None = None,
+        tool_executor: ToolExecutor | None = None,
         kek_base64: str,
     ) -> None:
         self._orchestrator = orchestrator
@@ -511,6 +522,10 @@ class ConversationService:
         self._sender = reply_sender
         self._embedder = embedder
         self._sentiment = sentiment
+        # Read-only tool executor for the Amalia-style tool-use loop. When wired
+        # (+ AGENT_TOOL_USE_ENABLED) the orchestrator can ground itself on live
+        # availability/appointment data mid-turn. None = single-shot turns.
+        self._tool_executor = tool_executor
         self._kek = kek_base64
 
     async def handle_inbound(
@@ -520,6 +535,7 @@ class ConversationService:
         from_phone: str,
         text: str,
         wa_message_id: str | None,
+        wa_timestamp_unix: int | None = None,
     ) -> InboundResult:
         """All-in-one entry: durably persist the inbound, then (if auto-reply is
         on) generate and deliver the reply using the captured phase-1 context.
@@ -533,6 +549,7 @@ class ConversationService:
             from_phone=from_phone,
             text=text,
             wa_message_id=wa_message_id,
+            wa_timestamp_unix=wa_timestamp_unix,
         )
         if not outcome.handled:
             return InboundResult(handled=False, reason=outcome.reason)
@@ -554,6 +571,7 @@ class ConversationService:
         wa_message_id: str | None,
         campaign: str | None = None,
         force_handoff_reason: str | None = None,
+        wa_timestamp_unix: int | None = None,
     ) -> PersistOutcome:
         """Phase 1: durably persist the inbound and evaluate the auto-reply gate.
 
@@ -642,6 +660,23 @@ class ConversationService:
                 bool(merchant_auto_reply and conv.auto_reply) and not opted_out and not soft_paused
             )
 
+            # Inbound-staleness gate: don't answer a backlog that piled up while
+            # the worker was down — a late reply lands out of context. The
+            # message is still persisted; only the auto-reply is suppressed.
+            stale = False
+            if wa_timestamp_unix:
+                staleness_min = await self._resolve_int(
+                    session,
+                    resolved.merchant_id,
+                    ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN,
+                    default=0,
+                )
+                if staleness_min > 0:
+                    age_s = datetime.now(UTC).timestamp() - float(wa_timestamp_unix)
+                    if age_s > staleness_min * 60:
+                        stale = True
+            auto_reply_on = auto_reply_on and not stale
+
             # Unsupported media the bot can't act on (video/document): hand off to
             # a human instead of replying. Persist the inbound, flip the thread to
             # needs-human, and notify — no LLM turn.
@@ -685,6 +720,8 @@ class ConversationService:
                         if not merchant_auto_reply
                         else "ai_paused"
                         if soft_paused
+                        else "stale"
+                        if stale
                         else "conversation_off"
                     )
                 await analytics.emit(
@@ -751,7 +788,7 @@ class ConversationService:
             auto_reply_on=auto_reply_on,
             conversation_id=conv_id,
             merchant_id=resolved.merchant_id,
-            reason=None if auto_reply_on else "auto_reply_off",
+            reason=None if auto_reply_on else "stale" if stale else "auto_reply_off",
             debounce_window_s=debounce_window_s,
             reply_context=reply_context,
         )
@@ -883,6 +920,7 @@ class ConversationService:
             # actions). Fails open: no/empty message or unparseable hours → reply.
             off_hours_message = await self._maybe_off_hours_message(session, resolved.merchant_id)
             response: OrchestratorResponse
+            llm_failed = False
             if off_hours_message is not None:
                 response = OrchestratorResponse(
                     reply_text=off_hours_message,
@@ -892,21 +930,61 @@ class ConversationService:
                     latency_ms=0,
                 )
             else:
-                response = await self._orchestrator.run(ctx, rc.text)
+                try:
+                    response = await self._run_orchestrator(session, ctx, rc)
+                except Exception as e:
+                    # Fail-safe: never leave the customer in silence on an LLM
+                    # error. Send a courtesy line and hand off to a human (the
+                    # escalate_human action below flips the thread + notifies).
+                    logger.error(
+                        "uc01.llm_failed_hard",
+                        error=str(e),
+                        merchant_id=str(resolved.merchant_id),
+                        conversation_id=str(rc.conv_id),
+                    )
+                    llm_failed = True
+                    fallback_text = (
+                        await self._resolve_optional_str(
+                            session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                        )
+                        or _LLM_FAILURE_MESSAGE
+                    )
+                    response = OrchestratorResponse(
+                        reply_text=fallback_text,
+                        actions=[
+                            OrchestratorAction(
+                                kind="escalate_human",
+                                payload={
+                                    "reason": "ai_error",
+                                    "customer_message_summary": (
+                                        "Errore tecnico dell'assistente AI: la conversazione "
+                                        "richiede un operatore umano."
+                                    ),
+                                },
+                            )
+                        ],
+                        model="error_fallback",
+                        tokens_in=0,
+                        tokens_out=0,
+                        latency_ms=0,
+                    )
 
             # Handoff reply policy: when the bot escalates to a human the merchant
             # can force a fixed message (handoff_message) or hand off silently
             # (no customer-facing reply). State/scoring/dispatch still run.
+            # On a hard LLM failure we never suppress — the customer must get a
+            # reply even if silent-handoff is configured.
             suppress_reply = False
             if any(a.kind == "escalate_human" for a in response.actions):
-                if await self._resolve_bool(
+                silent = await self._resolve_bool(
                     session,
                     resolved.merchant_id,
                     ConfigKey.ESCALATION_SILENT_HANDOFF,
                     default=False,
-                ):
+                )
+                if silent and not llm_failed:
                     suppress_reply = True
-                else:
+                elif not llm_failed:
                     handoff_message = await self._resolve_optional_str(
                         session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
                     )
@@ -1070,6 +1148,29 @@ class ConversationService:
             handled=True,
             conversation_id=rc.conv_id,
             reply_text=response.reply_text,
+        )
+
+    async def _run_orchestrator(
+        self, session: Any, ctx: ConversationContext, rc: _ReplyContext
+    ) -> OrchestratorResponse:
+        """Run the orchestrator turn, enabling the Amalia-style tool-use loop
+        when a tool executor is wired and the merchant has it on. Falls back to
+        a single-shot turn otherwise (today's behavior)."""
+        if self._tool_executor is None:
+            return await self._orchestrator.run(ctx, rc.text)
+        tool_use_enabled = await self._resolve_bool(
+            session, ctx.merchant_id, ConfigKey.AGENT_TOOL_USE_ENABLED, default=True
+        )
+        if not tool_use_enabled:
+            return await self._orchestrator.run(ctx, rc.text)
+        max_iter = await self._resolve_int(
+            session, ctx.merchant_id, ConfigKey.AGENT_MAX_TOOL_ITERATIONS, default=1
+        )
+        return await self._orchestrator.run(
+            ctx,
+            rc.text,
+            tool_executor=self._tool_executor,
+            max_iterations=max(1, max_iter),
         )
 
     async def _maybe_send_typing(self, rc: _ReplyContext, message_id: str) -> None:

@@ -1623,6 +1623,24 @@ export interface components {
             /** Expires At */
             expires_at: number | null;
         };
+        /**
+         * AgentConfig
+         * @description Agent reasoning loop (Amalia-style tool-use). When enabled the
+         *     orchestrator can call read-only tools mid-turn (live availability, upcoming
+         *     appointments) and adapt its reply to the real result before sending.
+         */
+        AgentConfig: {
+            /**
+             * Tool Use Enabled
+             * @default true
+             */
+            tool_use_enabled: boolean;
+            /**
+             * Max Tool Iterations
+             * @default 3
+             */
+            max_tool_iterations: number;
+        };
         /** AiPauseIn */
         AiPauseIn: {
             /**
@@ -1843,6 +1861,7 @@ export interface components {
             booking?: components["schemas"]["BookingConfig"];
             business?: components["schemas"]["BusinessConfig"];
             delivery?: components["schemas"]["DeliveryConfig"];
+            agent?: components["schemas"]["AgentConfig"];
             objections?: components["schemas"]["ObjectionsConfig"];
             conversation?: components["schemas"]["ConversationConfig"];
         };
@@ -2031,48 +2050,49 @@ export interface components {
         };
         /**
          * DeliveryConfig
-         * @description Human-feel delivery knobs. All-zero defaults reproduce today's instant,
-         *     single-bubble, no-typing-indicator send.
+         * @description Human-feel delivery knobs. Defaults make the reply feel human out of the
+         *     box (coalesce rapid messages, typing indicator, brief pause, a couple of
+         *     bubbles); set any of them to 0/False to restore instant single-send.
          */
         DeliveryConfig: {
             /**
              * Debounce Window S
-             * @default 0
+             * @default 8
              */
             debounce_window_s: number;
             /**
              * Typing Indicator Enabled
-             * @default false
+             * @default true
              */
             typing_indicator_enabled: boolean;
             /**
              * Typing Delay Base S
-             * @default 0
+             * @default 1
              */
             typing_delay_base_s: number;
             /**
              * Typing Delay Per Char S
-             * @default 0
+             * @default 0.02
              */
             typing_delay_per_char_s: number;
             /**
              * Typing Delay Min S
-             * @default 0
+             * @default 1
              */
             typing_delay_min_s: number;
             /**
              * Typing Delay Max S
-             * @default 0
+             * @default 6
              */
             typing_delay_max_s: number;
             /**
              * Typing Jitter Frac
-             * @default 0
+             * @default 0.25
              */
             typing_jitter_frac: number;
             /**
              * Multi Bubble Max
-             * @default 1
+             * @default 2
              */
             multi_bubble_max: number;
             /**
@@ -2896,6 +2916,11 @@ export interface components {
              * @default Europe/Rome
              */
             timezone: string;
+            /**
+             * Inbound Staleness Min
+             * @default 10
+             */
+            inbound_staleness_min: number;
         };
         /** ScoringConfig */
         ScoringConfig: {

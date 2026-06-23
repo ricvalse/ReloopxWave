@@ -52,6 +52,10 @@ class ConfigKey(StrEnum):
     SCHEDULE_ACTIVE_HOURS = "schedule.active_hours"
     SCHEDULE_OFF_HOURS_MESSAGE = "schedule.off_hours_message"
     SCHEDULE_TIMEZONE = "schedule.timezone"
+    # Drop (don't auto-reply to) an inbound older than this many minutes. Guards
+    # against the bot answering a stale backlog out of context after downtime.
+    # 0 = disabled. The message is still persisted; only the reply is skipped.
+    SCHEDULE_INBOUND_STALENESS_MIN = "schedule.inbound_staleness_min"
 
     # UC-07 RAG
     RAG_TOP_K = "rag.top_k"
@@ -128,6 +132,14 @@ class ConfigKey(StrEnum):
     DELIVERY_MULTI_BUBBLE_MAX = "delivery.multi_bubble_max"
     DELIVERY_BUBBLE_MAX_CHARS = "delivery.bubble_max_chars"
 
+    # Agent reasoning loop — Amalia-style tool-use. When enabled the orchestrator
+    # may call read-only tools (live calendar availability, upcoming appointments)
+    # mid-turn, see the real result, and adapt its reply before sending — so it
+    # never promises an unavailable slot. `max_tool_iterations` caps the LLM calls
+    # per turn (1 = single-shot, no tool grounding).
+    AGENT_TOOL_USE_ENABLED = "agent.tool_use_enabled"
+    AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
+
     # UC-13 Objections — the category vocabulary the classifier maps to.
     OBJECTION_CATEGORIES = "objections.categories"
 
@@ -167,6 +179,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCHEDULE_ACTIVE_HOURS: "24/7",
     ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE: "Grazie per averci contattato! Ti risponderemo al più presto.",
     ConfigKey.SCHEDULE_TIMEZONE: "Europe/Rome",
+    ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
     ConfigKey.RAG_MIN_SCORE: 0.7,
     ConfigKey.BOT_LANGUAGE: "it",
@@ -199,16 +212,24 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOT_DONT_PHRASES: [],
     ConfigKey.BOT_EXAMPLES: [],
     ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED: True,
-    # Delivery — all no-op defaults (today's instant single send).
-    ConfigKey.DELIVERY_DEBOUNCE_WINDOW_S: 0,
-    ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED: False,
-    ConfigKey.DELIVERY_TYPING_DELAY_BASE_S: 0.0,
-    ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S: 0.0,
-    ConfigKey.DELIVERY_TYPING_DELAY_MIN_S: 0.0,
-    ConfigKey.DELIVERY_TYPING_DELAY_MAX_S: 0.0,
-    ConfigKey.DELIVERY_TYPING_JITTER_FRAC: 0.0,
-    ConfigKey.DELIVERY_MULTI_BUBBLE_MAX: 1,
+    # Delivery — "human-feel" defaults (ADR 0008/0010): coalesce rapid messages,
+    # show a typing indicator, pause briefly before sending, and split long
+    # replies into a couple of bubbles. Merchants can dial any of these back to 0
+    # via the cascade to restore the old instant single-send behavior.
+    ConfigKey.DELIVERY_DEBOUNCE_WINDOW_S: 8,
+    ConfigKey.DELIVERY_TYPING_INDICATOR_ENABLED: True,
+    ConfigKey.DELIVERY_TYPING_DELAY_BASE_S: 1.0,
+    ConfigKey.DELIVERY_TYPING_DELAY_PER_CHAR_S: 0.02,
+    ConfigKey.DELIVERY_TYPING_DELAY_MIN_S: 1.0,
+    ConfigKey.DELIVERY_TYPING_DELAY_MAX_S: 6.0,
+    ConfigKey.DELIVERY_TYPING_JITTER_FRAC: 0.25,
+    ConfigKey.DELIVERY_MULTI_BUBBLE_MAX: 2,
     ConfigKey.DELIVERY_BUBBLE_MAX_CHARS: 600,
+    # Agent tool-use loop — on by default; up to 3 LLM calls per turn so the
+    # model can ground itself on live data (availability/appointments) once or
+    # twice before replying.
+    ConfigKey.AGENT_TOOL_USE_ENABLED: True,
+    ConfigKey.AGENT_MAX_TOOL_ITERATIONS: 3,
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,
     ConfigKey.CONVERSATION_IDLE_CLOSE_MINUTES: 120,
 }
@@ -230,6 +251,7 @@ class BotConfigSchema(_StrictModel):
     booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
     business: BusinessConfig = Field(default_factory=lambda: BusinessConfig())
     delivery: DeliveryConfig = Field(default_factory=lambda: DeliveryConfig())
+    agent: AgentConfig = Field(default_factory=lambda: AgentConfig())
     objections: ObjectionsConfig = Field(default_factory=lambda: ObjectionsConfig())
     conversation: ConversationConfig = Field(default_factory=lambda: ConversationConfig())
 
@@ -273,6 +295,10 @@ class ScheduleConfig(_StrictModel):
     active_hours: str = "24/7"
     off_hours_message: str = "Grazie per averci contattato! Ti risponderemo al più presto."
     timezone: str = "Europe/Rome"
+    # Skip auto-replying to an inbound older than this many minutes (still
+    # persisted). 0 = disabled. Defends against answering a stale backlog
+    # out of context after the worker was down. Up to 24h.
+    inbound_staleness_min: int = Field(10, ge=0, le=1440)
 
 
 class RagConfig(_StrictModel):
@@ -356,21 +382,33 @@ class ConversationConfig(_StrictModel):
 
 
 class DeliveryConfig(_StrictModel):
-    """Human-feel delivery knobs. All-zero defaults reproduce today's instant,
-    single-bubble, no-typing-indicator send."""
+    """Human-feel delivery knobs. Defaults make the reply feel human out of the
+    box (coalesce rapid messages, typing indicator, brief pause, a couple of
+    bubbles); set any of them to 0/False to restore instant single-send."""
 
     # Quiet-period seconds: coalesce rapid inbound messages into one reply.
-    # 0 = off (reply synchronously, today's behavior).
-    debounce_window_s: int = Field(0, ge=0, le=30)
+    # 0 = off (reply synchronously).
+    debounce_window_s: int = Field(8, ge=0, le=30)
     # Send a WhatsApp read receipt + "typing…" indicator before replying.
-    typing_indicator_enabled: bool = False
+    typing_indicator_enabled: bool = True
     # Artificial "thinking/typing" pause before sending, as base + per-char,
     # clamped to [min, max] with +/- jitter. max=0 disables the pause.
-    typing_delay_base_s: float = Field(0.0, ge=0.0, le=10.0)
-    typing_delay_per_char_s: float = Field(0.0, ge=0.0, le=0.2)
-    typing_delay_min_s: float = Field(0.0, ge=0.0, le=20.0)
-    typing_delay_max_s: float = Field(0.0, ge=0.0, le=20.0)
-    typing_jitter_frac: float = Field(0.0, ge=0.0, le=1.0)
+    typing_delay_base_s: float = Field(1.0, ge=0.0, le=10.0)
+    typing_delay_per_char_s: float = Field(0.02, ge=0.0, le=0.2)
+    typing_delay_min_s: float = Field(1.0, ge=0.0, le=20.0)
+    typing_delay_max_s: float = Field(6.0, ge=0.0, le=20.0)
+    typing_jitter_frac: float = Field(0.25, ge=0.0, le=1.0)
     # Split a long reply into up to N WhatsApp bubbles. 1 = single send.
-    multi_bubble_max: int = Field(1, ge=1, le=4)
+    multi_bubble_max: int = Field(2, ge=1, le=4)
     bubble_max_chars: int = Field(600, ge=80, le=1000)
+
+
+class AgentConfig(_StrictModel):
+    """Agent reasoning loop (Amalia-style tool-use). When enabled the
+    orchestrator can call read-only tools mid-turn (live availability, upcoming
+    appointments) and adapt its reply to the real result before sending."""
+
+    tool_use_enabled: bool = True
+    # Total LLM calls allowed per turn. 1 = single-shot (no tool grounding);
+    # 3 allows up to two tool round-trips.
+    max_tool_iterations: int = Field(3, ge=1, le=5)

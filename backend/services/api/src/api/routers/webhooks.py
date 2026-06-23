@@ -130,6 +130,7 @@ async def whatsapp_inbound(
             ev.message_id,
             _extract_campaign(ev.raw),  # UC-11 click-to-WhatsApp ad attribution
             handoff_reason,
+            ev.timestamp_unix,  # inbound-staleness gate (None = no check)
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )
         enqueued_msgs += 1

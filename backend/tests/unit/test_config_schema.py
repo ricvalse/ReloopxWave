@@ -54,12 +54,37 @@ def test_legacy_tone_still_accepted() -> None:
     assert cfg.bot.formality == "auto"  # untouched
 
 
-def test_delivery_defaults_are_noop() -> None:
+def test_delivery_defaults_are_human_feel() -> None:
+    # The product default is now human-feel out of the box (debounce, typing
+    # indicator, brief pause, a couple of bubbles). Merchants can dial any of
+    # these back to 0/False via the cascade to restore instant single-send.
     cfg = BotConfigSchema()
+    assert cfg.delivery.debounce_window_s == 8
+    assert cfg.delivery.typing_indicator_enabled is True
+    assert cfg.delivery.multi_bubble_max == 2
+    assert cfg.delivery.typing_delay_max_s == 6.0
+
+
+def test_delivery_can_be_dialed_back_to_instant_send() -> None:
+    cfg = BotConfigSchema.model_validate(
+        {
+            "delivery": {
+                "debounce_window_s": 0,
+                "typing_indicator_enabled": False,
+                "typing_delay_max_s": 0.0,
+                "multi_bubble_max": 1,
+            }
+        }
+    )
     assert cfg.delivery.debounce_window_s == 0
     assert cfg.delivery.typing_indicator_enabled is False
     assert cfg.delivery.multi_bubble_max == 1
-    assert cfg.delivery.typing_delay_max_s == 0.0
+
+
+def test_agent_defaults_enable_tool_loop() -> None:
+    cfg = BotConfigSchema()
+    assert cfg.agent.tool_use_enabled is True
+    assert cfg.agent.max_tool_iterations == 3
 
 
 def test_delivery_bounds_enforced() -> None:

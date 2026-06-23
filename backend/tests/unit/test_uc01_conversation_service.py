@@ -305,15 +305,17 @@ def test_to_chat_history_folds_agent_into_assistant() -> None:
     assert out[2].content == "Rispondo io dal telefono"
 
 
-async def test_inbound_persisted_even_when_reply_fails(
+async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
     monkeypatch: pytest.MonkeyPatch,
     resolved_integration: ResolvedWhatsAppIntegration,
 ) -> None:
-    """Durability: a failure during reply generation must NOT lose the inbound.
+    """Fail-safe (QW1): an LLM error must NOT lose the inbound AND must still
+    reach the customer.
 
-    The inbound is persisted in its own phase that completes before the reply
-    phase runs, so when the orchestrator raises, the user message is already
-    saved and no assistant message is written."""
+    The inbound is persisted in its own phase before the reply phase runs, so
+    when the orchestrator raises, the user message is already saved. The reply
+    phase then catches the error, sends a courtesy fallback, persists it, and
+    hands the thread to a human — instead of leaving the customer in silence."""
     from ai_core import conversation_service as cs
 
     user_calls: list = []
@@ -390,26 +392,38 @@ async def test_inbound_persisted_even_when_reply_fails(
     orch = AsyncMock()
     orch.run = AsyncMock(side_effect=RuntimeError("LLM blew up"))
 
+    sender = FakeSender()
     svc = ConversationService(
         orchestrator=orch,
         action_dispatcher=ActionDispatcher(),
-        reply_sender=FakeSender(),
+        reply_sender=sender,
         embedder=None,
         kek_base64="unused",
     )
 
-    with pytest.raises(RuntimeError):
-        await svc.handle_inbound(
-            phone_number_id="PNID-1",
-            from_phone="39333000000",
-            text="ciao",
-            wa_message_id="wamid.in.999",
-        )
+    from ai_core.conversation_service import _LLM_FAILURE_MESSAGE
 
-    # Inbound was persisted before the reply phase failed; reply was not.
+    # No exception escapes: the fail-safe path turns the LLM error into a reply.
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao",
+        wa_message_id="wamid.in.999",
+    )
+
+    # Inbound was persisted before the reply phase ran.
     assert len(user_calls) == 1
     assert user_calls[0]["wa_message_id"] == "wamid.in.999"
-    assert assistant_calls == []
+    # The customer got a courtesy fallback (sent + persisted), not silence. The
+    # reply may be split across human-feel bubbles on the wire; the persisted
+    # assistant Message stays single and authoritative.
+    assert result.handled is True
+    assert result.reply_text == _LLM_FAILURE_MESSAGE
+    assert sender.calls  # at least one bubble went out
+    joined = " ".join(c["text"].strip() for c in sender.calls)
+    assert joined == _LLM_FAILURE_MESSAGE
+    assert len(assistant_calls) == 1
+    assert assistant_calls[0]["content"] == _LLM_FAILURE_MESSAGE
 
 
 async def test_inbound_idempotent_on_redelivery(

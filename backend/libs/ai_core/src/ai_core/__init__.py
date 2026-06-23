@@ -25,6 +25,8 @@ from ai_core.orchestrator import (
     ConversationOrchestrator,
     OrchestratorAction,
     OrchestratorResponse,
+    ToolExecutor,
+    ToolResult,
 )
 from ai_core.playground import (
     PlaygroundMessage,
@@ -74,6 +76,8 @@ __all__ = [
     "RoutingRequest",
     "SentimentAnalyzer",
     "SimulatedActionEvent",
+    "ToolExecutor",
+    "ToolResult",
     "TurnContext",
     "classify_objections",
     "compute_typing_delay_s",

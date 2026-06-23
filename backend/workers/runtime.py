@@ -21,6 +21,7 @@ from ai_core.actions import (
     BookSlotHandler,
     CancelSlotHandler,
     EscalateHumanHandler,
+    GhlReadToolExecutor,
     MovePipelineHandler,
     ProposeSlotsHandler,
     RescheduleSlotHandler,
@@ -166,12 +167,22 @@ def build_runtime(settings: Settings) -> Runtime:
         else None
     )
 
+    # Read-only tool executor for the Amalia-style tool-use loop: lets the
+    # orchestrator ground itself on live GHL calendar availability + the lead's
+    # upcoming appointment mid-turn, so it never promises an unavailable slot.
+    tool_executor = GhlReadToolExecutor(
+        kek_base64=settings.integrations_kek_base64,
+        ghl_client_id=settings.ghl_client_id,
+        ghl_client_secret=settings.ghl_client_secret,
+    )
+
     service = ConversationService(
         orchestrator=orchestrator,
         action_dispatcher=dispatcher,
         reply_sender=sender,
         embedder=embedder,
         sentiment=sentiment,
+        tool_executor=tool_executor,
         kek_base64=settings.integrations_kek_base64,
     )
     return Runtime(
