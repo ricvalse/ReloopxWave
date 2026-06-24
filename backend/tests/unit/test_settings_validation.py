@@ -49,3 +49,18 @@ def test_recommended_warnings_list_integration_creds() -> None:
     warnings = _prod().production_config_warnings()
     assert any("ghl_client_id" in w for w in warnings)
     assert any("router_base_url" in w for w in warnings)
+
+
+def test_warns_when_anthropic_fallback_on_without_key() -> None:
+    # Fallback abilitato ma chiave assente: il router non può instradare (#52).
+    warnings = _prod(
+        anthropic_fallback_enabled=True, anthropic_api_key=""
+    ).production_config_warnings()
+    assert any("anthropic_fallback_enabled" in w and "anthropic_api_key" in w for w in warnings)
+
+
+def test_no_anthropic_warning_when_key_present() -> None:
+    warnings = _prod(
+        anthropic_fallback_enabled=True, anthropic_api_key="sk-ant-x"
+    ).production_config_warnings()
+    assert not any("anthropic_fallback_enabled" in w for w in warnings)

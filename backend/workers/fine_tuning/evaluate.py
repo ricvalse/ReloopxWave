@@ -16,6 +16,7 @@ harness here is real and the pass/fail gate is enforced by the orchestration.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -30,10 +31,34 @@ logger = get_logger(__name__)
 MAX_SAMPLES = 50
 DEFAULT_PASS_MARGIN = 0.05  # FT may trail baseline by at most this and still pass.
 
+# Parole che, nel turno assistant atteso, segnalano che la risposta dovrebbe
+# proporre/confermare un appuntamento. Usate per derivare il "ground truth" del
+# sample: se l'assistant umano ha parlato di slot, ci aspettiamo che il modello
+# emetta un'azione di booking.
+_BOOKING_KEYWORDS = (
+    "appuntamento",
+    "prenot",
+    "disponibil",
+    "slot",
+    "fissare",
+    "fissiamo",
+    "calendario",
+)
+# Azioni che contano come "gestione booking" nel JSON di risposta del modello.
+_BOOKING_ACTIONS = {"book_slot", "propose_slots", "reschedule_slot"}
+
 _EVAL_SYSTEM = (
     'Rispondi con un JSON: {"reply_text": "<risposta>", "actions": []}. '
-    "reply_text non deve mai essere vuoto."
+    "reply_text non deve mai essere vuoto. Quando il cliente vuole prenotare, "
+    'aggiungi in actions un oggetto {"kind": "propose_slots"} o '
+    '{"kind": "book_slot"}.'
 )
+
+
+@dataclass(slots=True, frozen=True)
+class EvalSample:
+    prompt: str
+    expects_booking: bool
 
 
 def reply_quality(content: str) -> float:
@@ -48,9 +73,32 @@ def reply_quality(content: str) -> float:
     return 1.0 if isinstance(reply, str) and reply.strip() else 0.0
 
 
-def extract_prompts(raw: bytes, *, limit: int = MAX_SAMPLES) -> list[str]:
-    """Pull user-turn prompts from an OpenAI-format JSONL dataset."""
-    prompts: list[str] = []
+def has_booking_action(content: str) -> bool:
+    """True se il JSON di risposta contiene un'azione di gestione appuntamento."""
+    try:
+        obj = json.loads(content)
+    except Exception:
+        return False
+    if not isinstance(obj, dict):
+        return False
+    actions = obj.get("actions")
+    if not isinstance(actions, list):
+        return False
+    for action in actions:
+        if isinstance(action, dict) and action.get("kind") in _BOOKING_ACTIONS:
+            return True
+    return False
+
+
+def _expects_booking(assistant_text: str) -> bool:
+    lowered = assistant_text.lower()
+    return any(kw in lowered for kw in _BOOKING_KEYWORDS)
+
+
+def extract_samples(raw: bytes, *, limit: int = MAX_SAMPLES) -> list[EvalSample]:
+    """Pull (user-prompt, expects_booking) samples from an OpenAI-format JSONL
+    dataset. `expects_booking` è derivato dal turno assistant atteso (#17)."""
+    samples: list[EvalSample] = []
     for raw_line in raw.decode("utf-8").splitlines():
         line = raw_line.strip()
         if not line:
@@ -60,33 +108,64 @@ def extract_prompts(raw: bytes, *, limit: int = MAX_SAMPLES) -> list[str]:
         except Exception as e:
             logger.debug("ft.eval.bad_dataset_line", error=str(e))
             continue
+        prompt: str | None = None
+        assistant: str = ""
         for msg in record.get("messages", []):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                prompts.append(msg["content"])
-                break
-        if len(prompts) >= limit:
+            role, content = msg.get("role"), msg.get("content")
+            if not isinstance(content, str):
+                continue
+            if role == "user" and prompt is None:
+                prompt = content
+            elif role == "assistant":
+                assistant = content
+        if prompt is not None:
+            samples.append(EvalSample(prompt=prompt, expects_booking=_expects_booking(assistant)))
+        if len(samples) >= limit:
             break
-    return prompts
+    return samples
 
 
-async def score_model(client: LLMClient, prompts: list[str]) -> float:
-    """Mean reply-quality over the prompts (0..1)."""
-    if not prompts:
-        return 0.0
-    total = 0.0
-    for prompt in prompts:
+def extract_prompts(raw: bytes, *, limit: int = MAX_SAMPLES) -> list[str]:
+    """Pull user-turn prompts from an OpenAI-format JSONL dataset (thin wrapper
+    over `extract_samples`, kept for callers/tests that only need the prompts)."""
+    return [s.prompt for s in extract_samples(raw, limit=limit)]
+
+
+@dataclass(slots=True, frozen=True)
+class ModelScores:
+    reply_quality: float  # frazione di risposte JSON valide con reply_text
+    booking_recall: float  # frazione di sample booking-attesi con azione booking
+
+
+async def score_model(client: LLMClient, samples: list[EvalSample]) -> ModelScores:
+    """Mean reply-quality + booking-recall over the samples (each 0..1)."""
+    if not samples:
+        return ModelScores(reply_quality=0.0, booking_recall=0.0)
+    quality_total = 0.0
+    booking_hits = 0
+    booking_expected = 0
+    for sample in samples:
         try:
             res = await client.complete(
                 messages=[
                     ChatMessage(role="system", content=_EVAL_SYSTEM),
-                    ChatMessage(role="user", content=prompt),
+                    ChatMessage(role="user", content=sample.prompt),
                 ],
                 response_format={"type": "json_object"},
             )
-            total += reply_quality(res.content)
+            quality_total += reply_quality(res.content)
+            if sample.expects_booking:
+                booking_expected += 1
+                if has_booking_action(res.content):
+                    booking_hits += 1
         except Exception as e:  # one bad sample shouldn't abort the eval
             logger.warning("ft.eval.sample_failed", error=str(e))
-    return total / len(prompts)
+    # Senza sample booking-attesi il recall è neutro (1.0) per non penalizzare.
+    booking_recall = (booking_hits / booking_expected) if booking_expected else 1.0
+    return ModelScores(
+        reply_quality=quality_total / len(samples),
+        booking_recall=booking_recall,
+    )
 
 
 async def evaluate_model(
@@ -109,12 +188,13 @@ async def evaluate_model(
                 ft_model_row_id=ft_model_row_id,
             )
         provider_model_id = row.provider_model_id
-        dataset_path = row.dataset_path
 
-    # Prefer an explicit held-out set; fall back to the training set as a
-    # smoke-test source (better than no comparison at all).
-    path = test_set_path or dataset_path
-    prompts: list[str] = []
+    # Held-out set obbligatorio per un giudizio valido: usiamo SOLO l'eval split
+    # (#17). Se manca (run troppo piccola per lo split) NON ripieghiamo sul
+    # training set — sarebbe overfitting mascherato da pass — e marchiamo lo
+    # stato come non deployabile (#18).
+    path = test_set_path
+    samples: list[EvalSample] = []
     if path:
         from integrations import SupabaseStorage
 
@@ -123,9 +203,12 @@ async def evaluate_model(
             service_role_key=settings.supabase_service_role_key,
             bucket=settings.supabase_ft_bucket,
         )
-        prompts = extract_prompts(await storage.download(path))
+        samples = extract_samples(await storage.download(path))
 
-    if not prompts:
+    new_status = "evaluated"
+    if not samples:
+        # Niente held-out set: eval saltata. Stato dedicato, fuori dal gate di
+        # deploy (DEPLOYABLE_STATUSES in handlers.py) così non finisce in prod.
         metrics = {
             "method": "heldout_v1",
             "error": "no_test_data",
@@ -133,18 +216,26 @@ async def evaluate_model(
             "evaluated_at": datetime.now(tz=UTC).isoformat(),
         }
         passed = False
+        new_status = "eval_skipped"
     else:
         baseline = OpenAIClient(api_key=settings.openai_api_key, model=settings.llm_model_default)
         ft = OpenAIClient(api_key=settings.openai_api_key, model=provider_model_id)
-        baseline_score = await score_model(baseline, prompts)
-        ft_score = await score_model(ft, prompts)
-        passed = ft_score >= baseline_score - pass_margin
+        baseline_scores = await score_model(baseline, samples)
+        ft_scores = await score_model(ft, samples)
+        # Gate: l'FT deve reggere il confronto sia sulla validità strutturale sia
+        # sulla gestione booking (#17), entro un piccolo margine.
+        passed = (
+            ft_scores.reply_quality >= baseline_scores.reply_quality - pass_margin
+            and ft_scores.booking_recall >= baseline_scores.booking_recall - pass_margin
+        )
         metrics = {
             "method": "heldout_v1",
-            "samples": len(prompts),
+            "samples": len(samples),
             "baseline_model": settings.llm_model_default,
-            "baseline_score": round(baseline_score, 4),
-            "ft_score": round(ft_score, 4),
+            "baseline_score": round(baseline_scores.reply_quality, 4),
+            "ft_score": round(ft_scores.reply_quality, 4),
+            "baseline_booking_recall": round(baseline_scores.booking_recall, 4),
+            "ft_booking_recall": round(ft_scores.booking_recall, 4),
             "pass_margin": pass_margin,
             "pass": passed,
             "evaluated_at": datetime.now(tz=UTC).isoformat(),
@@ -154,7 +245,7 @@ async def evaluate_model(
         row = await session.get(FTModel, UUID(ft_model_row_id))
         if row is not None:
             row.evaluation = {**(row.evaluation or {}), **metrics}
-            row.status = "evaluated"
+            row.status = new_status
 
     # Gate: only a passing model proceeds to the A/B rollout (spec 6.7 — rollout
     # via A/B, not a flag flip). A failing eval stops the chain; an operator can
@@ -172,6 +263,11 @@ async def evaluate_model(
         "ft.evaluate.done",
         ft_model_row_id=ft_model_row_id,
         passed=passed,
-        **{k: metrics[k] for k in ("baseline_score", "ft_score") if k in metrics},
+        eval_status=new_status,
+        **{
+            k: metrics[k]
+            for k in ("baseline_score", "ft_score", "baseline_booking_recall", "ft_booking_recall")
+            if k in metrics
+        },
     )
-    return {"ft_model_row_id": ft_model_row_id, "status": "evaluated", **metrics}
+    return {"ft_model_row_id": ft_model_row_id, "status": new_status, **metrics}

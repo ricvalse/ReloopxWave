@@ -15,7 +15,7 @@ from redis.asyncio import Redis
 
 from config_resolver import set_shared_redis
 from db import get_engine
-from shared import configure_logging, get_settings, init_sentry
+from shared import configure_logging, get_logger, get_settings, init_posthog, init_sentry
 from workers.automation.engine import automation_dispatch, automation_run
 from workers.conversation.handlers import (
     flush_inbound_reply,
@@ -51,12 +51,19 @@ from workers.scheduler.handlers import (
     template_status_sync,
 )
 
+logger = get_logger(__name__)
+
 
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
     configure_logging(level=settings.log_level, environment=settings.environment)
     settings.ensure_production_ready()  # fail fast on missing prod secrets
+    for warning in settings.production_config_warnings():
+        logger.warning("worker.config_warning", detail=warning)
     init_sentry(settings, component="worker")
+    # PostHog anche lato worker (#49): i job (FT, scheduler) possono emettere
+    # eventi prodotto via ctx["posthog"].capture(...). No-op se posthog_key vuota.
+    ctx["posthog"] = init_posthog(settings)
     get_engine(settings.supabase_db_url)  # initialise session factory
     # Shared Redis for the config-cascade cache (same store the API invalidates
     # against on config writes). Best-effort: a Redis blip degrades to DB reads.

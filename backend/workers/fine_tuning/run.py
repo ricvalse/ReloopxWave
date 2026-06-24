@@ -41,6 +41,7 @@ async def fine_tune_run(
     *,
     since_days: int = DEFAULT_WINDOW_DAYS,
     base_model: str = DEFAULT_FT_BASE_MODEL,
+    target_merchant_id: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     tid = UUID(tenant_id)
@@ -93,8 +94,10 @@ async def fine_tune_run(
     await redis.enqueue_job(
         "fine_tune_train",
         tenant_id,
-        dataset_path=export.path,
+        dataset_path=export.train_path,
+        eval_path=export.eval_path,
         base_model=base_model,
+        target_merchant_id=target_merchant_id,
         _job_id=f"ft:train:{export.run_id}",
     )
 
@@ -102,14 +105,20 @@ async def fine_tune_run(
         "ft.run.enqueued_train",
         tenant_id=tenant_id,
         run_id=export.run_id,
-        dataset_path=export.path,
-        pairs=export.pairs_count,
+        dataset_path=export.train_path,
+        eval_path=export.eval_path,
+        train_pairs=export.train_count,
+        eval_pairs=export.eval_count,
+        target_merchant_id=target_merchant_id,
     )
     return {
         "tenant_id": tenant_id,
         "status": "training_enqueued",
         "run_id": export.run_id,
-        "dataset_path": export.path,
-        "pairs": export.pairs_count,
+        "dataset_path": export.train_path,
+        "eval_path": export.eval_path,
+        "train_pairs": export.train_count,
+        "eval_pairs": export.eval_count,
+        "target_merchant_id": target_merchant_id,
         "redaction_totals": export.redaction_totals,
     }

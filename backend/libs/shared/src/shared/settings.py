@@ -172,11 +172,17 @@ class Settings(BaseSettings):
 
     def production_config_warnings(self) -> list[str]:
         """Soft gaps: boot proceeds, but a feature stays inert until set."""
-        return [
+        warnings = [
             f"{name} is empty"
             for name in self._PROD_RECOMMENDED
             if not str(getattr(self, name, "") or "").strip()
         ]
+        # Il fallback Anthropic è abilitato ma manca la chiave: il router (vedi
+        # router.py:~94) non potrà mai instradare al modello di fallback, quindi
+        # il flag è inerte. Segnaliamolo invece di fallire silenziosamente.
+        if self.anthropic_fallback_enabled and not self.anthropic_api_key.strip():
+            warnings.append("anthropic_fallback_enabled is on but anthropic_api_key is empty")
+        return warnings
 
     def ensure_production_ready(self) -> None:
         """Fail fast at startup if a required secret is missing in production.

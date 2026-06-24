@@ -25,9 +25,18 @@ logger = get_logger(__name__)
 class ExportResult:
     tenant_id: UUID
     run_id: str
-    path: str  # bucket-relative path
-    pairs_count: int
+    train_path: str  # bucket-relative path (train split)
+    eval_path: str | None  # bucket-relative path (held-out split), None if too few pairs
+    train_count: int
+    eval_count: int
     redaction_totals: dict[str, int]
+
+
+# Quota di coppie tenute fuori dal training per la valutazione held-out (#17).
+EVAL_FRACTION = 0.15
+# Sotto questa soglia non ha senso uno split: teniamo tutto in train (l'eval
+# fallback nel valutatore degrada al training set come smoke-test).
+MIN_PAIRS_FOR_SPLIT = 8
 
 
 async def export_training_pairs(
@@ -36,13 +45,19 @@ async def export_training_pairs(
     tenant_id: UUID,
     pairs: list[TrainingPair],
 ) -> ExportResult:
-    """Write `train.jsonl` to `<ft_bucket>/<tenant_id>/<run_id>/train.jsonl`.
+    """Anonymize + split into `train.jsonl` (+ `eval.jsonl`) under
+    `<ft_bucket>/<tenant_id>/<run_id>/`.
+
+    The split is stratificato per conversazione: tutte le coppie di una stessa
+    conversazione finiscono nello stesso lato (train o eval) così il valutatore
+    è davvero held-out e non vede turni di conversazioni già viste in training.
 
     JSONL shape is OpenAI fine-tuning format:
         {"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}
     """
     run_id = uuid4().hex
-    path = f"{tenant_id}/{run_id}/train.jsonl"
+    train_path = f"{tenant_id}/{run_id}/train.jsonl"
+    eval_path = f"{tenant_id}/{run_id}/eval.jsonl"
 
     # Art. 5.2 double layer: regex (in anonymize_text) + presidio NER (here).
     # Presidio degrades to None outside production (no spaCy model) — we log so
@@ -55,36 +70,46 @@ async def export_training_pairs(
     if presidio is None:
         logger.warning("ft.export.presidio_skipped", tenant_id=str(tenant_id))
 
-    lines: list[str] = []
     totals: dict[str, int] = {}
-    for pair in pairs:
+
+    def _serialize(pair: TrainingPair) -> str:
         user_report = anonymize_text(pair.user, additional_transforms=transforms)
         assistant_report = anonymize_text(pair.assistant, additional_transforms=transforms)
         _merge_counts(totals, user_report.counts)
         _merge_counts(totals, assistant_report.counts)
-
         record = {
             "messages": [
                 {"role": "user", "content": user_report.text},
                 {"role": "assistant", "content": assistant_report.text},
             ]
         }
-        lines.append(json.dumps(record, ensure_ascii=False))
+        return json.dumps(record, ensure_ascii=False)
 
-    body = "\n".join(lines).encode("utf-8")
+    train_pairs, eval_pairs = _stratified_split(pairs)
+    train_lines = [_serialize(p) for p in train_pairs]
+    eval_lines = [_serialize(p) for p in eval_pairs]
 
     storage = SupabaseStorage(
         project_url=settings.supabase_url,
         service_role_key=settings.supabase_service_role_key,
         bucket=settings.supabase_ft_bucket,
     )
-    await storage.upload_bytes(path, body, content_type="application/x-ndjson")
+    await storage.upload_bytes(
+        train_path, "\n".join(train_lines).encode("utf-8"), content_type="application/x-ndjson"
+    )
+    eval_uploaded: str | None = None
+    if eval_lines:
+        await storage.upload_bytes(
+            eval_path, "\n".join(eval_lines).encode("utf-8"), content_type="application/x-ndjson"
+        )
+        eval_uploaded = eval_path
 
     logger.info(
         "ft.export.uploaded",
         tenant_id=str(tenant_id),
         run_id=run_id,
-        pairs=len(pairs),
+        train_pairs=len(train_pairs),
+        eval_pairs=len(eval_pairs),
         redactions=totals,
         ner_applied=presidio is not None,
         uploaded_at=datetime.now(tz=UTC).isoformat(),
@@ -92,10 +117,43 @@ async def export_training_pairs(
     return ExportResult(
         tenant_id=tenant_id,
         run_id=run_id,
-        path=path,
-        pairs_count=len(pairs),
+        train_path=train_path,
+        eval_path=eval_uploaded,
+        train_count=len(train_pairs),
+        eval_count=len(eval_pairs),
         redaction_totals=totals,
     )
+
+
+def _stratified_split(
+    pairs: list[TrainingPair],
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    """Split per-conversazione: ~`EVAL_FRACTION` delle conversazioni va in eval,
+    le sue coppie escono interamente dal training. Deterministico (ordinato per
+    conversation_id) così una run è riproducibile."""
+    if len(pairs) < MIN_PAIRS_FOR_SPLIT:
+        return list(pairs), []
+
+    # Raggruppa per conversazione preservando l'ordine d'arrivo delle coppie.
+    groups: dict[str, list[TrainingPair]] = {}
+    for pair in pairs:
+        groups.setdefault(str(pair.conversation_id), []).append(pair)
+
+    conv_ids = sorted(groups)
+    n_eval_convs = max(1, round(len(conv_ids) * EVAL_FRACTION))
+    # Prendi le ultime N conversazioni (ordine stabile) come held-out.
+    eval_ids = set(conv_ids[-n_eval_convs:])
+
+    train: list[TrainingPair] = []
+    eval_: list[TrainingPair] = []
+    for cid in conv_ids:
+        target = eval_ if cid in eval_ids else train
+        target.extend(groups[cid])
+
+    # Non svuotare mai il training: se lo split ha tolto troppo, annulla l'eval.
+    if not train:
+        return list(pairs), []
+    return train, eval_
 
 
 def _merge_counts(into: dict[str, int], add: dict[str, int]) -> None:

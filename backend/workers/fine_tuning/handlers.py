@@ -1,13 +1,15 @@
 """Fine-tuning pipeline (section 5.4, weeks 9-10).
 
 End-to-end path for one tenant:
-    collect_training_pairs() → export_training_pairs() → fine_tune_train
-    → fine_tune_evaluate → fine_tune_deploy (flip is_default)
+    collect_training_pairs() → export_training_pairs() (train/eval split)
+    → fine_tune_train → fine_tune_evaluate (held-out vs baseline)
+    → fine_tune_deploy (A/B rollout)
 
-V1 `fine_tune_evaluate` is intentionally modest: it records provider_model_id
-+ status without running a held-out eval. A real eval — BLEU / objection
-handling / latency comparison vs baseline — is explicit Phase 5.2 follow-up
-work, tracked in docs/runbooks/fine-tune-deploy.md (not yet written).
+`fine_tune_evaluate` (real impl in evaluate.py) runs a held-out evaluation
+against the eval split: structured-output validity + booking-action recall vs
+the baseline model. Senza held-out set lo stato diventa `eval_skipped`, escluso
+dal gate di deploy (DEPLOYABLE_STATUSES). Quando l'FT è legato a un merchant,
+il deploy apre un esperimento A/B baseline-vs-ft invece di flippare is_default.
 """
 
 from __future__ import annotations
@@ -36,6 +38,11 @@ __all__ = [
 POLL_INTERVAL_SECONDS = 30
 POLL_MAX_ATTEMPTS = 240  # 2 hours at 30s cadence — OpenAI FT rarely exceeds this.
 
+# Stati da cui un FT model può essere promosso a default. Esclude esplicitamente
+# 'eval_skipped'/'eval_failed' (#18): una valutazione mancante/fallita non deve
+# poter scivolare in produzione.
+DEPLOYABLE_STATUSES = ("ready", "evaluated")
+
 
 async def fine_tune_train(
     ctx: dict[str, Any],
@@ -43,6 +50,8 @@ async def fine_tune_train(
     *,
     dataset_path: str,
     base_model: str,
+    eval_path: str | None = None,
+    target_merchant_id: str | None = None,
 ) -> dict[str, Any]:
     """Submit an OpenAI fine-tuning job pointed at the uploaded dataset and
     poll until it either succeeds or fails. Persists an `ft_models` row in
@@ -99,6 +108,9 @@ async def fine_tune_train(
         async with session_scope() as session:
             row = FTModel(
                 tenant_id=UUID(tenant_id),
+                # Legare l'FT a un merchant abilita il rollout A/B in deploy (#16);
+                # senza merchant l'FT resta default tenant-wide.
+                merchant_id=UUID(target_merchant_id) if target_merchant_id else None,
                 version=version,
                 base_model=base_model,
                 provider_model_id="",
@@ -133,13 +145,14 @@ async def fine_tune_train(
             provider_model_id=provider_model_id,
         )
 
-        # Chain: on success, kick off held-out evaluation.
+        # Chain: on success, kick off held-out evaluation against the split set.
         if final_status == "ready":
             redis = ctx.get("redis")
             if redis is not None:
                 await redis.enqueue_job(
                     "fine_tune_evaluate",
                     str(ft_model_id),
+                    test_set_path=eval_path,
                     _job_id=f"ft:eval:{ft_model_id}",
                 )
 
@@ -181,7 +194,10 @@ async def fine_tune_deploy(
                 error_code="ft_row_missing",
                 ft_model_row_id=ft_model_row_id,
             )
-        if row.status not in ("ready", "evaluated"):
+        # Stati deployabili: 'ready' (trainato, eval non ancora girata) e
+        # 'evaluated' (eval passata). 'eval_skipped'/'eval_failed' restano fuori
+        # dal gate (#18): un eval senza held-out set o fallito non vale come ok.
+        if row.status not in DEPLOYABLE_STATUSES:
             raise IntegrationError(
                 f"Cannot deploy FT model in status {row.status}",
                 error_code="ft_not_deployable",
@@ -211,19 +227,32 @@ async def fine_tune_deploy(
             from db import ABRepository
 
             ab = ABRepository(session)
-            exp = await ab.create(
-                merchant_id=merchant_id,
-                name=f"FT rollout v{row.version}",
-                description="Auto-created baseline vs fine-tuned model comparison.",
-                variants=[
-                    {"id": "baseline", "weight": 50},
-                    {"id": "ft", "weight": 50},
-                ],
-                primary_metric="booking.created",
-                min_sample_size=100,
-            )
-            await ab.set_status(exp.id, status="running", started_at=datetime.now(tz=UTC))
-            experiment_id = str(exp.id)
+            # One running experiment per merchant (UC-09): variant assignment only
+            # honours the oldest running experiment, so silently creating a second
+            # one would hijack or starve traffic. Respect the same guard the API's
+            # start_experiment enforces — if something is already running, skip the
+            # FT experiment. The model still deploys via the is_default path above.
+            if await ab.has_running(merchant_id):
+                logger.warning(
+                    "ft.deploy.ab_skipped_running_experiment",
+                    tenant_id=str(row.tenant_id),
+                    merchant_id=str(merchant_id),
+                    ft_model_row_id=ft_model_row_id,
+                )
+            else:
+                exp = await ab.create(
+                    merchant_id=merchant_id,
+                    name=f"FT rollout v{row.version}",
+                    description="Auto-created baseline vs fine-tuned model comparison.",
+                    variants=[
+                        {"id": "baseline", "weight": 50},
+                        {"id": "ft", "weight": 50},
+                    ],
+                    primary_metric="booking.created",
+                    min_sample_size=100,
+                )
+                await ab.set_status(exp.id, status="running", started_at=datetime.now(tz=UTC))
+                experiment_id = str(exp.id)
 
     deploy_payload["ab_experiment_id"] = experiment_id
     logger.info("ft.deploy.done", **deploy_payload)

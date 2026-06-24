@@ -45,12 +45,27 @@ export function FineTuningPanel() {
 
   const fmtEval = (e: Record<string, unknown>) => {
     if (!e || Object.keys(e).length === 0) return '—';
+    // Eval saltata: nessun set held-out (run troppo piccola per lo split).
+    if (e.error === 'no_test_data') return 'eval saltata (no held-out)';
     const b = e.baseline_score;
     const f = e.ft_score;
+    const br = e.baseline_booking_recall;
+    const fr = e.ft_booking_recall;
     if (typeof b === 'number' && typeof f === 'number') {
-      return `baseline ${b} · ft ${f}${e.pass ? ' ✓' : ' ✗'}`;
+      const booking =
+        typeof br === 'number' && typeof fr === 'number'
+          ? ` · booking ${br}→${fr}`
+          : '';
+      return `baseline ${b} · ft ${f}${booking}${e.pass ? ' ✓' : ' ✗'}`;
     }
     return e.pass ? '✓' : '✗';
+  };
+
+  // Stati di valutazione non deployabili: mostrali distinti dal verde "deployed".
+  const statusLabel = (s: string) => {
+    if (s === 'eval_skipped') return 'eval saltata';
+    if (s === 'eval_failed') return 'eval fallita';
+    return s;
   };
 
   return (
@@ -103,7 +118,7 @@ export function FineTuningPanel() {
                   <tr key={m.id} className="border-t">
                     <td className="py-2">v{m.version}</td>
                     <td className="py-2 font-mono text-xs">{m.base_model}</td>
-                    <td className="py-2">{m.status}</td>
+                    <td className="py-2">{statusLabel(m.status)}</td>
                     <td className="py-2">{m.is_default ? '✓' : '—'}</td>
                     <td className="py-2 text-xs">{fmtEval(m.evaluation)}</td>
                   </tr>

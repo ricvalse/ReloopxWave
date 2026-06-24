@@ -8,6 +8,7 @@ ft_models with status + evaluation so the admin UI can show progress.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
@@ -15,7 +16,9 @@ from sqlalchemy import select
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
+from db import MerchantRepository
 from db.models import FTModel
+from shared import NotFoundError
 
 router = APIRouter()
 
@@ -23,18 +26,33 @@ router = APIRouter()
 class RunFineTuneIn(BaseModel):
     since_days: int = Field(28, ge=7, le=120)
     base_model: str = "gpt-4.1-mini"
+    # Quando valorizzato, l'FTModel risultante viene legato a questo merchant e
+    # il deploy apre un esperimento A/B baseline-vs-ft (rollout graduale, spec
+    # 6.7). Senza merchant l'FT diventa il default tenant-wide (nessun gating).
+    target_merchant_id: UUID | None = None
 
 
 @router.post("/run", dependencies=[Depends(require_role("agency_admin"))])
 async def run_fine_tune(
-    payload: RunFineTuneIn, ctx: CurrentContext, request: Request
+    payload: RunFineTuneIn, ctx: CurrentContext, session: DBSession, request: Request
 ) -> dict[str, Any]:
+    # The target merchant must belong to the caller's tenant. RLS would already
+    # hide cross-tenant merchants, but check explicitly for a clear 404 and
+    # defense-in-depth before binding the FT model to it.
+    if payload.target_merchant_id is not None:
+        merchant = await MerchantRepository(session).get(payload.target_merchant_id)
+        if merchant is None or merchant.tenant_id != ctx.tenant_id:
+            raise NotFoundError("Merchant not found", merchant_id=str(payload.target_merchant_id))
+
     arq = request.app.state.arq
     await arq.enqueue_job(
         "fine_tune_run",
         str(ctx.tenant_id),
         since_days=payload.since_days,
         base_model=payload.base_model,
+        target_merchant_id=(
+            str(payload.target_merchant_id) if payload.target_merchant_id else None
+        ),
         _job_id=f"ft:run:{ctx.tenant_id}",
     )
     return {"enqueued": True, "tenant_id": str(ctx.tenant_id)}
