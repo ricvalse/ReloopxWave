@@ -185,6 +185,30 @@ class ConversationRepository:
             )
         return ids
 
+    async def dropped_off_targets(
+        self, conversation_ids: list[UUID]
+    ) -> list[tuple[UUID, UUID, UUID]]:
+        """UC-05 — leads to mark `dropped_off` among just-closed conversations.
+
+        A conversation closed on prolonged silence (see `close_idle_active`) is
+        treated as an abandonment *unless* it was handed off to a human (the lead
+        didn't drop off, it escalated). Returns (lead_id, merchant_id, tenant_id)
+        tuples so the caller can rescore each lead in its own tenant context.
+        """
+        if not conversation_ids:
+            return []
+        stmt = (
+            select(Conversation.lead_id, Conversation.merchant_id, Merchant.tenant_id)
+            .join(Merchant, Merchant.id == Conversation.merchant_id)
+            .where(
+                Conversation.id.in_(conversation_ids),
+                Conversation.lead_id.is_not(None),
+                Conversation.handoff_at.is_(None),
+            )
+        )
+        rows = await self._session.execute(stmt)
+        return [(row[0], row[1], row[2]) for row in rows.all()]
+
     async def merchants_with_conversations_before(
         self, cutoff: datetime
     ) -> list[tuple[UUID, UUID]]:

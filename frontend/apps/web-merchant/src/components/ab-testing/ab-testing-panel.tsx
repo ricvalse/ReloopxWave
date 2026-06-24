@@ -8,6 +8,16 @@ import { getApiClient } from '@/lib/api';
 
 type Experiment = components['schemas']['ExperimentOut'];
 
+// Metriche primarie ammesse: devono corrispondere agli event_type emessi dalla
+// pipeline conversazionale (taggati con variant_id), altrimenti la conversione è
+// sempre 0. Allineate all'enum AbPrimaryMetric del backend (#9).
+const AB_PRIMARY_METRICS = [
+  { value: 'booking.created', label: 'Prenotazione creata' },
+  { value: 'pipeline.moved', label: 'Avanzamento pipeline' },
+  { value: 'conversation.escalated', label: 'Escalation a operatore' },
+  { value: 'message.replied', label: 'Risposta inviata' },
+] as const;
+
 type Metrics = {
   experiment_id: string;
   primary_metric: string;
@@ -252,13 +262,21 @@ function CreateExperimentForm({
               <label className="text-sm font-medium" htmlFor="ab-metric">
                 Metrica primaria
               </label>
-              <input
+              {/* Solo eventi di conversione realmente emessi dalla pipeline:
+                  un valore libero produceva KPI a zero (#9). */}
+              <select
                 id="ab-metric"
                 required
                 value={primaryMetric}
                 onChange={(e) => setPrimaryMetric(e.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm"
-              />
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                {AB_PRIMARY_METRICS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <div className="space-y-1">

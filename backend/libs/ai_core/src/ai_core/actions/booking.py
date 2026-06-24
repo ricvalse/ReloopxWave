@@ -126,6 +126,10 @@ class BookSlotHandler:
                     tz_name = await config.resolve(
                         ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
                     )
+                    lookahead_raw = action.payload.get("lookahead_days") or await config.resolve(
+                        ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=turn_ctx.merchant_id
+                    )
+                    lookahead_days = int(lookahead_raw) if lookahead_raw else 14
 
                     async def _persist_tokens(bundle: GHLTokenBundle) -> None:
                         # Persist the rotated location bundle in its OWN committed
@@ -155,6 +159,7 @@ class BookSlotHandler:
                         pipeline_id=str(pipeline_id) if pipeline_id else None,
                         new_stage_id=str(new_stage_id) if new_stage_id else None,
                         tz_name=str(tz_name) if tz_name else "Europe/Rome",
+                        lookahead_days=lookahead_days,
                         on_token_refresh=_persist_tokens,
                     )
 
@@ -244,6 +249,7 @@ class BookSlotHandler:
         pipeline_id: str | None,
         new_stage_id: str | None,
         tz_name: str = "Europe/Rome",
+        lookahead_days: int = 14,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> BookingOutcome:
         client = GHLClient(
@@ -318,9 +324,10 @@ class BookSlotHandler:
                         opportunity_id=opportunity_id,
                         pipeline_id=pipeline_id if opportunity_id else None,
                     )
-                # Slot taken / unavailable (4xx) → propose alternatives.
+                # Slot taken / unavailable (4xx) → propose alternatives within the
+                # merchant's configured booking lookahead window.
                 window_start = slot_start - timedelta(hours=2)
-                window_end = slot_start + timedelta(days=3)
+                window_end = slot_start + timedelta(days=lookahead_days)
                 slots = await client.get_free_slots(
                     calendar_id,
                     start_iso=window_start.isoformat(),

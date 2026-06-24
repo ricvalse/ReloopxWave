@@ -17,7 +17,8 @@ import { MessagesSquare } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
 
 type ObjectionCategory = { category: string; count: number };
-type ReportData = { categories: ObjectionCategory[] };
+type TrendCell = { day: string; category: string; count: number };
+type ReportData = { categories: ObjectionCategory[]; trend: TrendCell[] };
 
 const PERIOD_OPTIONS = [
   { value: 7, label: 'Ultimi 7 giorni' },
@@ -43,12 +44,15 @@ export function AgencyObjectionReport() {
         },
       });
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
-      const d = data as { categories?: ObjectionCategory[] };
-      return { categories: d.categories ?? [] };
+      // TODO(api-types): `trend` non è ancora nel generated.ts (#12) — rigenerare
+      // dopo i merge ed eliminare il cast.
+      const d = data as { categories?: ObjectionCategory[]; trend?: TrendCell[] };
+      return { categories: d.categories ?? [], trend: d.trend ?? [] };
     },
   });
 
   const categories = query.data?.categories ?? [];
+  const trend = query.data?.trend ?? [];
   const total = categories.reduce((acc, c) => acc + c.count, 0);
   const maxCount = Math.max(1, ...categories.map((c) => c.count));
 
@@ -107,31 +111,98 @@ export function AgencyObjectionReport() {
             description="Quando i merchant accumulano obiezioni nelle conversazioni, le ritrovi qui aggregate per categoria."
           />
         ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle>Categorie ({total} obiezioni)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                {categories.map((c) => (
-                  <div key={c.category} className="flex items-center gap-3">
-                    <span className="w-40 text-sm capitalize">
-                      {c.category.replace(/_/g, ' ')}
-                    </span>
-                    <div className="relative h-6 flex-1 rounded bg-muted">
-                      <div
-                        className="h-full rounded bg-primary"
-                        style={{ width: `${(c.count / maxCount) * 100}%` }}
-                      />
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle>Categorie ({total} obiezioni)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {categories.map((c) => (
+                    <div key={c.category} className="flex items-center gap-3">
+                      <span className="w-40 text-sm capitalize">
+                        {c.category.replace(/_/g, ' ')}
+                      </span>
+                      <div className="relative h-6 flex-1 rounded bg-muted">
+                        <div
+                          className="h-full rounded bg-primary"
+                          style={{ width: `${(c.count / maxCount) * 100}%` }}
+                        />
+                      </div>
+                      <span className="w-12 text-right text-sm tabular-nums">{c.count}</span>
                     </div>
-                    <span className="w-12 text-right text-sm tabular-nums">{c.count}</span>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <ObjectionHeatmap trend={trend} />
+          </>
         )}
       </div>
     </>
+  );
+}
+
+// Heatmap categorie × giorno, tenant-wide (#12). Speculare a quella merchant in
+// web-merchant/components/reports/objection-report.tsx.
+function ObjectionHeatmap({ trend }: { trend: TrendCell[] }) {
+  if (!trend.length) return null;
+
+  const days = Array.from(new Set(trend.map((t) => t.day))).sort();
+  const cats = Array.from(new Set(trend.map((t) => t.category))).sort();
+  const counts = new Map<string, number>();
+  let max = 1;
+  for (const t of trend) {
+    counts.set(`${t.category}|${t.day}`, t.count);
+    if (t.count > max) max = t.count;
+  }
+  const label = (d: string) => d.slice(5); // MM-DD
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Heatmap obiezioni (per giorno)</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="border-separate" style={{ borderSpacing: 2 }}>
+            <thead>
+              <tr>
+                <th />
+                {days.map((d) => (
+                  <th key={d} className="px-0.5 text-[10px] font-normal text-muted-foreground">
+                    {label(d)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {cats.map((cat) => (
+                <tr key={cat}>
+                  <td className="whitespace-nowrap pr-2 text-xs capitalize">
+                    {cat.replace(/_/g, ' ')}
+                  </td>
+                  {days.map((d) => {
+                    const n = counts.get(`${cat}|${d}`) ?? 0;
+                    const intensity = n === 0 ? 0 : 0.15 + 0.85 * (n / max);
+                    return (
+                      <td key={d} title={`${cat.replace(/_/g, ' ')} · ${d}: ${n}`}>
+                        <div
+                          className={`h-5 w-5 rounded-sm ${n === 0 ? 'bg-muted' : ''}`}
+                          style={
+                            n === 0 ? undefined : { backgroundColor: `rgba(99,102,241,${intensity})` }
+                          }
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

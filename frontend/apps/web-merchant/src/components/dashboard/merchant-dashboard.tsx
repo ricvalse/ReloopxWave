@@ -137,6 +137,12 @@ export function MerchantDashboard() {
       <Card>
         <CardHeader>
           <CardTitle>Distribuzione score lead</CardTitle>
+          {campaign ? (
+            <p className="text-xs text-muted-foreground">
+              Filtrata sulla campagna “{campaign}”. I conteggi degli eventi (messaggi, prenotazioni)
+              restano invece a livello di merchant.
+            </p>
+          ) : null}
         </CardHeader>
         <CardContent>
           {query.isLoading ? (

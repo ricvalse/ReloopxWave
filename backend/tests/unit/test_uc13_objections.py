@@ -118,3 +118,20 @@ async def test_category_histogram_tenant_joins_merchant_and_filters_variant() ->
     sql = session.statements[-1]
     assert "merchants" in sql  # joined for the tenant aggregation
     assert "bot_variant" in sql
+
+
+async def test_category_histogram_by_day_tenant_groups_by_day_and_joins_merchant() -> None:
+    # #12 — agency objection report needs a per-day, per-category series for the
+    # heatmap, scoped tenant-wide (join merchants) and filterable by variant.
+    session = _CapturingSession()
+    repo = ObjectionRepository(session)  # type: ignore[arg-type]
+
+    await repo.category_histogram_by_day_tenant(tenant_id=uuid4(), bot_variant="A")
+    sql = session.statements[-1]
+    assert "merchants" in sql  # tenant-wide join
+    assert "date_trunc" in sql  # per-day bucketing
+    assert "bot_variant" in sql
+
+    await repo.category_histogram_by_day_tenant(tenant_id=uuid4())
+    sql_without = session.statements[-1]
+    assert "bot_variant" not in sql_without

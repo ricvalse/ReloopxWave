@@ -72,6 +72,7 @@ def derive_conversation_signals(
     turn_count: int,
     sentiment: str | None,
     asked_for_booking: bool,
+    responded_within_10min: bool = False,
     llm_signals: dict[str, bool],
 ) -> dict[str, bool]:
     """Combine content signals reported by the LLM with behavioural signals the
@@ -97,4 +98,6 @@ def derive_conversation_signals(
         signals["positive_sentiment"] = True
     if asked_for_booking:
         signals["asked_for_booking"] = True
+    if responded_within_10min:
+        signals["responded_within_10min"] = True
     return signals

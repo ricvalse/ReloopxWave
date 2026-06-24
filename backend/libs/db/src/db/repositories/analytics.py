@@ -138,16 +138,16 @@ class AnalyticsRepository:
         )
         return [str(c) for c in rows if c]
 
-    async def score_distribution(self, *, merchant_id: UUID) -> list[dict[str, int]]:
+    async def score_distribution(
+        self, *, merchant_id: UUID, campaign: str | None = None
+    ) -> list[dict[str, int]]:
         expr = (func.floor(Lead.score / 10) * 10).label("bucket")
-        rows = (
-            await self._session.execute(
-                select(expr, func.count(Lead.id))
-                .where(Lead.merchant_id == merchant_id)
-                .group_by("bucket")
-                .order_by("bucket")
-            )
-        ).all()
+        stmt = select(expr, func.count(Lead.id)).where(Lead.merchant_id == merchant_id)
+        # UC-11/UC-14 — honour the dashboard campaign filter so the score
+        # histogram matches the (campaign-scoped) KPI cards above it.
+        if campaign:
+            stmt = stmt.where(Lead.campaign == campaign)
+        rows = (await self._session.execute(stmt.group_by("bucket").order_by("bucket"))).all()
         return [{"bucket": int(b), "count": int(c)} for b, c in rows]
 
     # ---- UC-12 agency dashboard -----------------------------------------

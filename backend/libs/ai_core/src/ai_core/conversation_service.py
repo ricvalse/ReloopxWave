@@ -34,7 +34,7 @@ from ai_core.orchestrator import (
 )
 from ai_core.rag import Embedder, RAGEngine
 from ai_core.scheduling import is_within_active_hours
-from ai_core.scoring import derive_conversation_signals
+from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -202,11 +202,15 @@ class _ReplyContext:
     lead_name: str | None
     lead_email: str | None
     lead_sentiment: str | None
+    lead_pipeline_stage_id: str | None
     chat_history: list[ChatMessage]
     from_phone: str
     phone_number_id: str
     text: str
     latest_wa_message_id: str | None = None
+    # UC-05 — True when the lead replied within 10min of the previous turn
+    # (derived from the conversation's prior last_message_at at inbound time).
+    responded_within_10min: bool = False
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -626,6 +630,11 @@ class ConversationService:
                     variant_id=variant_id,
                 )
 
+            # UC-05 — capture the previous turn's timestamp BEFORE this inbound
+            # bumps it, so we can derive `responded_within_10min` (lead replied
+            # quickly to the bot's last message / its own prior message).
+            prior_last_message_at = conv.last_message_at
+
             # History for the LLM = turns BEFORE this inbound. On a retry the
             # inbound is already stored, so exclude it explicitly by wa_message_id.
             history = await msgs.list_history(conv.id, limit=30)
@@ -743,6 +752,8 @@ class ConversationService:
             lead_score = lead.score
             lead_name = lead.name
             lead_email = lead.email
+            lead_pipeline_stage_id = lead.pipeline_stage_id
+            responded_within_10min = _responded_within_10min(prior_last_message_at)
             # Prior turn's sentiment — drives empathy/upsell adaptation this turn
             # (zero added latency; the current turn's sentiment is computed later
             # and updates the lead for the NEXT turn).
@@ -776,6 +787,8 @@ class ConversationService:
                 lead_name=lead_name,
                 lead_email=lead_email,
                 lead_sentiment=lead_sentiment,
+                lead_pipeline_stage_id=lead_pipeline_stage_id,
+                responded_within_10min=responded_within_10min,
                 chat_history=chat_history,
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
@@ -844,6 +857,7 @@ class ConversationService:
                 lead_name=lead.name,
                 lead_email=lead.email,
                 lead_sentiment=lead.sentiment,
+                lead_pipeline_stage_id=lead.pipeline_stage_id,
                 chat_history=_to_chat_history(history),
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
@@ -899,6 +913,12 @@ class ConversationService:
             )
             advance_threshold = await self._resolve_int(
                 session, resolved.merchant_id, ConfigKey.PIPELINE_ADVANCE_THRESHOLD, default=60
+            )
+            # UC-04 — qualified stage id for the deterministic advancement trigger
+            # below (inject move_pipeline when the score crosses the threshold,
+            # rather than relying on the LLM to optionally emit it).
+            qualified_stage_id = await self._resolve_optional_str(
+                session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
 
             ctx = ConversationContext(
@@ -1136,9 +1156,23 @@ class ConversationService:
             turn_count=len(rc.chat_history) + 1,
             sentiment=sentiment,
             asked_for_booking=any(a.kind == "book_slot" for a in response.actions),
+            responded_within_10min=rc.responded_within_10min,
             llm_signals=llm_signals,
         )
         actions = _with_score_action(response.actions, merged_signals)
+
+        # UC-04 — deterministic pipeline advancement. The LLM may optionally emit
+        # move_pipeline, but we don't rely on it: if the (this-turn) score crosses
+        # the merchant's advance_threshold and the lead isn't already in the
+        # qualified stage, inject a move_pipeline action ourselves so the
+        # advancement is repeatable and not at the model's discretion.
+        actions = _with_pipeline_advance_action(
+            actions,
+            merged_signals,
+            advance_threshold=advance_threshold,
+            qualified_stage_id=qualified_stage_id,
+            current_stage_id=rc.lead_pipeline_stage_id,
+        )
 
         # Action handlers run after the turn is durable and the reply is out.
         # Each handler manages its own session/transaction.
@@ -1448,6 +1482,44 @@ def _with_score_action(
     return out
 
 
+def _with_pipeline_advance_action(
+    actions: list[OrchestratorAction],
+    signals: dict[str, bool],
+    *,
+    advance_threshold: int,
+    qualified_stage_id: str | None,
+    current_stage_id: str | None,
+) -> list[OrchestratorAction]:
+    """UC-04 — inject a deterministic move_pipeline when the score crosses the
+    advance threshold.
+
+    The behaviour is repeatable instead of being left to the LLM's discretion:
+    when the merged this-turn signals score at/above `advance_threshold` and the
+    lead is not already in the qualified stage, we ensure exactly one
+    move_pipeline action is present (carrying reason 'score_threshold_crossed'
+    and the target stage). If the LLM already emitted one we leave it untouched
+    (it may carry richer payload such as value/currency).
+    """
+    if qualified_stage_id is None:
+        return actions
+    if current_stage_id == qualified_stage_id:
+        return actions
+    if score_lead(signals).score < advance_threshold:
+        return actions
+    if any(a.kind == "move_pipeline" for a in actions):
+        return actions
+    return [
+        *actions,
+        OrchestratorAction(
+            kind="move_pipeline",
+            payload={
+                "stage_id": qualified_stage_id,
+                "reason": "score_threshold_crossed",
+            },
+        ),
+    ]
+
+
 # Exact (normalised) messages that unsubscribe a lead (UC-06). Kept to exact
 # matches so a sentence like "stop un attimo" doesn't accidentally opt-out.
 _OPT_OUT_KEYWORDS = frozenset(
@@ -1457,6 +1529,21 @@ _OPT_OUT_KEYWORDS = frozenset(
 
 def _is_opt_out(text: str) -> bool:
     return text.strip().lower().rstrip(".!") in _OPT_OUT_KEYWORDS
+
+
+# UC-05 — a lead that replies within 10 minutes of the previous turn is engaged
+# (behavioural signal `responded_within_10min`). Computed from the conversation's
+# prior last_message_at (bumped by both inbound and outbound), captured before
+# the current inbound moves it forward.
+_RESPONDED_FAST_WINDOW = timedelta(minutes=10)
+
+
+def _responded_within_10min(prior_last_message_at: datetime | None) -> bool:
+    if prior_last_message_at is None:
+        return False
+    if prior_last_message_at.tzinfo is None:
+        prior_last_message_at = prior_last_message_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - prior_last_message_at) <= _RESPONDED_FAST_WINDOW
 
 
 async def _assign_ab_variant(session: Any, *, merchant_id: UUID, lead_id: UUID) -> str | None:

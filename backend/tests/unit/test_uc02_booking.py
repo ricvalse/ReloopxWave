@@ -215,6 +215,47 @@ async def test_book_slot_taken_proposes_alternatives(
     assert appt_calls == []
 
 
+async def test_book_slot_taken_uses_configured_lookahead_window(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    # #2 — the alternatives window must come from booking.lookahead_days, not a
+    # hardcoded 3 days. With lookahead=7 and slot_start 2026-04-25T10:00+02:00
+    # the proposed-slots query end must be 2026-05-02T10:00+02:00.
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    from ai_core.actions import booking as mod
+
+    class LookaheadConfig:
+        def __init__(self, session): ...
+        async def resolve(self, key, *, merchant_id):
+            return {
+                "booking.default_calendar_id": "CAL-1",
+                "booking.default_duration_min": 30,
+                "booking.lookahead_days": 7,
+            }.get(getattr(key, "value", str(key)))
+
+    monkeypatch.setattr(mod, "ConfigResolver", LookaheadConfig)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=False)
+    sender = FakeSender()
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    ghl_client.get_free_slots.assert_awaited_once()
+    end_iso = ghl_client.get_free_slots.await_args.kwargs["end_iso"]
+    assert end_iso == "2026-05-02T10:00:00+02:00"
+
+
 async def test_propose_slots_offers_availability(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
 ) -> None:

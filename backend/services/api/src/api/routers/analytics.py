@@ -77,7 +77,7 @@ async def merchant_kpis(
         since_days=since_days,
         campaign=campaign,
     )
-    dist = await repo.score_distribution(merchant_id=target)
+    dist = await repo.score_distribution(merchant_id=target, campaign=campaign)
     return MerchantKpisOut(**asdict(k), score_distribution=dist)
 
 

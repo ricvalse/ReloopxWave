@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -17,6 +17,17 @@ from db.session import TenantContext
 from shared import NotFoundError, PermissionDeniedError
 
 router = APIRouter()
+
+# UC-09 — the primary metric must be an event_type the conversation pipeline
+# actually emits, otherwise the experiment's conversion count is always zero (the
+# old free-text field let the UI store any string). These are the conversion
+# events tagged with `variant_id`: see ai_core conversation_service / actions.
+AbPrimaryMetric = Literal[
+    "booking.created",
+    "pipeline.moved",
+    "conversation.escalated",
+    "message.replied",
+]
 
 
 class VariantIn(BaseModel):
@@ -34,7 +45,7 @@ class ExperimentIn(BaseModel):
     name: str
     description: str | None = None
     variants: list[VariantIn]
-    primary_metric: str
+    primary_metric: AbPrimaryMetric
     # When omitted, falls back to the merchant's configured `ab_test.min_sample`
     # (the bot-config knob) so that per-merchant default is actually honoured.
     min_sample_size: int | None = None

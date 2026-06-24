@@ -81,7 +81,17 @@ async def objection_report_agency(
         tenant_id=ctx.tenant_id, since_days=since_days, bot_variant=variant_id
     )
     payload = [{"category": c.category, "count": c.count} for c in categories]
-    return {"since_days": since_days, "variant_id": variant_id, "categories": payload}
+    # Per-day, per-category series powering the agency heatmap/trend (UC-13),
+    # mirroring the merchant report's `trend` field.
+    trend = await repo.category_histogram_by_day_tenant(
+        tenant_id=ctx.tenant_id, since_days=since_days, bot_variant=variant_id
+    )
+    return {
+        "since_days": since_days,
+        "variant_id": variant_id,
+        "categories": payload,
+        "trend": trend,
+    }
 
 
 @router.post("/objections/extract/{conversation_id}")

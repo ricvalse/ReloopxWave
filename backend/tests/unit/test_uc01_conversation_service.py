@@ -35,6 +35,7 @@ class FakeLead:
     name: str | None = None
     email: str | None = None
     sentiment: str | None = None
+    pipeline_stage_id: str | None = None
 
 
 @dataclass
@@ -47,6 +48,7 @@ class FakeConversation:
     handoff_at: Any = None
     handoff_reason: str | None = None
     handoff_resolved_at: Any = None
+    last_message_at: Any = None
 
 
 class FakeSession:

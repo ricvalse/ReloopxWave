@@ -120,6 +120,33 @@ class ObjectionRepository:
             {"day": d.date().isoformat(), "category": c, "count": int(n)} for d, c, n in rows.all()
         ]
 
+    async def category_histogram_by_day_tenant(
+        self, *, tenant_id: UUID, since_days: int = 30, bot_variant: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Per-day, per-category counts across all merchants of a tenant.
+
+        Powers the agency objection heatmap/trend (UC-13), mirroring the
+        per-merchant `category_histogram_by_day` but scoped tenant-wide.
+        """
+        since = datetime.now(tz=UTC) - timedelta(days=since_days)
+        day = func.date_trunc("day", Objection.created_at).label("day")
+        stmt = (
+            select(day, Objection.category, func.count(Objection.id))
+            .join(Merchant, Merchant.id == Objection.merchant_id)
+            .where(
+                Merchant.tenant_id == tenant_id,
+                Objection.created_at >= since,
+            )
+            .group_by(day, Objection.category)
+            .order_by(day)
+        )
+        if bot_variant is not None:
+            stmt = stmt.where(Objection.bot_variant == bot_variant)
+        rows = await self._session.execute(stmt)
+        return [
+            {"day": d.date().isoformat(), "category": c, "count": int(n)} for d, c, n in rows.all()
+        ]
+
     async def recent_samples(
         self,
         *,

@@ -33,6 +33,9 @@ class LeadRepository:
         stmt = select(Lead).where(Lead.merchant_id == merchant_id, Lead.phone == phone)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def get(self, lead_id: UUID) -> Lead | None:
+        return await self._session.get(Lead, lead_id)
+
     async def upsert_by_phone(
         self, *, merchant_id: UUID, phone: str, campaign: str | None = None
     ) -> Lead:
