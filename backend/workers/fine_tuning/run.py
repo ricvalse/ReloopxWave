@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from db import session_scope
+from db import TenantContext, tenant_session
 from shared import IntegrationError, get_logger, get_settings
 from workers.fine_tuning.collect import collect_training_pairs
 from workers.fine_tuning.export import export_training_pairs
@@ -47,7 +47,18 @@ async def fine_tune_run(
     until = datetime.now(tz=UTC)
     since = until - timedelta(days=since_days)
 
-    async with session_scope() as session:
+    # Run collect inside a tenant-scoped session so RLS stays a backstop on top
+    # of the application-level tenant filter in collect.py: even if that filter
+    # regressed, RLS would still confine rows to this tenant. `merchant_id=None`
+    # spans the whole tenant (collect joins across all the tenant's merchants);
+    # the worker role is downgraded inside `tenant_session` so policies apply.
+    tenant_ctx = TenantContext(
+        tenant_id=tid,
+        merchant_id=None,
+        role="worker",
+        actor_id=tid,
+    )
+    async with tenant_session(tenant_ctx) as session:
         pairs = await collect_training_pairs(session, tenant_id=tid, since=since, until=until)
 
     quality = filter_pairs(pairs)

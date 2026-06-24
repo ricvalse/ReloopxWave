@@ -37,6 +37,12 @@ export interface ConversationsContextValue {
    * true. Set false to render the classic two-pane inbox without the panel.
    */
   customerDetailEnabled?: boolean;
+  /**
+   * Show the GDPR/DSAR actions (export + erase lead data) inside the detail
+   * panel. Off by default — only the merchant portal turns it on, since DSAR
+   * fulfilment is a per-merchant responsibility (the admin inbox is read-only).
+   */
+  dsarEnabled?: boolean;
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(null);

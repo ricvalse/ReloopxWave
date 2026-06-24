@@ -42,8 +42,8 @@ class FakeSession:
         self.committed = True
 
 
-def _ctx():
-    return SimpleNamespace(merchant_id=uuid4(), role="merchant_admin", actor_id=uuid4())
+def _ctx(role="merchant_user"):
+    return SimpleNamespace(merchant_id=uuid4(), role=role, actor_id=uuid4())
 
 
 def _lead():
@@ -104,6 +104,37 @@ async def test_erase_deletes_conversations_and_strips_pii() -> None:
     assert lead.status == "erased"
     assert lead.meta["erased"] is True
     assert session.committed is True
+
+
+async def test_merchant_user_can_export_and_erase_own_lead() -> None:
+    """A `merchant_user` (the real merchant-portal role) is privileged for DSAR
+    on a lead RLS lets them see — both export and erase must succeed."""
+    lead = _lead()
+    export_session = FakeSession(
+        [FakeResult(scalar=lead), FakeResult(items=[]), FakeResult(items=[])]
+    )
+    out = await export_lead(lead.id, _ctx("merchant_user"), export_session)
+    assert out["lead"]["id"] == str(lead.id)
+
+    erase_session = FakeSession([FakeResult(scalar=_lead()), FakeResult(rowcount=0)])
+    erased = await erase_lead(uuid4(), _ctx("merchant_user"), erase_session)
+    assert erased["erased"] is True
+
+
+async def test_cross_tenant_lead_is_blocked_as_not_found() -> None:
+    """A lead belonging to another tenant is invisible under RLS, so the lookup
+    returns nothing and DSAR refuses with 404 (never leaks existence)."""
+    from fastapi import HTTPException
+
+    export_session = FakeSession([FakeResult(scalar=None)])
+    with pytest.raises(HTTPException) as ei_export:
+        await export_lead(uuid4(), _ctx("merchant_user"), export_session)
+    assert ei_export.value.status_code == 404
+
+    erase_session = FakeSession([FakeResult(scalar=None)])
+    with pytest.raises(HTTPException) as ei_erase:
+        await erase_lead(uuid4(), _ctx("merchant_user"), erase_session)
+    assert ei_erase.value.status_code == 404
 
 
 async def test_export_404_when_missing() -> None:

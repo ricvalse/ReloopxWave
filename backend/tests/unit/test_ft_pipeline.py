@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from workers.fine_tuning.collect import TrainingPair
+from workers.fine_tuning.collect import TrainingPair, collect_training_pairs
 from workers.fine_tuning.evaluate import extract_prompts, reply_quality
 from workers.fine_tuning.quality import filter_pairs
 
@@ -96,6 +96,58 @@ def test_ft_routing_experiment_gates_to_ft_arm() -> None:
 
 def test_ft_routing_no_experiment_uses_ft_for_all() -> None:
     assert should_use_ft(has_deployed_ft=True, ft_experiment_running=False, variant_id=None) is True
+
+
+# ---- collect tenant scoping (2.x — RLS backstop + app filter) ----
+
+
+class _RecordingResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+    def scalars(self):
+        return self
+
+    def first(self):  # pragma: no cover - not used here
+        return self._rows[0] if self._rows else None
+
+
+class _RecordingSession:
+    """Captures the compiled SQL of every statement so we can assert the
+    tenant filter is applied; returns no conversations so message fetch is
+    skipped."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    async def execute(self, stmt, *a, **k):
+        self.statements.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+        return _RecordingResult([])
+
+
+async def test_collect_filters_by_target_tenant() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    target = uuid4()
+    other = uuid4()
+    session = _RecordingSession()
+    until = datetime.now(tz=UTC)
+    since = until - timedelta(days=28)
+
+    pairs = await collect_training_pairs(session, tenant_id=target, since=since, until=until)
+
+    # No conversations returned → empty dataset, and only one statement issued.
+    assert pairs == []
+    assert len(session.statements) == 1
+    sql = session.statements[0].lower()
+    # The application-level tenant filter is present and scopes to the target,
+    # never to the other tenant. (SQLAlchemy renders UUID literals as bare hex.)
+    assert "merchants.tenant_id" in sql
+    assert target.hex in sql
+    assert other.hex not in sql
 
 
 # ---- anonymizer presidio hook (2.2) ----

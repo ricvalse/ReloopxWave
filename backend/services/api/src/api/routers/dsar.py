@@ -30,9 +30,12 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-# DSAR exports/erases a data subject's PII — restrict to admins. A read-only
-# `viewer` or a non-admin `merchant_user` must not export or erase customer data.
-_DSAR_ROLES = ("agency_admin", "merchant_admin")
+# DSAR exports/erases a data subject's PII — restrict to known roles. Only the
+# real role vocabulary exists (`shared.constants.KNOWN_ROLES`): agency staff are
+# `agency_admin`, merchant-portal users are `merchant_user`. Both are privileged
+# enough to handle GDPR requests for their own scope (RLS bounds them); any other
+# role string (e.g. a read-only `viewer`) is rejected.
+_DSAR_ROLES = ("agency_admin", "merchant_user")
 
 
 def _require_privileged(ctx: CurrentContext) -> None:

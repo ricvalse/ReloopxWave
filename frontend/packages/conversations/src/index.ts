@@ -26,6 +26,8 @@ export { useToggleAutoReply } from './hooks/use-toggle-auto-reply';
 export { useAiPause, useAiResume } from './hooks/use-ai-pause';
 export { useLeadDetail } from './hooks/use-lead-detail';
 export { useUpdateNotes } from './hooks/use-update-notes';
+export { useExportLead, useEraseLead, downloadJson } from './hooks/use-dsar';
+export { DsarActions } from './components/detail/dsar-actions';
 
 // Types
 export type {

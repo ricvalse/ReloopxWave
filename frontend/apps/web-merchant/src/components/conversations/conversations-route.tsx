@@ -55,6 +55,7 @@ export function ConversationsRoute({ selectedId }: ConversationsRouteProps) {
       composerEnabled
       merchantAutoReplyEnabled={merchantAutoReplyEnabled}
       customerDetailEnabled
+      dsarEnabled
     >
       <div className="h-full overflow-hidden">
         <ConversationsWorkspace selectedId={selectedId} onSelect={handleSelect} />

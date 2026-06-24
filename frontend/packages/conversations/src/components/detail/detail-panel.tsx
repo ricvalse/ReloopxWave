@@ -3,9 +3,11 @@
 import { Avatar, AvatarFallback, Button, ScrollArea, Skeleton } from '@reloop/ui';
 import { UserRound, X } from 'lucide-react';
 import { useLeadDetail } from '../../hooks/use-lead-detail';
+import { useConversationsContext } from '../../lib/context';
 import { contactDisplayName, contactInitials } from '../../lib/initials';
 import type { Conversation } from '../../types';
 import { ContactInfo } from './contact-info';
+import { DsarActions } from './dsar-actions';
 import { LeadScore } from './lead-score';
 import { NotesEditor } from './notes-editor';
 import { ObjectionsList } from './objections-list';
@@ -71,6 +73,7 @@ interface DetailPanelProps {
 // notes. See the architecture doc's ConversationViewer.
 export function DetailPanel({ conversation, onClose, hideClose }: DetailPanelProps) {
   const { data, isLoading } = useLeadDetail(conversation.id, conversation.lead_id);
+  const { dsarEnabled } = useConversationsContext();
 
   const name = (conversation.meta?.['contact_name'] as string | undefined) ?? null;
   const display = contactDisplayName(name, conversation.wa_contact_phone);
@@ -127,6 +130,11 @@ export function DetailPanel({ conversation, onClose, hideClose }: DetailPanelPro
               <section className="border-t border-border px-4 py-4">
                 <NotesEditor conversationId={conversation.id} note={data?.note ?? null} />
               </section>
+              {dsarEnabled && conversation.lead_id ? (
+                <section className="border-t border-border px-4 py-4">
+                  <DsarActions leadId={conversation.lead_id} contactLabel={display} />
+                </section>
+              ) : null}
             </>
           )}
         </div>
