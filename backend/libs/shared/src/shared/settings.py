@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import ClassVar, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # GHL marketplace webhook signing keys are GLOBAL published constants (same for
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # Allow setting fields by their Python name in addition to env aliases
+        # (e.g. `git_sha` alongside RAILWAY_GIT_COMMIT_SHA / GIT_SHA).
+        populate_by_name=True,
     )
 
     environment: Literal["local", "staging", "production"] = "local"
@@ -135,6 +138,13 @@ class Settings(BaseSettings):
     sentry_dsn_backend: str = ""
     posthog_key: str = ""
     posthog_host: str = "https://eu.posthog.com"
+    # Git commit SHA of the running build, used to tag Sentry releases so issues
+    # group per-deploy and source maps line up. Railway injects
+    # RAILWAY_GIT_COMMIT_SHA automatically; GIT_SHA is the generic fallback.
+    git_sha: str = Field(
+        default="",
+        validation_alias=AliasChoices("GIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "git_sha"),
+    )
 
     # Secrets without which the platform cannot function at all. Empty (or, for
     # the URLs, a localhost default) in production is a hard boot error.

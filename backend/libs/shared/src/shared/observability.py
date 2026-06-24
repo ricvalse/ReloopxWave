@@ -29,6 +29,10 @@ def init_sentry(settings: Settings, *, component: str) -> bool:
     sentry_sdk.init(
         dsn=settings.sentry_dsn_backend,
         environment=settings.environment,
+        # Tag the release with the deployed git SHA (Railway injects it) so Sentry
+        # groups issues per-deploy. Omitted when unset → Sentry falls back to its
+        # own auto-detection rather than a misleading empty release.
+        release=settings.git_sha or None,
         # Keep trace sampling low in prod; we turn it up for debugging via
         # env override rather than code changes.
         traces_sample_rate=0.05 if settings.environment == "production" else 1.0,

@@ -186,6 +186,23 @@ export function BrandInfoPanel() {
     );
   }
 
+  if (resolvedQuery.isError || overridesQuery.isError) {
+    return (
+      <div className="p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Profilo</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-destructive">
+              Errore nel caricamento del profilo. Riprova tra qualche istante.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6">
       <Card>
