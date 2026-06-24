@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+from workers import outbound
 from workers.automation.engine import AiReplyDeps, RunContext, _do_ai_reply
 
 from ai_core.orchestrator import (
@@ -161,6 +162,39 @@ async def test_ai_reply_dispatches_actions_after_send() -> None:
     assert disp.dispatched == actions
     assert disp.turn_ctx.merchant_id == run_ctx.merchant_id
     assert disp.turn_ctx.conversation_id == run_ctx.conversation_id
+
+
+async def test_ai_reply_persists_outbound_message_when_session(
+    monkeypatch,
+) -> None:
+    """#29: with a session + conversation, the proactive AI send is persisted as
+    an outbound Message so it appears in the inbox and delivery callbacks attach."""
+    persisted: list = []
+
+    class _FakeMessageRepo:
+        def __init__(self, session): ...
+        async def persist_outbound_message(self, **kw):
+            persisted.append(kw)
+            return object()
+
+    monkeypatch.setattr(outbound, "MessageRepository", _FakeMessageRepo)
+
+    sender, orch, disp = _FakeSender(), _FakeOrchestrator(reply="Ciao!"), _FakeDispatcher()
+    run_ctx = _run_ctx(within_window=True)
+    ok = await _do_ai_reply(
+        SimpleNamespace(node_key="a"),
+        {"objective": "recupera", "window_policy": "auto"},
+        run_ctx,
+        sender=sender,
+        templates=object(),
+        ai_deps=_deps(orch, disp),
+        session=object(),
+    )
+    assert ok is True
+    assert len(persisted) == 1
+    assert persisted[0]["conversation_id"] == run_ctx.conversation_id
+    assert persisted[0]["merchant_id"] == run_ctx.merchant_id
+    assert persisted[0]["wa_message_id"] == "wamid.text"
 
 
 # ---- run_proactive: action filtering + force_model -------------------------

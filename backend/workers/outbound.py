@@ -16,8 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from db import ResolvedFlowStep
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db import MessageRepository, ResolvedFlowStep
 from integrations.whatsapp.factory import WhatsAppSender
 from integrations.whatsapp.templates import build_send_components, resolve_body_params
 
@@ -128,3 +131,51 @@ async def send_decision(
         raise ValueError(f"cannot send a {decision.mode} decision")
     messages = resp.get("messages") or [{}]
     return str(messages[0].get("id", ""))
+
+
+async def send_and_persist_decision(
+    sender: WhatsAppSender,
+    *,
+    to_phone: str,
+    decision: OutboundDecision,
+    session: AsyncSession,
+    conversation_id: UUID,
+    merchant_id: UUID,
+    role: str = "agent",
+    sender_type: str = "automation",
+) -> str:
+    """Send a proactive decision AND persist the matching outbound Message row.
+
+    Every proactive send (no-answer, reactivation, booking reminder, automation
+    flow) must leave a Message in the inbox so the conversation is visible and
+    so the WhatsApp delivery callback (delivered/read/failed) can attach to the
+    row via `wa_message_id` instead of being dropped as `row_missing`. Reuses the
+    same persistence shape as the bot-reply/composer pipeline.
+
+    Returns the WhatsApp message id (also stored on the row).
+    """
+    wa_message_id = await send_decision(sender, to_phone=to_phone, decision=decision)
+
+    # Inbox content: the free text for text sends; for templates the rendered
+    # fallback/free text (the human-readable copy) with the template payload kept
+    # in meta so the UI can render it as a template message.
+    content = decision.text or ""
+    meta: dict[str, object] = {"sender_type": sender_type}
+    if decision.mode == MODE_TEMPLATE:
+        meta["kind"] = "template"
+        meta["template"] = {
+            "name": decision.template_name,
+            "language": decision.template_language,
+            "components": decision.components,
+        }
+
+    await MessageRepository(session).persist_outbound_message(
+        conversation_id=conversation_id,
+        merchant_id=merchant_id,
+        content=content,
+        wa_message_id=wa_message_id or None,
+        role=role,
+        status="sent",
+        meta=meta,
+    )
+    return wa_message_id

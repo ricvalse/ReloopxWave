@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from workers import outbound
 from workers.scheduler import reactivation
 
 from ai_core.conversation_service import _is_opt_out
@@ -75,10 +76,37 @@ def _candidate() -> ReactivationCandidate:
     )
 
 
-def _patch(monkeypatch, *, step: FakeStep | None, records: list, sends: list) -> None:
+class _FakeConv:
+    def __init__(self) -> None:
+        self.id = uuid.uuid4()
+
+
+def _patch(
+    monkeypatch,
+    *,
+    step: FakeStep | None,
+    records: list,
+    sends: list,
+    persisted: list | None = None,
+) -> None:
     @asynccontextmanager
     async def fake_tenant_session(ctx):
         yield object()
+
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def get_active(self, *, merchant_id, wa_contact_phone):
+            return None
+
+        async def create(self, **kw):
+            return _FakeConv()
+
+    class FakeMessageRepo:
+        def __init__(self, session): ...
+        async def persist_outbound_message(self, **kw):
+            if persisted is not None:
+                persisted.append(kw)
+            return object()
 
     class FakeConfig:
         def __init__(self, session): ...
@@ -132,6 +160,8 @@ def _patch(monkeypatch, *, step: FakeStep | None, records: list, sends: list) ->
     monkeypatch.setattr(reactivation, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(reactivation, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(reactivation, "AnalyticsRepository", FakeAnalyticsRepo)
+    monkeypatch.setattr(reactivation, "ConversationRepository", FakeConvRepo)
+    monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
     monkeypatch.setattr(reactivation, "build_whatsapp_sender", lambda **kw: FakeWAClient())
 
 
@@ -146,7 +176,8 @@ async def test_reactivation_sends_template_when_configured(
     )
     records: list = []
     sends: list = []
-    _patch(monkeypatch, step=step, records=records, sends=sends)
+    persisted: list = []
+    _patch(monkeypatch, step=step, records=records, sends=sends, persisted=persisted)
 
     sent = await reactivation._maybe_send(
         _candidate(), now=datetime.now(tz=UTC), redis=FakeRedis(), kek="unused"
@@ -155,6 +186,10 @@ async def test_reactivation_sends_template_when_configured(
     assert sent is True
     assert sends == [("template", "reactivation_it")]
     assert len(records) == 1
+    # #29: the reactivation is persisted as an outbound Message with its wa id.
+    assert len(persisted) == 1
+    assert persisted[0]["wa_message_id"] == "wamid.tmpl"
+    assert persisted[0]["status"] == "sent"
 
 
 async def test_reactivation_skips_outside_window_without_template(

@@ -85,6 +85,38 @@ class MessageRepository:
         await self._session.flush()
         return msg
 
+    async def persist_outbound_message(
+        self,
+        *,
+        conversation_id: UUID,
+        merchant_id: UUID,
+        content: str,
+        wa_message_id: str | None,
+        role: str = "agent",
+        status: str = "sent",
+        meta: dict[str, object] | None = None,
+    ) -> Message:
+        """Persist a proactive outbound message (scheduler/automation send).
+
+        Mirrors the bot-reply/composer pipeline so a row exists in the inbox and
+        so `update_outbound_status` can attach delivery callbacks via
+        `wa_message_id` (otherwise the callback is dropped as `row_missing`).
+        Defaults to `role='agent'`; pass `role='system'` for system-driven copy.
+        """
+        msg = Message(
+            conversation_id=conversation_id,
+            merchant_id=merchant_id,
+            role=role,
+            direction="out",
+            status=status,
+            content=content,
+            wa_message_id=wa_message_id,
+            meta=meta or {},
+        )
+        self._session.add(msg)
+        await self._session.flush()
+        return msg
+
     async def persist_assistant_message(
         self,
         *,

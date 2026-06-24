@@ -13,8 +13,10 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 import pytest
+from workers import outbound
 from workers.scheduler import no_answer
 
 from db import ReminderCandidate, ResolvedWhatsAppIntegration
@@ -59,6 +61,18 @@ def candidate(integration: ResolvedWhatsAppIntegration) -> ReminderCandidate:
     )
 
 
+class FakeMessageRepo:
+    """Captures proactive outbound Message persistence (#29)."""
+
+    persisted: ClassVar[list] = []
+
+    def __init__(self, session): ...
+
+    async def persist_outbound_message(self, **kw):
+        FakeMessageRepo.persisted.append(kw)
+        return object()
+
+
 def _patch_session(
     monkeypatch,
     *,
@@ -67,6 +81,8 @@ def _patch_session(
     record_reminder_calls: list | None = None,
     analytics_events: list | None = None,
 ):
+    FakeMessageRepo.persisted = []
+    monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
     config_values = {
         "no_answer.first_reminder_min": 120,
         "no_answer.second_reminder_min": 1440,
@@ -155,6 +171,14 @@ async def test_sends_first_reminder_when_idle_past_threshold(
     assert record_calls == [candidate.conversation_id]
     assert events and events[0]["event_type"] == "reminder.sent"
     assert events[0]["properties"]["attempt"] == 1
+    # #29: the proactive send is persisted as an outbound Message so it shows in
+    # the inbox and the delivery callback can attach via wa_message_id.
+    assert len(FakeMessageRepo.persisted) == 1
+    persisted = FakeMessageRepo.persisted[0]
+    assert persisted["conversation_id"] == candidate.conversation_id
+    assert persisted["merchant_id"] == candidate.merchant_id
+    assert persisted["wa_message_id"] == "wamid.ok"
+    assert persisted["status"] == "sent"
 
 
 async def test_skips_when_last_reminder_too_recent(

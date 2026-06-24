@@ -1,9 +1,10 @@
 'use client';
 
 import { Button, cn, Tooltip, TooltipContent, TooltipTrigger } from '@reloop/ui';
-import { Paperclip, Send, Smile } from 'lucide-react';
+import { FileText, Paperclip, Send, Smile } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useSendMessage } from '../hooks/use-send-message';
+import { TemplatePicker } from './template-picker';
 
 interface ComposerProps {
   conversationId: string;
@@ -36,6 +37,7 @@ export function Composer({
   lastInboundAt,
 }: ComposerProps) {
   const [text, setText] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendMutation = useSendMessage();
   const windowClosed = !disabled && isWindowClosed(lastInboundAt);
@@ -75,6 +77,21 @@ export function Composer({
     }
   }
 
+  function sendTemplate({
+    preview,
+    template,
+  }: {
+    preview: string;
+    template: { name: string; language: string; variables: string[] };
+  }) {
+    sendMutation.mutate({
+      conversationId,
+      text: preview,
+      clientMessageId: newClientMessageId(),
+      template,
+    });
+  }
+
   if (disabled && disabledReason) {
     return (
       <div className="border-t border-border bg-card px-4 py-3 text-center text-xs text-muted-foreground">
@@ -86,11 +103,29 @@ export function Composer({
   return (
     <div className="border-t border-border bg-card">
       {windowClosed ? (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900">
-          Finestra di 24h chiusa: i messaggi liberi non verranno consegnati da WhatsApp. Usa un
-          template approvato per ricontattare il cliente.
+        <div className="flex flex-col items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900 sm:flex-row sm:justify-center">
+          <span>
+            Finestra di 24h chiusa: i messaggi liberi non verranno consegnati da WhatsApp. Usa un
+            template approvato per ricontattare il cliente.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 shrink-0 gap-1.5 border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+            onClick={() => setPickerOpen(true)}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            Scegli un template
+          </Button>
         </div>
       ) : null}
+
+      <TemplatePicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onSend={sendTemplate}
+        sending={sendMutation.isPending}
+      />
       <div className="mx-auto flex max-w-3xl items-end gap-2 px-3 py-2 sm:px-4 sm:py-3">
         <div
           className={cn(

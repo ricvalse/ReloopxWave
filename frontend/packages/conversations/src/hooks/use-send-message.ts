@@ -5,11 +5,22 @@ import { useConversationsContext } from '../lib/context';
 import { threadQueryKey } from './use-thread';
 import type { Message } from '../types';
 
+/** Approved-template send payload (CC-WA): allowed outside the 24h window. */
+export interface TemplateSendPayload {
+  name: string;
+  language: string;
+  /** Ordered body variable values, one per {{n}} placeholder. */
+  variables: string[];
+}
+
 interface SendArgs {
   conversationId: string;
+  /** Free-text body, OR the rendered preview text when `template` is set. */
   text: string;
   /** Caller-provided UUID for optimistic reconciliation + idempotent retry. */
   clientMessageId: string;
+  /** When set, the message is sent as an approved template (out-of-window). */
+  template?: TemplateSendPayload;
 }
 
 /**
@@ -24,7 +35,7 @@ export function useSendMessage() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ conversationId, text, clientMessageId }: SendArgs) => {
+    mutationFn: async ({ conversationId, text, clientMessageId, template }: SendArgs) => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -37,7 +48,11 @@ export function useSendMessage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ text, client_message_id: clientMessageId }),
+        body: JSON.stringify({
+          text,
+          client_message_id: clientMessageId,
+          ...(template ? { template } : {}),
+        }),
       });
 
       if (!res.ok) {

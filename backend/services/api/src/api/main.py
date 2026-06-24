@@ -32,7 +32,6 @@ from api.routers import (
     conversations,
     dsar,
     fine_tuning,
-    flows,
     impersonation,
     integrations,
     internal,
@@ -165,7 +164,6 @@ def create_app() -> FastAPI:
     app.include_router(
         whatsapp_templates.router, prefix="/whatsapp-templates", tags=["whatsapp-templates"]
     )
-    app.include_router(flows.router, prefix="/flows", tags=["flows"])
     app.include_router(automations.router, prefix="/automations", tags=["automations"])
     app.include_router(dsar.router, prefix="/dsar", tags=["dsar"])
 

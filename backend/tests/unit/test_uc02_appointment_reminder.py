@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from workers import outbound
 from workers.scheduler import appointment_reminder as mod
 
 from db import AppointmentReminderCandidate, ResolvedWhatsAppIntegration
@@ -35,7 +36,19 @@ def _candidate(*, last_inbound_at: datetime | None) -> AppointmentReminderCandid
     )
 
 
-def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool = True) -> None:
+class _FakeConv:
+    def __init__(self) -> None:
+        self.id = uuid.uuid4()
+
+
+def _patch(
+    monkeypatch,
+    *,
+    marked: list,
+    events: list,
+    integration_present: bool = True,
+    persisted: list | None = None,
+) -> None:
     @asynccontextmanager
     async def fake_tenant_session(ctx):
         yield object()
@@ -44,6 +57,21 @@ def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool
         def __init__(self, session): ...
         async def mark_reminded(self, appointment_id, *, at):
             marked.append(appointment_id)
+
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def get_active(self, *, merchant_id, wa_contact_phone):
+            return None
+
+        async def create(self, **kw):
+            return _FakeConv()
+
+    class FakeMessageRepo:
+        def __init__(self, session): ...
+        async def persist_outbound_message(self, **kw):
+            if persisted is not None:
+                persisted.append(kw)
+            return object()
 
     async def fake_resolve_lifecycle_step(
         session, *, merchant_id, system_key, attempt_index, context
@@ -83,13 +111,16 @@ def _patch(monkeypatch, *, marked: list, events: list, integration_present: bool
     monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
+    monkeypatch.setattr(mod, "ConversationRepository", FakeConvRepo)
+    monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
     monkeypatch.setattr(mod, "build_whatsapp_sender", lambda **kw: FakeWAClient())
 
 
 async def test_sends_reminder_inside_window(monkeypatch: pytest.MonkeyPatch) -> None:
     marked: list = []
     events: list = []
-    _patch(monkeypatch, marked=marked, events=events)
+    persisted: list = []
+    _patch(monkeypatch, marked=marked, events=events, persisted=persisted)
 
     cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))  # inside 24h
     sent = await mod._maybe_send(cand, now=NOW, kek="unused")
@@ -97,6 +128,9 @@ async def test_sends_reminder_inside_window(monkeypatch: pytest.MonkeyPatch) -> 
     assert sent is True
     assert marked == [cand.appointment_id]
     assert events and events[0]["event_type"] == "appointment_reminder.sent"
+    # #29: the reminder is persisted as an outbound Message with its wa id.
+    assert len(persisted) == 1
+    assert persisted[0]["wa_message_id"] == "wamid.ok"
 
 
 async def test_skips_outside_window_without_template(monkeypatch: pytest.MonkeyPatch) -> None:

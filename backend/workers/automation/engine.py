@@ -51,7 +51,13 @@ from integrations.ghl.client import GHLClient, GHLTokenBundle
 from integrations.whatsapp.factory import build_whatsapp_sender
 from integrations.whatsapp.templates import build_send_components, resolve_body_params
 from shared import get_logger
-from workers.outbound import MODE_SKIP, decide_outbound, is_within_24h, send_decision
+from workers.outbound import (
+    MODE_SKIP,
+    decide_outbound,
+    is_within_24h,
+    send_and_persist_decision,
+    send_decision,
+)
 
 logger = get_logger(__name__)
 
@@ -371,6 +377,31 @@ async def _walk(
     return sent, deferrals
 
 
+async def _send_proactive(
+    sender: Any,
+    *,
+    run_ctx: RunContext,
+    decision: Any,
+    session: AsyncSession | None,
+    sender_type: str,
+) -> None:
+    """Send a proactive automation message, persisting the Message row when we
+    have a conversation + session (so it shows in the inbox and delivery
+    callbacks attach via wa_message_id). Falls back to a plain send otherwise."""
+    if session is not None and run_ctx.conversation_id is not None:
+        await send_and_persist_decision(
+            sender,
+            to_phone=run_ctx.phone,
+            decision=decision,
+            session=session,
+            conversation_id=run_ctx.conversation_id,
+            merchant_id=run_ctx.merchant_id,
+            sender_type=sender_type,
+        )
+    else:
+        await send_decision(sender, to_phone=run_ctx.phone, decision=decision)
+
+
 async def _do_action(
     node: Any,
     run_ctx: RunContext,
@@ -384,7 +415,13 @@ async def _do_action(
     cfg = node.config or {}
     if node.type == "ai_reply":
         return await _do_ai_reply(
-            node, cfg, run_ctx, sender=sender, templates=templates, ai_deps=ai_deps
+            node,
+            cfg,
+            run_ctx,
+            sender=sender,
+            templates=templates,
+            ai_deps=ai_deps,
+            session=session,
         )
     if node.type == "set_lead_field":
         return await _do_set_lead_field(node, cfg, run_ctx, session=session, settings=settings)
@@ -420,7 +457,13 @@ async def _do_action(
         if decision.mode == MODE_SKIP:
             logger.info("automation.action.skipped", node=node.node_key, reason=decision.reason)
             return False
-        await send_decision(sender, to_phone=run_ctx.phone, decision=decision)
+        await _send_proactive(
+            sender,
+            run_ctx=run_ctx,
+            decision=decision,
+            session=session,
+            sender_type="automation",
+        )
         return True
 
     if node.type == "send_message":
@@ -475,6 +518,7 @@ async def _do_ai_reply(
     sender: Any,
     templates: WhatsAppTemplateRepository,
     ai_deps: AiReplyDeps | None,
+    session: AsyncSession | None = None,
 ) -> bool:
     """Generate a proactive AI message, send it (24h gate), dispatch AI actions."""
     if ai_deps is None or run_ctx.conversation_id is None:
@@ -536,7 +580,13 @@ async def _do_ai_reply(
     if decision.mode == MODE_SKIP:
         logger.info("automation.ai_reply.skipped", node=node.node_key, reason=decision.reason)
     else:
-        await send_decision(sender, to_phone=run_ctx.phone, decision=decision)
+        await _send_proactive(
+            sender,
+            run_ctx=run_ctx,
+            decision=decision,
+            session=session,
+            sender_type="automation_ai",
+        )
         sent_ok = True
 
     # Dispatch the AI's (already-filtered) actions after the message lands —

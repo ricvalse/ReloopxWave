@@ -19,6 +19,7 @@ from config_resolver import ConfigKey, ConfigResolver
 from db import (
     FLOW_REACTIVATION,
     AnalyticsRepository,
+    ConversationRepository,
     IntegrationRepository,
     LeadRepository,
     ReactivationCandidate,
@@ -29,7 +30,7 @@ from db import (
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
 from workers.automation.lifecycle import resolve_lifecycle_step
-from workers.outbound import MODE_SKIP, decide_outbound, send_decision
+from workers.outbound import MODE_SKIP, decide_outbound, send_and_persist_decision
 
 logger = get_logger(__name__)
 
@@ -187,13 +188,33 @@ async def _maybe_send(
         if not await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS):
             return False
 
+        # Resolve (or open) the lead's conversation so the reactivation lands in
+        # the inbox and the delivery callback can attach to its Message row.
+        convs = ConversationRepository(session)
+        conv = await convs.get_active(merchant_id=cand.merchant_id, wa_contact_phone=cand.phone)
+        if conv is None:
+            conv = await convs.create(
+                merchant_id=cand.merchant_id,
+                lead_id=cand.lead_id,
+                wa_phone_number_id=cand.wa_phone_number_id,
+                wa_contact_phone=cand.phone,
+            )
+
         client = build_whatsapp_sender(
             phone_number_id=wa.phone_number_id,
             api_key=wa.api_key,
             waba_base_url=wa.waba_base_url,
         )
         try:
-            await send_decision(client, to_phone=cand.phone, decision=decision)
+            await send_and_persist_decision(
+                client,
+                to_phone=cand.phone,
+                decision=decision,
+                session=session,
+                conversation_id=conv.id,
+                merchant_id=cand.merchant_id,
+                sender_type="reactivation",
+            )
         finally:
             await client.close()
 

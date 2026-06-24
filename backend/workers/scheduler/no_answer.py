@@ -33,7 +33,12 @@ from db import (
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
 from workers.automation.lifecycle import resolve_lifecycle_step
-from workers.outbound import MODE_SKIP, decide_outbound, is_within_24h, send_decision
+from workers.outbound import (
+    MODE_SKIP,
+    decide_outbound,
+    is_within_24h,
+    send_and_persist_decision,
+)
 
 logger = get_logger(__name__)
 
@@ -183,7 +188,15 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             waba_base_url=wa.waba_base_url,
         )
         try:
-            await send_decision(client, to_phone=cand.wa_contact_phone, decision=decision)
+            await send_and_persist_decision(
+                client,
+                to_phone=cand.wa_contact_phone,
+                decision=decision,
+                session=session,
+                conversation_id=cand.conversation_id,
+                merchant_id=cand.merchant_id,
+                sender_type="no_answer",
+            )
         finally:
             await client.close()
 
