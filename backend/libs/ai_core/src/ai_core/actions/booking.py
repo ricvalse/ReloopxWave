@@ -33,7 +33,7 @@ from db import (
     session_scope,
     tenant_session,
 )
-from integrations.ghl.client import GHLClient, GHLTokenBundle
+from integrations.ghl.client import GHLClient, GHLTokenBundle, build_contact_custom_fields
 from shared import IntegrationError, get_logger
 
 if TYPE_CHECKING:
@@ -131,6 +131,27 @@ class BookSlotHandler:
                     )
                     lookahead_days = int(lookahead_raw) if lookahead_raw else 14
 
+                    # CRM sync extras (capitolato sez.5): map collected lead data
+                    # to GHL custom fields + apply default tags. Merge the action
+                    # payload's contact_fields over turn_ctx.collected_data so the
+                    # freshest values win.
+                    contact_fields = action.payload.get("contact_fields", {})
+                    merged_values = {
+                        **(turn_ctx.collected_data or {}),
+                        **contact_fields,
+                    }
+                    field_map = await config.resolve(
+                        ConfigKey.GHL_CONTACT_FIELD_MAP, merchant_id=turn_ctx.merchant_id
+                    )
+                    custom_fields = build_contact_custom_fields(
+                        dict(field_map or {}), merged_values
+                    )
+                    default_tags = await config.resolve(
+                        ConfigKey.GHL_CONTACT_DEFAULT_TAGS, merchant_id=turn_ctx.merchant_id
+                    )
+                    payload_tags = action.payload.get("tags") or []
+                    tags = list(default_tags or []) + list(payload_tags)
+
                     async def _persist_tokens(bundle: GHLTokenBundle) -> None:
                         # Persist the rotated location bundle in its OWN committed
                         # transaction. The handler's `session` rolls back if a
@@ -154,12 +175,14 @@ class BookSlotHandler:
                         calendar_id=calendar_id,
                         duration_min=duration,
                         contact_phone=turn_ctx.lead_phone,
-                        contact_fields=action.payload.get("contact_fields", {}),
+                        contact_fields=contact_fields,
                         preferred_start_iso=action.payload.get("preferred_start_iso"),
                         pipeline_id=str(pipeline_id) if pipeline_id else None,
                         new_stage_id=str(new_stage_id) if new_stage_id else None,
                         tz_name=str(tz_name) if tz_name else "Europe/Rome",
                         lookahead_days=lookahead_days,
+                        custom_fields=custom_fields,
+                        tags=tags,
                         on_token_refresh=_persist_tokens,
                     )
 
@@ -250,6 +273,8 @@ class BookSlotHandler:
         new_stage_id: str | None,
         tz_name: str = "Europe/Rome",
         lookahead_days: int = 14,
+        custom_fields: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> BookingOutcome:
         client = GHLClient(
@@ -270,7 +295,9 @@ class BookSlotHandler:
                     "email": contact_fields.get("email"),
                     "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
                     "lastName": contact_fields.get("last_name"),
-                }
+                },
+                custom_fields=custom_fields,
+                tags=tags,
             )
             contact_id = contact.get("contact", {}).get("id") or contact.get("id")
             if not contact_id:

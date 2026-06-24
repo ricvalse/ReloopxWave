@@ -92,3 +92,20 @@ def test_delivery_bounds_enforced() -> None:
         BotConfigSchema.model_validate({"delivery": {"multi_bubble_max": 9}})
     with pytest.raises(ValidationError):
         BotConfigSchema.model_validate({"delivery": {"debounce_window_s": 999}})
+
+
+def test_ghl_contact_sync_defaults_and_round_trip() -> None:
+    cfg = BotConfigSchema()
+    assert cfg.ghl.contact_field_map == {}
+    assert cfg.ghl.contact_default_tags == []
+
+    cfg = BotConfigSchema.model_validate(
+        {
+            "ghl": {
+                "contact_field_map": {"budget": "cf-123"},
+                "contact_default_tags": ["whatsapp-lead"],
+            }
+        }
+    )
+    assert cfg.ghl.contact_field_map == {"budget": "cf-123"}
+    assert cfg.ghl.contact_default_tags == ["whatsapp-lead"]

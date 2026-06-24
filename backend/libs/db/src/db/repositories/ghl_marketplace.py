@@ -274,6 +274,39 @@ class GHLMarketplaceRepository:
         await self._session.flush()
         return (result.rowcount or 0) > 0
 
+    async def mark_location_health(
+        self, *, location_id: str, healthy: bool, mark_error: bool | None = None
+    ) -> bool:
+        """Record the outcome of an integration health-check liveness ping (#24).
+
+        Stamps `meta.last_health_check_at` / `meta.last_health_check_ok`. Flips
+        `status` to `error` (keeping the ciphertext) so the merchant portal
+        surfaces "reconnect" ONLY on a definitive failure — a successful healthy
+        ping on a still-linked location revives it to `active`. Never touches a
+        `revoked` or `pending_link` row's status.
+
+        `mark_error` decouples "the probe failed" from "the credentials are
+        dead": the once-a-day probe should not disable a valid token on a
+        transient blip (network/5xx/rate-limit), so the worker only sets
+        `mark_error=True` on a definitive auth failure (token refresh / 401).
+        When omitted it defaults to `not healthy` (legacy behaviour)."""
+        row = await self._get_location(location_id)
+        if row is None:
+            return False
+        flip_to_error = (not healthy) if mark_error is None else mark_error
+        row.meta = {
+            **(row.meta or {}),
+            "last_health_check_at": datetime.now(tz=UTC).isoformat(),
+            "last_health_check_ok": healthy,
+        }
+        if flip_to_error:
+            if row.status == "active":
+                row.status = "error"
+        elif healthy and row.status == "error" and row.merchant_id is not None:
+            row.status = "active"
+        await self._session.flush()
+        return True
+
     async def resolve_location_by_id(self, location_id: str) -> ResolvedLocationToken | None:
         row = await self._get_location(location_id)
         if row is None or row.status != "active":
@@ -306,6 +339,25 @@ class GHLMarketplaceRepository:
         stmt = select(GHLLocationToken).where(
             GHLLocationToken.status == "active",
             GHLLocationToken.merchant_id.is_not(None),
+        )
+        rows = (await self._session.execute(stmt)).scalars()
+        out: list[ResolvedLocationToken] = []
+        for row in rows:
+            resolved = self._to_resolved_location(row)
+            if resolved is not None:
+                out.append(resolved)
+        return out
+
+    async def list_health_checkable_locations(self) -> list[ResolvedLocationToken]:
+        """Cross-tenant: linked location tokens worth a liveness ping (#24).
+
+        Includes `active` AND `error` rows (so a previously-flagged location can
+        recover), as long as they carry a token and a merchant link. Runs under
+        the service-role `session_scope()` (no JWT)."""
+        stmt = select(GHLLocationToken).where(
+            GHLLocationToken.status.in_(("active", "error")),
+            GHLLocationToken.merchant_id.is_not(None),
+            GHLLocationToken.secret_ciphertext.is_not(None),
         )
         rows = (await self._session.execute(stmt)).scalars()
         out: list[ResolvedLocationToken] = []

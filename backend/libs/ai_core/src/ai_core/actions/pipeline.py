@@ -34,7 +34,7 @@ from db import (
     session_scope,
     tenant_session,
 )
-from integrations.ghl.client import GHLClient, GHLTokenBundle
+from integrations.ghl.client import GHLClient, GHLTokenBundle, build_contact_custom_fields
 from shared import IntegrationError, get_logger
 
 if TYPE_CHECKING:
@@ -129,16 +129,39 @@ class MovePipelineHandler:
                                 expires_at=bundle.expires_at,
                             )
 
+                    # CRM sync extras (capitolato sez.5): map collected lead
+                    # data to GHL custom fields + apply default tags. Merge the
+                    # action payload's contact_fields over turn_ctx.collected_data
+                    # so the freshest values win.
+                    contact_fields = action.payload.get("contact_fields", {})
+                    merged_values = {
+                        **(turn_ctx.collected_data or {}),
+                        **contact_fields,
+                    }
+                    field_map = await config.resolve(
+                        ConfigKey.GHL_CONTACT_FIELD_MAP, merchant_id=turn_ctx.merchant_id
+                    )
+                    custom_fields = build_contact_custom_fields(
+                        dict(field_map or {}), merged_values
+                    )
+                    default_tags = await config.resolve(
+                        ConfigKey.GHL_CONTACT_DEFAULT_TAGS, merchant_id=turn_ctx.merchant_id
+                    )
+                    payload_tags = action.payload.get("tags") or []
+                    tags = list(default_tags or []) + list(payload_tags)
+
                     outcome = await self._execute(
                         ghl=ghl,
                         stage_id=str(stage_id),
                         pipeline_id=str(pipeline_id) if pipeline_id else None,
                         opportunity_id=str(opportunity_id) if opportunity_id else None,
                         contact_phone=turn_ctx.lead_phone,
-                        contact_fields=action.payload.get("contact_fields", {}),
+                        contact_fields=contact_fields,
                         value=action.payload.get("value"),
                         currency=action.payload.get("currency", "EUR"),
                         note_body=self._compose_note(turn_ctx, action),
+                        custom_fields=custom_fields,
+                        tags=tags,
                         on_token_refresh=_persist_tokens,
                     )
 
@@ -215,6 +238,8 @@ class MovePipelineHandler:
         value: float | None,
         currency: str,
         note_body: str | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> MoveOutcome:
         client = GHLClient(
@@ -235,7 +260,9 @@ class MovePipelineHandler:
                     "email": contact_fields.get("email"),
                     "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
                     "lastName": contact_fields.get("last_name"),
-                }
+                },
+                custom_fields=custom_fields,
+                tags=tags,
             )
             contact_id = contact.get("contact", {}).get("id") or contact.get("id")
             if not contact_id:

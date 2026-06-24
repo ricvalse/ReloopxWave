@@ -23,6 +23,27 @@ logger = get_logger(__name__)
 GHL_API_BASE = "https://services.leadconnectorhq.com"
 
 
+def build_contact_custom_fields(
+    field_map: dict[str, str], values: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Turn collected lead data into GHL `customFields` entries.
+
+    `field_map` is the merchant config `{our_field_name -> GHL custom field id}`;
+    `values` is the merged contact/collected data (e.g. from the action payload
+    and `turn_ctx.collected_data`). Only mapped fields with a non-empty value
+    produce an entry, shaped as `{"id": <field id>, "value": <value>}` — the
+    shape GHL's contact upsert expects. Empty map or no matching values → []."""
+    out: list[dict[str, Any]] = []
+    for our_name, ghl_field_id in field_map.items():
+        value = values.get(our_name)
+        if value in (None, "", [], {}):
+            continue
+        if not ghl_field_id:
+            continue
+        out.append({"id": ghl_field_id, "value": value})
+    return out
+
+
 @dataclass(slots=True)
 class GHLTokenBundle:
     access_token: str
@@ -61,14 +82,35 @@ class GHLClient:
 
     # ---- Contacts ----
 
-    async def upsert_contact(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def upsert_contact(
+        self,
+        payload: dict[str, Any],
+        *,
+        custom_fields: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
         # v2 upsert endpoint: dedupes by phone/email per the location's "Allow
         # Duplicate Contact" setting (avoids creating a new contact on every
         # inbound message). `locationId` is REQUIRED by GHL — inject it from the
         # token bundle when the caller didn't pass one, otherwise the call 400s.
+        #
+        # `custom_fields` is GHL's `customFields` array — each entry is
+        # `{"id": <field id>, "value": ...}` or `{"key": <field key>, "value": ...}`
+        # (contractual capitolato sez.5: collected lead data must land on the CRM
+        # card). `tags` is GHL's `tags` array. Both are merged with anything the
+        # caller already put in `payload` (payload wins on conflict for tags).
         body = dict(payload)
         if self._tokens.location_id and not body.get("locationId"):
             body["locationId"] = self._tokens.location_id
+        if custom_fields:
+            existing_cf = list(body.get("customFields") or [])
+            existing_cf.extend(custom_fields)
+            body["customFields"] = existing_cf
+        if tags:
+            existing_tags = list(body.get("tags") or [])
+            # De-dup while preserving order so we don't re-send the same tag.
+            merged = existing_tags + [t for t in tags if t not in existing_tags]
+            body["tags"] = merged
         return await self._request("POST", "/contacts/upsert", json=body)
 
     async def get_contact(self, contact_id: str) -> dict[str, Any]:

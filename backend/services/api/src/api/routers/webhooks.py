@@ -208,6 +208,29 @@ async def whatsapp_inbound(
     }
 
 
+def _ghl_event_dedup_key(payload: dict[str, Any], location_id: Any, raw_type: str) -> str:
+    """Stable dedup key for a GHL data webhook (#26).
+
+    GHL retries a delivery until it gets a 2xx, so the same event can arrive
+    more than once. Prefer GHL's own event id when present; otherwise fall back
+    to a composite of contactId + type + timestamp so distinct events stay
+    distinct while a true re-delivery collapses to the same key.
+    """
+    event_id = (
+        payload.get("webhookId")
+        or payload.get("eventId")
+        or payload.get("id")
+        or payload.get("messageId")
+    )
+    if event_id:
+        return str(event_id)
+    contact_id = payload.get("contactId") or payload.get("contact_id") or "nocontact"
+    timestamp = (
+        payload.get("timestamp") or payload.get("dateAdded") or payload.get("dateUpdated") or ""
+    )
+    return f"{location_id}:{contact_id}:{raw_type}:{timestamp}"
+
+
 @router.post("/ghl/marketplace")
 async def ghl_marketplace_webhook(
     request: Request,
@@ -221,9 +244,9 @@ async def ghl_marketplace_webhook(
     (`x-wh-signature`, deprecated 2026-07-01) — not the HMAC used for
     per-location data webhooks. We verify Ed25519 first and do NOT fall back to
     RSA when an `x-ghl-signature` is present (downgrade protection).
-    `locationId`/`companyId` arrive in the payload, not the URL. Declared BEFORE
-    `/ghl/{merchant_id}` so the literal "marketplace" segment isn't swallowed by
-    the UUID path param.
+    `locationId`/`companyId` arrive in the payload, not the URL: this is the
+    single Default Webhook URL GHL posts every marketplace event to (lifecycle
+    INSTALL/UNINSTALL plus per-location data events), routed below by `type`.
     """
     settings = get_settings()
     body = await request.body()
@@ -267,12 +290,15 @@ async def ghl_marketplace_webhook(
         # outcome, …): GHL sends these to the same Default Webhook URL signed
         # with the global key. The worker resolves the merchant from locationId
         # and routes to the lead sync / WhatsApp takeover (UC-01/02/03/04).
+        # Deterministic _job_id dedups re-deliveries (GHL retries on a non-2xx):
+        # prefer GHL's own event id, else fall back to a stable composite.
         await arq.enqueue_job(
             "handle_ghl_event",
             str(location_id),
             raw_type,
             payload,
             _queue_name="ghl:events",
+            _job_id=f"ghl:event:{_ghl_event_dedup_key(payload, location_id, raw_type)}",
         )
     else:
         logger.info(

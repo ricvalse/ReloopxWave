@@ -8,7 +8,11 @@ callback fires with the rotated bundle after a 401 → refresh → retry cycle.
 
 from __future__ import annotations
 
-from integrations.ghl.client import GHLClient, GHLTokenBundle
+from integrations.ghl.client import (
+    GHLClient,
+    GHLTokenBundle,
+    build_contact_custom_fields,
+)
 
 
 class FakeResp:
@@ -147,6 +151,56 @@ async def test_create_booking_includes_location_id() -> None:
     assert path == "/calendars/events/appointments"
     assert body["locationId"] == "loc-1"
     assert body["calendarId"] == "CAL-1"
+
+
+async def test_upsert_contact_forwards_custom_fields_and_tags() -> None:
+    http = FakeHttp([FakeResp(200, {"contact": {"id": "CT-1"}})], FakeResp(200, {}))
+    await _client(http).upsert_contact(
+        {"phone": "39333000000"},
+        custom_fields=[{"id": "cf-budget", "value": "5000"}],
+        tags=["whatsapp-lead", "qualificato"],
+    )
+
+    _method, _path, _auth, body = http.requests[0]
+    assert body["customFields"] == [{"id": "cf-budget", "value": "5000"}]
+    assert body["tags"] == ["whatsapp-lead", "qualificato"]
+
+
+async def test_upsert_contact_merges_tags_without_duplicates() -> None:
+    http = FakeHttp([FakeResp(200, {"contact": {"id": "CT-1"}})], FakeResp(200, {}))
+    await _client(http).upsert_contact(
+        {"phone": "39333000000", "tags": ["esistente"]},
+        tags=["esistente", "nuovo"],
+    )
+
+    body = http.requests[0][3]
+    assert body["tags"] == ["esistente", "nuovo"]  # de-duped, order preserved
+
+
+async def test_upsert_contact_omits_extras_when_none() -> None:
+    http = FakeHttp([FakeResp(200, {"contact": {"id": "CT-1"}})], FakeResp(200, {}))
+    await _client(http).upsert_contact({"phone": "39333000000"})
+
+    body = http.requests[0][3]
+    assert "customFields" not in body
+    assert "tags" not in body
+
+
+def test_build_contact_custom_fields_maps_present_values() -> None:
+    field_map = {"budget": "cf-budget", "citta": "cf-city", "assente": "cf-x"}
+    values = {"budget": "5000", "citta": "Milano", "altro": "ignorato"}
+    out = build_contact_custom_fields(field_map, values)
+    assert out == [
+        {"id": "cf-budget", "value": "5000"},
+        {"id": "cf-city", "value": "Milano"},
+    ]
+
+
+def test_build_contact_custom_fields_skips_empty_and_unmapped() -> None:
+    field_map = {"budget": "cf-budget", "note": ""}
+    values = {"budget": "", "note": "qualcosa"}
+    assert build_contact_custom_fields(field_map, values) == []
+    assert build_contact_custom_fields({}, values) == []
 
 
 async def test_get_free_slots_epoch_ms_and_flatten() -> None:

@@ -140,6 +140,14 @@ class ConfigKey(StrEnum):
     AGENT_TOOL_USE_ENABLED = "agent.tool_use_enabled"
     AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
 
+    # GHL CRM sync (contratto capitolato sez.5) — map our collected lead fields
+    # to the merchant's GHL custom-field ids, and tag every synced contact.
+    # `field_map` is a {our_field_name -> GHL custom field id} dict; the contact
+    # upsert turns each present value into a `customFields` entry. `default_tags`
+    # is applied to every upserted contact.
+    GHL_CONTACT_FIELD_MAP = "ghl.contact_field_map"
+    GHL_CONTACT_DEFAULT_TAGS = "ghl.contact_default_tags"
+
     # UC-13 Objections — the category vocabulary the classifier maps to.
     OBJECTION_CATEGORIES = "objections.categories"
 
@@ -230,6 +238,8 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     # twice before replying.
     ConfigKey.AGENT_TOOL_USE_ENABLED: True,
     ConfigKey.AGENT_MAX_TOOL_ITERATIONS: 3,
+    ConfigKey.GHL_CONTACT_FIELD_MAP: {},
+    ConfigKey.GHL_CONTACT_DEFAULT_TAGS: [],
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,
     ConfigKey.CONVERSATION_IDLE_CLOSE_MINUTES: 120,
 }
@@ -254,6 +264,7 @@ class BotConfigSchema(_StrictModel):
     agent: AgentConfig = Field(default_factory=lambda: AgentConfig())
     objections: ObjectionsConfig = Field(default_factory=lambda: ObjectionsConfig())
     conversation: ConversationConfig = Field(default_factory=lambda: ConversationConfig())
+    ghl: GHLConfig = Field(default_factory=lambda: GHLConfig())
 
 
 class NoAnswerConfig(_StrictModel):
@@ -379,6 +390,17 @@ class ConversationConfig(_StrictModel):
     # Minutes of inactivity after which a conversation is auto-closed and its
     # objections extracted (UC-13 sweep).
     idle_close_minutes: int = Field(120, ge=15, le=10080)
+
+
+class GHLConfig(_StrictModel):
+    """GHL CRM sync knobs (contratto capitolato sez.5). `contact_field_map`
+    maps our collected lead field names to the merchant's GHL custom-field ids
+    so the contact upsert writes `customFields`; `contact_default_tags` tags
+    every synced contact."""
+
+    # {our_field_name -> GHL custom field id}. e.g. {"budget": "abc123"}.
+    contact_field_map: dict[str, str] = Field(default_factory=dict)
+    contact_default_tags: list[str] = Field(default_factory=list, max_length=20)
 
 
 class DeliveryConfig(_StrictModel):
