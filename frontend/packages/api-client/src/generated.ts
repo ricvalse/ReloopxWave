@@ -1376,40 +1376,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/flows": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Flows */
-        get: operations["list_flows_flows_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/flows/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Upsert Flow */
-        put: operations["upsert_flow_flows__key__put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/automations/catalog": {
         parameters: {
             query?: never;
@@ -2223,86 +2189,6 @@ export interface components {
             sort_order: number;
             /** Is Active */
             is_active: boolean;
-        };
-        /** FlowOut */
-        FlowOut: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Key */
-            key: string;
-            /** Name */
-            name: string;
-            /** Enabled */
-            enabled: boolean;
-            /** Steps */
-            steps: components["schemas"]["FlowStepOut"][];
-        };
-        /** FlowStepIn */
-        FlowStepIn: {
-            /** Step Index */
-            step_index: number;
-            /**
-             * Delay Minutes
-             * @default 0
-             */
-            delay_minutes: number;
-            /** Template Id */
-            template_id?: string | null;
-            /** Variable Mapping */
-            variable_mapping?: {
-                [key: string]: string;
-            };
-            /**
-             * Window Policy
-             * @default auto
-             */
-            window_policy: string;
-            /** Free Text */
-            free_text?: string | null;
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-        };
-        /** FlowStepOut */
-        FlowStepOut: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Step Index */
-            step_index: number;
-            /** Delay Minutes */
-            delay_minutes: number;
-            /** Template Id */
-            template_id: string | null;
-            /** Variable Mapping */
-            variable_mapping: {
-                [key: string]: string;
-            };
-            /** Window Policy */
-            window_policy: string;
-            /** Free Text */
-            free_text: string | null;
-            /** Enabled */
-            enabled: boolean;
-        };
-        /** FlowUpsertIn */
-        FlowUpsertIn: {
-            /** Name */
-            name: string;
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** Steps */
-            steps?: components["schemas"]["FlowStepIn"][];
         };
         /**
          * GHLConfig
@@ -6299,74 +6185,6 @@ export interface operations {
             };
         };
     };
-    list_flows_flows_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FlowOut"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upsert_flow_flows__key__put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FlowUpsertIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FlowOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     catalog_automations_catalog_get: {
         parameters: {
             query?: never;
@@ -6824,8 +6642,6 @@ export enum ApiPaths {
     delete_template_whatsapp_templates__template_id__delete = "/whatsapp-templates/{template_id}",
     submit_template_whatsapp_templates__template_id__submit_post = "/whatsapp-templates/{template_id}/submit",
     sync_template_whatsapp_templates__template_id__sync_post = "/whatsapp-templates/{template_id}/sync",
-    list_flows_flows_get = "/flows",
-    upsert_flow_flows__key__put = "/flows/{key}",
     catalog_automations_catalog_get = "/automations/catalog",
     list_automations_automations_get = "/automations",
     create_automation_automations_post = "/automations",
