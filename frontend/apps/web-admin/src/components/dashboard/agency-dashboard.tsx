@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonTable } from '@reloop/ui';
+import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonTable, Button } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 
@@ -23,6 +23,34 @@ type AgencyKpis = {
 
 export function AgencyDashboard() {
   const queryClient = useQueryClient();
+  const [exportState, setExportState] = useState<'idle' | 'pending' | 'error'>('idle');
+
+  const handleExport = async () => {
+    setExportState('pending');
+    try {
+      const api = getApiClient();
+      const { data, error } = await api.POST('/analytics/exports', {
+        body: { since_days: 30 },
+      });
+      if (error || !data) throw new Error('request failed');
+      const exportId = data.export_id;
+      for (let i = 0; i < 30; i++) {
+        await new Promise<void>((r) => setTimeout(r, 2000));
+        const { data: dl } = await api.GET('/analytics/exports/{export_id}/download', {
+          params: { path: { export_id: exportId } },
+        });
+        if (dl?.signed_url) {
+          window.open(dl.signed_url, '_blank', 'noopener,noreferrer');
+          setExportState('idle');
+          return;
+        }
+      }
+      throw new Error('timeout');
+    } catch {
+      setExportState('error');
+      setTimeout(() => setExportState('idle'), 4000);
+    }
+  };
 
   const query = useQuery({
     queryKey: ['agency-kpis'],
@@ -84,8 +112,20 @@ export function AgencyDashboard() {
       </div>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Ranking merchant (conversione)</CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleExport()}
+            disabled={exportState === 'pending'}
+          >
+            {exportState === 'pending'
+              ? 'Preparazione…'
+              : exportState === 'error'
+                ? 'Errore, riprova'
+                : 'Esporta CSV'}
+          </Button>
         </CardHeader>
         <CardContent>
           {query.isLoading ? (

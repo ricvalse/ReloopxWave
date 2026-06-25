@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonChart } from '@reloop/ui';
+import { KPICard, Card, CardContent, CardHeader, CardTitle, SkeletonChart, Button } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { useMerchantId } from '@/hooks/use-merchant-id';
@@ -31,6 +31,34 @@ export function MerchantDashboard() {
   const queryClient = useQueryClient();
   const [sinceDays, setSinceDays] = useState(30);
   const [campaign, setCampaign] = useState('');
+  const [exportState, setExportState] = useState<'idle' | 'pending' | 'error'>('idle');
+
+  const handleExport = async () => {
+    setExportState('pending');
+    try {
+      const api = getApiClient();
+      const { data, error } = await api.POST('/analytics/exports', {
+        body: { since_days: sinceDays },
+      });
+      if (error || !data) throw new Error('request failed');
+      const exportId = data.export_id;
+      for (let i = 0; i < 30; i++) {
+        await new Promise<void>((r) => setTimeout(r, 2000));
+        const { data: dl } = await api.GET('/analytics/exports/{export_id}/download', {
+          params: { path: { export_id: exportId } },
+        });
+        if (dl?.signed_url) {
+          window.open(dl.signed_url, '_blank', 'noopener,noreferrer');
+          setExportState('idle');
+          return;
+        }
+      }
+      throw new Error('timeout');
+    } catch {
+      setExportState('error');
+      setTimeout(() => setExportState('idle'), 4000);
+    }
+  };
 
   const campaignsQuery = useQuery({
     queryKey: ['merchant-campaigns', merchantId],
@@ -92,6 +120,18 @@ export function MerchantDashboard() {
     <div className="space-y-4 p-6">
       <SetupChecklist />
       <div className="flex flex-wrap items-center gap-3">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleExport()}
+          disabled={exportState === 'pending'}
+        >
+          {exportState === 'pending'
+            ? 'Preparazione…'
+            : exportState === 'error'
+              ? 'Errore, riprova'
+              : 'Esporta CSV'}
+        </Button>
         <select
           aria-label="Periodo"
           value={sinceDays}
