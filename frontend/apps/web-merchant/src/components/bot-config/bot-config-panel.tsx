@@ -267,7 +267,7 @@ const SECTIONS: SectionDef[] = [
     section: 'delivery',
     title: 'Consegna (tono umano)',
     description:
-      'Fa sembrare le risposte più umane su WhatsApp. Tutto disattivo di default: attiva ciò che vuoi. La finestra raggruppa messaggi ravvicinati in un’unica risposta.',
+      'Fa sembrare le risposte più umane su WhatsApp. Attivo di default (debounce, indicatore “sta scrivendo…”, breve pausa, più bolle): regola o azzera ciò che vuoi (0/disattivo = invio immediato in un solo messaggio). La finestra raggruppa messaggi ravvicinati in un’unica risposta.',
     fields: [
       {
         key: 'delivery.debounce_window_s',
