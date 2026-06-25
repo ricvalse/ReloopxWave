@@ -1553,9 +1553,9 @@ export interface paths {
          *     (`x-wh-signature`, deprecated 2026-07-01) — not the HMAC used for
          *     per-location data webhooks. We verify Ed25519 first and do NOT fall back to
          *     RSA when an `x-ghl-signature` is present (downgrade protection).
-         *     `locationId`/`companyId` arrive in the payload, not the URL. Declared BEFORE
-         *     `/ghl/{merchant_id}` so the literal "marketplace" segment isn't swallowed by
-         *     the UUID path param.
+         *     `locationId`/`companyId` arrive in the payload, not the URL: this is the
+         *     single Default Webhook URL GHL posts every marketplace event to (lifecycle
+         *     INSTALL/UNINSTALL plus per-location data events), routed below by `type`.
          */
         post: operations["ghl_marketplace_webhook_webhooks_ghl_marketplace_post"];
         delete?: never;
@@ -1864,6 +1864,7 @@ export interface components {
             agent?: components["schemas"]["AgentConfig"];
             objections?: components["schemas"]["ObjectionsConfig"];
             conversation?: components["schemas"]["ConversationConfig"];
+            ghl?: components["schemas"]["GHLConfig"];
         };
         /**
          * BotExample
@@ -2124,8 +2125,11 @@ export interface components {
             description?: string | null;
             /** Variants */
             variants: components["schemas"]["VariantIn"][];
-            /** Primary Metric */
-            primary_metric: string;
+            /**
+             * Primary Metric
+             * @enum {string}
+             */
+            primary_metric: "booking.created" | "pipeline.moved" | "conversation.escalated" | "message.replied";
             /** Min Sample Size */
             min_sample_size?: number | null;
         };
@@ -2299,6 +2303,21 @@ export interface components {
             enabled: boolean;
             /** Steps */
             steps?: components["schemas"]["FlowStepIn"][];
+        };
+        /**
+         * GHLConfig
+         * @description GHL CRM sync knobs (contratto capitolato sez.5). `contact_field_map`
+         *     maps our collected lead field names to the merchant's GHL custom-field ids
+         *     so the contact upsert writes `customFields`; `contact_default_tags` tags
+         *     every synced contact.
+         */
+        GHLConfig: {
+            /** Contact Field Map */
+            contact_field_map?: {
+                [key: string]: string;
+            };
+            /** Contact Default Tags */
+            contact_default_tags?: string[];
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2898,6 +2917,8 @@ export interface components {
              * @default gpt-4.1-mini
              */
             base_model: string;
+            /** Target Merchant Id */
+            target_merchant_id?: string | null;
         };
         /** ScheduleConfig */
         ScheduleConfig: {

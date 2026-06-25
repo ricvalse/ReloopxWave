@@ -18,6 +18,8 @@ const AB_PRIMARY_METRICS = [
   { value: 'message.replied', label: 'Risposta inviata' },
 ] as const;
 
+type AbPrimaryMetric = (typeof AB_PRIMARY_METRICS)[number]['value'];
+
 type Metrics = {
   experiment_id: string;
   primary_metric: string;
@@ -194,7 +196,7 @@ function CreateExperimentForm({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [weightA, setWeightA] = useState(50);
-  const [primaryMetric, setPrimaryMetric] = useState('booking.created');
+  const [primaryMetric, setPrimaryMetric] = useState<AbPrimaryMetric>('booking.created');
   const [promptControl, setPromptControl] = useState('');
   const [promptVariant, setPromptVariant] = useState('');
 
@@ -268,7 +270,7 @@ function CreateExperimentForm({
                 id="ab-metric"
                 required
                 value={primaryMetric}
-                onChange={(e) => setPrimaryMetric(e.target.value)}
+                onChange={(e) => setPrimaryMetric(e.target.value as AbPrimaryMetric)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
                 {AB_PRIMARY_METRICS.map((m) => (
