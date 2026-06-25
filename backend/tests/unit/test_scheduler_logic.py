@@ -1,8 +1,10 @@
 """Unit tests for the scheduler logic that is pure (no DB):
 
-  * integration_health._check_one — the per-provider state calculation
-    (WhatsApp = green unless already error; GHL = green unless the token has
-    been expired for > 24h);
+  * integration_health._check_one — the per-provider state calculation for the
+    `integrations` table (WhatsApp = green unless already error; any other
+    provider falls through to green). GHL is NOT health-checked here: its tokens
+    live in `ghl_location_tokens` and are probed by _check_ghl_location /
+    _is_definitive_auth_failure (covered by test_integration_health.py).
   * analytics_export._json_compact — the CSV property serialisation smoke test.
 
 The DB-bound aggregations (kpi_rollup, the SELECTs in integration_health and
@@ -11,7 +13,7 @@ analytics_export) are exercised by the integration suite under Postgres.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 from workers.scheduler.analytics_export import _json_compact
@@ -38,25 +40,6 @@ async def test_whatsapp_active_is_healthy() -> None:
 
 async def test_whatsapp_already_error_is_unhealthy() -> None:
     ok = await _check_one(_integration("whatsapp", status="error"), http=None, settings=_settings())
-    assert ok is False
-
-
-async def test_ghl_without_expiry_is_healthy() -> None:
-    ok = await _check_one(_integration("ghl", expires_at=None), http=None, settings=_settings())
-    assert ok is True
-
-
-async def test_ghl_recently_expired_is_still_healthy() -> None:
-    # Expired 1h ago — refresh should have handled it; not yet broken.
-    recent = datetime.now(tz=UTC) - timedelta(hours=1)
-    ok = await _check_one(_integration("ghl", expires_at=recent), http=None, settings=_settings())
-    assert ok is True
-
-
-async def test_ghl_long_expired_is_unhealthy() -> None:
-    # Expired > 24h ago — the refresh flow clearly failed.
-    stale = datetime.now(tz=UTC) - timedelta(days=2)
-    ok = await _check_one(_integration("ghl", expires_at=stale), http=None, settings=_settings())
     assert ok is False
 
 
