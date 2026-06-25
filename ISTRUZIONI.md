@@ -99,6 +99,9 @@ Senza, i JWT non portano `tenant_id`/`merchant_id`/`role` e **ogni pagina è vuo
 - Dal Marketplace GHL, **installa l'app** sul tuo account/location. GHL invia un webhook **INSTALL** a
   `POST /webhooks/ghl/marketplace`; la location compare in web-admin → **Integrazioni** → tabella
   **"Location installate"** con stato **"In attesa"**.
+  - *Nota:* lo **stesso** endpoint riceve anche gli **eventi dati** GHL (contatti/opportunità) ed è **firmato**
+    (Ed25519 `x-ghl-signature`, RSA legacy `x-wh-signature`): gli eventi **non firmati vengono scartati** (401).
+    Se una location non compare mai, sospetta un mismatch di firma/public-key.
 - Crea prima il merchant (§3.5), poi torna qui: nella riga della location scegli il merchant dal menu e premi
   **"Collega"**. Lo stato passa a **"Attiva"**. (Per disfare: **"Scollega"**.)
 
@@ -187,9 +190,10 @@ Fammi sapere quale preferisci."* (legge gli slot liberi da GHL su 14 giorni).
 suggerisco: • … Fammi sapere quale preferisci."*
 
 **Sotto-test — reminder appuntamento**: il job `send_appointment_reminders` (ogni 30 min, per appuntamenti
-entro 24h) invia *"Promemoria: hai un appuntamento {data} alle {ora}. A presto!"*. Per non aspettare, prenota
-uno slot **entro le prossime 24h** e lancia il job a richiesta (Appendice B). Verifica `appointments.meta`
-con `reminder_sent_at` valorizzato (A.3).
+entro 24h) invia — **entro la finestra 24h** — il testo libero *"Promemoria: hai un appuntamento 26/06 alle
+15:00. A presto!"* (giorno e ora sono **un unico token** `%d/%m alle %H:%M`); **fuori** dalla 24h usa invece il
+template `booking_reminder`. Per non aspettare, prenota uno slot **entro le prossime 24h** e lancia il job a
+richiesta (Appendice B). Verifica `appointments.meta` con `reminder_sent_at` valorizzato (A.3).
 
 **Traccia B (Playground)**: scrivi `voglio prenotare domani alle 15` → tra gli **eventi** compare
 `book_slot` (*"Prenotazione simulata …"*) e lo **stato** passa a `booked=true` (nessuna scrittura su GHL).
@@ -208,6 +212,10 @@ con `reminder_sent_at` valorizzato (A.3).
    — se vuoi riprendere la conversazione, rispondi pure."*
 5. **Verifica (Z)**: `conversations.meta` ha `reminders_sent` incrementato e `last_reminder_at` valorizzato (A.5).
 6. Ripristina la soglia a 120 dopo il test.
+
+> **Nota finestra 24h**: questi testi liberi partono **solo entro le 24h** dall'ultimo inbound. Fuori dalla
+> finestra il reminder richiede un **template `no_answer`** approvato; senza, l'invio viene saltato (evento
+> `reminder.skipped`). Riproducendo il test subito dopo un inbound sei dentro la finestra, quindi i testi valgono.
 
 **Parte (b) — chiamata fallita** *(richiede i webhook dati GHL — vedi §12 Limitazioni)*
 1. In GHL registra/logga sul contatto una chiamata con esito **"no answer"** (o busy/failed/voicemail/no_show).
@@ -371,8 +379,11 @@ con `reminder_sent_at` valorizzato (A.3).
    - `è troppo caro` → categoria **prezzo**
    - `non mi fido` → **fiducia**
    - `non ho fretta` → **tempistiche**
-   - `il vostro concorrente è più bravo` → **concorrenza**
-   - `non mi serve` → **necessita**
+   - `il vostro concorrente è più bravo` → **competitor**
+   - `non mi serve` → **non_interessato**
+
+   *(Categorie ammesse dal classificatore: `prezzo, tempistiche, fiducia, competitor, informazioni_mancanti,
+   non_interessato, altro`; qualsiasi categoria fuori da questo set viene scartata.)*
 2. Estrai le obiezioni:
    - **Automatico**: il cron `close_idle_conversations` chiude le conversazioni inattive (default 120 min) e
      lancia l'estrazione. Per non aspettare, lancia il job a richiesta (Appendice B).
@@ -384,7 +395,8 @@ con `reminder_sent_at` valorizzato (A.3).
 3. **Atteso (Y)**: web-merchant → **Obiezioni** (`/reports/objections`) mostra un **grafico a barre** per
    categoria, una **heatmap** per giorno/categoria, e **citazioni** di esempio. Filtri: periodo e variante A/B.
 4. **Verifica (Z)**: SQL (A.13) — righe in `objections` con `category`, `quote`, `severity`. Vista agenzia
-   aggregata: web-admin → **Obiezioni** (`/reports/objections/agency`).
+   aggregata: web-admin → **Obiezioni** (rotta UI `/reports/objections`), che chiama l'endpoint
+   `GET /reports/objections/agency` (RBAC `agency_admin`).
 
 ---
 
@@ -394,8 +406,9 @@ web-merchant → **Messaggistica → Automazioni** (`/automazioni`). La **lavagn
 (React Flow): colleghi un **trigger** a **condizioni** e **azioni**. È il modello unificato che ha sostituito i
 vecchi "Flussi" lifecycle e la rotta `/flussi` (ora rimossa). L'elenco ha due gruppi:
 - **Flussi di sistema**: 4 flussi sempre presenti (seminati al primo accesso), con **trigger bloccato** (non
-  eliminabile). Sono guidati dagli scheduler; puoi solo aggiungere condizioni e azioni «Invia»/«Risposta AI»
-  per personalizzare gli invii. **Attivandolo, il flusso sostituisce il testo predefinito** del lifecycle.
+  eliminabile). Sono guidati dagli scheduler; puoi aggiungere **condizioni** e **azioni** (`Invia messaggio`,
+  `Risposta AI`, `Aggiorna lead/CRM`, `Passa a operatore`, `Attendi`) — qui sono nascoste solo le legacy
+  `Invia template`/`Invia testo`. **Attivandolo, il flusso sostituisce il testo predefinito** del lifecycle.
 - **Automazioni personalizzate**: le crei tu. Sono **event-driven** e girano **solo se sono "Attive"**.
 
 ### 6.1 — Anatomia (cosa trovi sulla lavagnetta)
@@ -432,9 +445,11 @@ fallback, Modello) · `Aggiorna lead/CRM` (Campo: *Tag* / *Punteggio (delta)* / 
 4. Rinomina in `Test prezzo`, spunta **"Attiva"**, **"Salva"** → torni all'elenco con badge **Attiva**.
 5. **Verifica struttura**: riapri con **"Apri sulla lavagnetta"** → nodi e collegamenti sono persistiti.
 
-**Variante negativa (validazione trigger)**: aggiungi un **secondo** trigger → compare *"Un'automazione
-richiede esattamente un nodo trigger (ora: 2)."* e **"Salva"** è disabilitato. Rimuovine uno per riabilitarlo.
-Lo stesso vale con **zero** nodi.
+**Variante negativa (validazione trigger)**: aggiungi un **secondo** trigger → compare l'avviso ambra
+*"Un'automazione richiede esattamente un nodo trigger (ora: 2). Necessario per attivarla."*. **"Salva" resta
+attivo** (puoi salvare una **bozza**): il vincolo "un solo trigger" è imposto **lato server all'attivazione** —
+salvare con **"Attiva"** spuntata restituisce **422** (*"fix the flow before enabling it"*). **"Salva" è
+disabilitato solo quando il nome è vuoto.** Lo stesso vale con **zero** trigger.
 
 ### 6.3 — «Se (E / O)» composito
 Aggiungi **"Se (E / O)"** → **Combinazione** `Tutte (E)` → **"+ Aggiungi condizione"** due volte: clausola 1
@@ -464,10 +479,11 @@ i nodi **«Attendi»** rinviano il resto del flusso e lo ri-accodano dopo i minu
 2. Scrivi su WhatsApp dal telefono del lead → si emette `message.received`.
 3. **Atteso (Y)**: al tick successivo del cron (entro ~1 min) l'automazione gira. Per non aspettare, **forza il
    dispatch** a richiesta (Appendice B, snippet "automazioni").
-4. **Verifica (Z)**: nei **log del worker** compaiono `automation.dispatch` (con `dispatched=…`) e
-   `automation.run` (con `automation_id`, `sent`, `deferred`); il **tag `vip`** appare sul contatto in GHL.
-   *(Non esiste una tabella `automation_runs`: l'audit è nei log; lo stato si verifica dagli effetti — tag,
-   `leads.score`, `conversations.handoff_at`, messaggi inviati.)*
+4. **Verifica (Z)**: nei **log del worker** compare `automation.run` (con `automation_id`, `sent`, `deferred`);
+   il **tag `vip`** appare sul contatto in GHL. *(`automation_dispatch` **non logga**: ritorna `{events,
+   dispatched}`, quindi il dispatch si osserva dal valore di ritorno del job, non da un log.)* *(Non esiste una
+   tabella `automation_runs`: lo stato si verifica dagli effetti — tag, `leads.score`,
+   `conversations.handoff_at`, messaggi inviati.)*
 
 ### 6.5 — Comportamento delle azioni "infrastrutturali"
 - **Risposta AI** (`ai_reply`): genera e invia **un** messaggio proattivo mirato, rispettando la **finestra 24h**
@@ -488,8 +504,9 @@ i nodi **«Attendi»** rinviano il resto del flusso e lo ri-accodano dopo i minu
 
 L'agente ora ragiona come **Amalia**: nello **stesso turno** può chiamare **strumenti di lettura** per ancorarsi
 a dati reali **prima** di rispondere — così non promette più uno slot occupato (ADR 0013).
-**Gate** (Bot → Configurazione, sezione **agent**): `agent.tool_use_enabled` (default **ON**) ·
-`agent.max_tool_iterations` (default **3**, range 1–5; **1 = single-shot** classico, niente strumenti).
+**Gate** (chiavi **solo backend**, via override API/cascade — **non** esiste una sezione "agent" nella UI):
+`agent.tool_use_enabled` (default **ON**) · `agent.max_tool_iterations` (default **3**, range 1–5;
+**1 = single-shot** classico, niente strumenti).
 
 ### 7.1 — Anti-falsa-conferma (Playground + reale)
 **Prerequisito**: **GHL collegato** (gli strumenti leggono calendario/appuntamenti dal mirror GHL).
@@ -503,9 +520,9 @@ a dati reali **prima** di rispondere — così non promette più uno slot occupa
 4. **Sotto-test appuntamento**: `vorrei spostare il mio appuntamento` → `lookup_appointment` recupera
    l'appuntamento e il bot risponde con i **dettagli reali** prima di proporre lo spostamento.
 
-**Variante negativa**: porta `agent.max_tool_iterations` a **1** → torna **single-shot** (nessuna verifica
-mid-turn). **Senza GHL**: *"Calendario non collegato: non posso verificare le disponibilità reali."* e il bot
-non promette nulla.
+**Variante negativa**: porta `agent.max_tool_iterations` a **1** (via **override API** — non c'è in UI) → torna
+**single-shot** (nessuna verifica mid-turn). **Senza GHL**: *"Calendario non collegato: non posso verificare le
+disponibilità reali."* e il bot non promette nulla.
 
 > Funziona identico nel **Playground** (stesso system prompt del flusso reale): se il GHL è collegato, vedi gli
 > stessi strumenti di lettura agire prima della risposta.
@@ -518,10 +535,11 @@ col testo di cortesia, `conversations.handoff_at` valorizzato, evento `conversat
 `reason='ai_error'`. *(Override per merchant: `escalation.handoff_message`.)*
 
 ### 7.3 — Staleness inbound (niente risposte a vecchi backlog)
-`schedule.inbound_staleness_min` (default **10** min, `0` = disattiva). Un inbound **più vecchio** della soglia
-(es. backlog accumulato durante un downtime) viene **salvato ma non risposto**, così il bot non risponde fuori
-contesto. **Verifica**: in `messages` resta solo la riga `role='user'`; log `uc01.auto_reply_skipped`
-`reason='stale'`. *(Il timestamp arriva dal webhook Meta, propagato al worker.)*
+`schedule.inbound_staleness_min` (default **10** min, `0` = disattiva; **configurabile solo via override API** —
+non è esposto nella sezione "Orari" della UI). Un inbound **più vecchio** della soglia (es. backlog accumulato
+durante un downtime) viene **salvato ma non risposto**, così il bot non risponde fuori contesto. **Verifica**:
+in `messages` resta solo la riga `role='user'`; log `uc01.auto_reply_skipped` `reason='stale'`. *(Il timestamp
+arriva dal webhook Meta, propagato al worker.)*
 
 ### 7.4 — Consegna «umana» (debounce / typing / multi-bolla)
 Tutti i default `delivery.*` sono **ON**: **debounce** 8 s (accorpa messaggi ravvicinati), **typing indicator**
@@ -535,13 +553,16 @@ Tutti i default `delivery.*` sono **ON**: **debounce** 8 s (accorpa messaggi rav
 
 ### 7.5 — Throttler 360dialog + Retry-After
 Il client 360dialog limita ~**8 msg/s per canale** e rispetta l'header **Retry-After** sui `429` (backoff).
-Osservabile soprattutto nei **log** (`d360.send.retry`, `d360.send_failed`) — non c'è un test "telefono" diretto.
+Osservabile nei **log** col warning `d360.send.retry`; a retry esauriti il client **solleva** un
+`IntegrationError(error_code='d360_send_failed')` (non è un log `d360.send_failed`) — non c'è un test "telefono"
+diretto.
 
 ### 7.6 — Sezioni di configurazione sbloccate
 Bot → **Configurazione** ora espone le sezioni operative prima nascoste: **No answer (UC-03)**,
-**Reactivation (UC-06)**, **Scoring (UC-05)**, **Booking (UC-02)**, **Consegna (tono umano)**, **agent**,
+**Reactivation (UC-06)**, **Scoring (UC-05)**, **Booking (UC-02)**, **Consegna (tono umano)**,
 **Escalation**. I campi mostrano i badge **Inherited / Customized / Locked**; sotto **impersonazione agenzia**
-compaiono come **Override agenzia** (e l'agenzia può **bloccare** una chiave per il merchant).
+compaiono come **Override agenzia** (e l'agenzia può **bloccare** una chiave per il merchant). *(Le chiavi
+`agent.*` **non** hanno una sezione UI: si impostano solo via override API.)*
 
 ---
 
@@ -567,8 +588,11 @@ Prova a creare/validare un template che viola una regola → ottieni **errori** 
 | Cosa provi | Esito atteso |
 |---|---|
 | Variabili adiacenti: `Ciao {{1}}{{2}}` | **errore** (le variabili vanno separate da testo) |
-| Corpo che **inizia** con `{{1}}` | **errore** |
-| Variabili nel corpo ma **senza** valori di esempio | **warning** |
+| Corpo che **inizia** con `{{1}}` | **errore** (`VAR_AT_START`) |
+| Corpo che **finisce** con `{{1}}` | **errore** (`VAR_AT_END`) |
+| Variabili **non sequenziali / con buchi** (es. `{{1}} {{3}}`) | **errore** (`VAR_NON_SEQUENTIAL`) |
+| Corpo con **tab**, **> 4 spazi** o **> 4 a-capo** consecutivi | **errore** (`BODY_TAB` / `BODY_SPACE_RUN` / `BODY_NEWLINE_RUN`) |
+| Campo **Valori di esempio presente ma incompleto** | **warning** (se ometti del tutto il campo, nessun warning) |
 | **Footer** > 60 caratteri o con `{{1}}` | **errore** |
 | Pulsante **URL** non `https://` | **errore** |
 | Pulsante telefono non in formato `+E.164` | **errore** |
@@ -613,7 +637,7 @@ Nel **Playground**, dopo una risposta del bot premi **"Modifica"**, scrivi la ve
 
 ## 10. Altri test (trasversali) — consigliati
 
-### 6.1 — Isolamento multitenant (RLS)
+### 10.1 — Isolamento multitenant (RLS)
 Come **merchant_user** (con il JWT del merchant):
 ```bash
 # Un altro merchant → 404 (la RLS nasconde la riga)
@@ -629,30 +653,30 @@ Come **agency_admin**:
 - `…?merchant_id=<merchant di un altro tenant>` → **404**.
 - web-admin → **Inbox** vede le conversazioni di **tutti** i merchant; il merchant vede **solo le sue**.
 
-### 6.2 — Firma webhook GHL
+### 10.2 — Firma webhook GHL
 ```bash
 curl -i -X POST -H "x-ghl-signature: firma-finta" -H "Content-Type: application/json" \
   -d '{"type":"INSTALL","locationId":"x"}' \
   https://api-production-6ac7.up.railway.app/webhooks/ghl/marketplace   # → 401, nessuna scrittura
 ```
 
-### 6.3 — Orari di attività (off-hours)
+### 10.3 — Orari di attività (off-hours)
 In **Configurazione** imposta `schedule.active_hours = "09:00-17:00"` e scrivi **fuori** da quell'orario →
 il bot risponde con l'**off-hours message**: *"Grazie per averci contattato! Ti risponderemo al più presto."*
 (invece della risposta normale). Ripristina `24/7` dopo.
 
-### 6.4 — Escalation a operatore umano
+### 10.4 — Escalation a operatore umano
 Scrivi: **`Voglio fare un reclamo, chiamo l'avvocato`** (parole critiche: reclamo/avvocato/truffa/denuncia…).
 **Atteso**: il bot risponde con tono di presa in carico ed emette `escalate_human`; la conversazione passa
 in gestione umana (`auto_reply=false`). Verificalo nel Playground (evento `escalate_human`) o su una
 conversazione reale.
 
-### 6.5 — Finestra 24h
+### 10.5 — Finestra 24h
 Prova a inviare una risposta **manuale** dal Composer (web-merchant → Conversazioni) **oltre 24h** dall'ultimo
 messaggio in entrata del lead: il sistema la marca `failed` con motivo `outside_24h_window` e ti avvisa che
 serve un template. Entro le 24h, invece, il testo libero parte.
 
-### 6.6 — Persona / tono
+### 10.6 — Persona / tono
 In **Configurazione** imposta `bot.formality = "dai-del-lei"` → il bot inizia a **dare del Lei**. Con
 `"dai-del-tu"` torna a dare del tu.
 
@@ -686,8 +710,9 @@ In **Configurazione** imposta `bot.formality = "dai-del-lei"` → il bot inizia 
 ## 12. Limitazioni note (da non scambiare per bug)
 
 - **Export CSV (UC-12)**: backend pronto, **pulsante UI non ancora cablato**.
-- **Lavagnetta — audit dei run (§6)**: **non esiste** una tabella `automation_runs`; l'esecuzione si verifica dai
-  **log** (`automation.dispatch` / `automation.run`) e dagli **effetti** (tag, score, messaggi). Le automazioni
+- **Lavagnetta — audit dei run (§6)**: **non esiste** una tabella `automation_runs`; l'esecuzione si verifica dal
+  **log** `automation.run` (`automation_dispatch` non logga: ritorna `{events, dispatched}`) e dagli **effetti**
+  (tag, score, messaggi). Le automazioni
   personalizzate partono **solo se "Attive"** e con un ritardo fino a ~1 min (cron `automation_dispatch`); per i
   test immediati forza il dispatch a richiesta (Appendice B).
 - **Intestazione immagine nei template (§8)**: `header_type=IMAGE` **non supportato in V1** (il validatore lo
@@ -856,7 +881,10 @@ from arq.connections import RedisSettings
 from shared import get_settings
 
 JOB = 'followup_no_answer'   # oppure: reactivate_dormant_leads | send_appointment_reminders |
-                             #          close_idle_conversations | daily_kpi_rollup
+                             #          close_idle_conversations | daily_kpi_rollup |
+                             #          integration_health_check | objection_extraction | kb_reindex |
+                             #          build_analytics_export | enforce_retention | sync_appointments |
+                             #          template_status_sync | fine_tune_run/train/evaluate/deploy
 async def main():
     pool = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
     await pool.enqueue_job(JOB)
@@ -918,11 +946,12 @@ railway logs --service api
 **Default — agente & consegna (§7)** (sovrascrivibili per merchant/agenzia):
 `agent.tool_use_enabled=true` · `agent.max_tool_iterations=3` (1–5) · `schedule.inbound_staleness_min=10` (0–1440,
 0=off) · `delivery.debounce_window_s=8` (0–30) · `delivery.typing_indicator_enabled=true` ·
-`delivery.typing_delay_base_s=1.0` · `delivery.typing_delay_min_s=1.0` · `delivery.typing_delay_max_s=6.0` ·
+`delivery.typing_delay_base_s=1.0` · `delivery.typing_delay_per_char_s=0.02` (0–0.2) ·
+`delivery.typing_delay_min_s=1.0` · `delivery.typing_delay_max_s=6.0` ·
 `delivery.typing_jitter_frac=0.25` · `delivery.multi_bubble_max=2` (1–4) · `delivery.bubble_max_chars=600` ·
 `escalation.handoff_message=null` (vuoto = usa la frase di cortesia predefinita).
 
-**Categorie obiezioni** (default): `prezzo, fiducia, tempistiche, concorrenza, necessita, altro`.
+**Categorie obiezioni** (default): `prezzo, tempistiche, fiducia, competitor, informazioni_mancanti, non_interessato, altro`.
 
 **Frasi-trigger tipiche** → azione del bot:
 `vorrei prenotare giovedì alle 15` → `book_slot` · `quando siete liberi?` → `propose_slots` ·
@@ -933,7 +962,7 @@ railway logs --service api
 - Proposta slot: `Ecco le prime disponibilità: …\nFammi sapere quale preferisci.`
 - Slot occupato: `Quello slot non è più disponibile. Ti suggerisco: …\nFammi sapere quale preferisci.`
 - Errore prenotazione: `Al momento non riesco a completare la prenotazione. Ti ricontatteremo a brevissimo.`
-- Reminder appuntamento: `Promemoria: hai un appuntamento {data} alle {ora}. A presto!`
+- Reminder appuntamento (free-text entro 24h): `Promemoria: hai un appuntamento {gg/mm alle hh:mm}. A presto!` (giorno+ora = un unico token `%d/%m alle %H:%M`)
 - Follow-up #1: `Ciao! Eri ancora interessato? Se vuoi posso aiutarti a completare la richiesta.`
 - Follow-up #2: `Facciamo un ultimo tentativo — se vuoi riprendere la conversazione, rispondi pure.`
 - Riattivazione #1: `Ciao! È passato un po' — se l'interesse è ancora vivo, possiamo riprendere da dove eravamo?`
