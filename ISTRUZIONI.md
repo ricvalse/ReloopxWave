@@ -14,6 +14,7 @@
 
 - ✅ = verifica superata · ❌ = fallita · ⏭️ = saltato (manca un prerequisito).
 - I test sono in ordine di dipendenza: fai prima il **Setup una-tantum** (§3), poi lo **Smoke** (§4), poi gli UC (§5).
+- Le funzioni più recenti hanno una sezione dedicata: **Lavagnetta / Automazioni** (§6), **agente loop tool-use + consegna «umana»** (§7), **template WhatsApp** (§8), **handoff & correzioni del bot** (§9).
 - Ogni UC ha fino a due **tracce**:
   - **Traccia A — WhatsApp reale**: scrivi davvero dal telefono al numero del merchant. È il test "vero".
   - **Traccia B — Playground**: stessa logica, stesso prompt, **simulazione senza inviare nulla** (utile come
@@ -208,7 +209,7 @@ con `reminder_sent_at` valorizzato (A.3).
 5. **Verifica (Z)**: `conversations.meta` ha `reminders_sent` incrementato e `last_reminder_at` valorizzato (A.5).
 6. Ripristina la soglia a 120 dopo il test.
 
-**Parte (b) — chiamata fallita** *(richiede i webhook dati GHL — vedi §8 Limitazioni)*
+**Parte (b) — chiamata fallita** *(richiede i webhook dati GHL — vedi §12 Limitazioni)*
 1. In GHL registra/logga sul contatto una chiamata con esito **"no answer"** (o busy/failed/voicemail/no_show).
 2. GHL invia l'evento a `POST /webhooks/ghl/marketplace` → `handle_ghl_event` crea/riusa una conversazione e
    la marca `meta.origin='call_failed'`, rendendola candidata al follow-up.
@@ -360,7 +361,7 @@ con `reminder_sent_at` valorizzato (A.3).
    è **cliccabile** e porta a `/merchants/{id}` (drill-down sul singolo merchant, con i suoi KPI).
 3. **Verifica (Z)**: i totali combaciano con la somma dei merchant del tenant (A.12).
 
-> *Export CSV*: l'endpoint esiste (`POST /analytics/exports`) ma il **pulsante in UI è ancora parziale** (§8).
+> *Export CSV*: l'endpoint esiste (`POST /analytics/exports`) ma il **pulsante in UI è ancora parziale** (§12).
 
 ---
 
@@ -387,7 +388,230 @@ con `reminder_sent_at` valorizzato (A.3).
 
 ---
 
-## 6. Altri test (trasversali) — consigliati
+## 6. Lavagnetta — Automazioni (flussi a grafo)
+
+web-merchant → **Messaggistica → Automazioni** (`/automazioni`). La **lavagnetta** è un editor visuale a grafo
+(React Flow): colleghi un **trigger** a **condizioni** e **azioni**. È il modello unificato che ha sostituito i
+vecchi "Flussi" lifecycle e la rotta `/flussi` (ora rimossa). L'elenco ha due gruppi:
+- **Flussi di sistema**: 4 flussi sempre presenti (seminati al primo accesso), con **trigger bloccato** (non
+  eliminabile). Sono guidati dagli scheduler; puoi solo aggiungere condizioni e azioni «Invia»/«Risposta AI»
+  per personalizzare gli invii. **Attivandolo, il flusso sostituisce il testo predefinito** del lifecycle.
+- **Automazioni personalizzate**: le crei tu. Sono **event-driven** e girano **solo se sono "Attive"**.
+
+### 6.1 — Anatomia (cosa trovi sulla lavagnetta)
+- **Elenco** (`/automazioni`): ogni card mostra nome, tipo di trigger, conteggio nodi/collegamenti, un **badge**
+  (**Sistema** / **Attiva** / **Bozza**), il pulsante **"Apri sulla lavagnetta"** e **"Elimina"** (solo per le
+  personalizzate). In alto: **"Nuova automazione"**.
+- I **4 flussi di sistema** (etichetta ← `system_key`): **Nessuna risposta** (`no_answer`), **Riattivazione
+  dormienti** (`reactivation`), **Promemoria appuntamento** (`booking_reminder`), **Primo contatto**
+  (`first_contact`).
+- **Editor**: palette a sinistra (**Trigger**, **Condizioni**, **Azioni**), canvas al centro (pan + zoom +
+  MiniMap), pannello di configurazione a destra. **Le condizioni hanno due uscite: «sì» e «no».** In basso
+  **"Annulla"** / **"Salva"** e la spunta **"Attiva"**.
+
+**Palette — Trigger** (uno solo per automazione): `Messaggio ricevuto` · `Nessuna risposta` ·
+`Prenotazione creata` · `Prenotazione fallita` · `Lead dormiente`.
+
+**Palette — Condizioni**: `Temperatura lead` (Caldo/Tiepido/Freddo) · `Punteggio lead` (≥, ≤, …) ·
+`Finestra 24h aperta` · `Fascia oraria (UTC)` (Dalle/Alle) · `Messaggio contiene` (parole chiave) ·
+**`Se (E / O)`** = gruppo composito: **Combinazione** «Tutte (E)» o «Almeno una (O)» + più clausole, ognuna
+con spunta **«Nega (NOT)»**.
+
+**Palette — Azioni**: `Invia messaggio` (Politica finestra 24h: *Auto* / *Solo template approvato* / *Solo
+testo libero*) · `Risposta AI` (Obiettivo, Istruzioni extra, **Azioni AI consentite** multiselect, Template di
+fallback, Modello) · `Aggiorna lead/CRM` (Campo: *Tag* / *Punteggio (delta)* / *Campo personalizzato* +
+**Sincronizza su GHL**) · `Passa a operatore` (Motivo) · `Attendi` (Minuti). *(Le azioni «legacy»
+`Invia template`/`Invia testo` restano per le personalizzate ma sono nascoste nei flussi di sistema.)*
+
+### 6.2 — Crea e attiva un'automazione personalizzata (Traccia A)
+1. **"Nuova automazione"** → trascina dalla palette **"Messaggio ricevuto"**: appare il nodo trigger (verde).
+2. Aggiungi **"Messaggio contiene"** (parole: `prezzo, costo`); collega il trigger al nodo (trascina dal
+   pallino in basso al pallino in alto).
+3. Dal ramo **«sì»** della condizione collega un'azione **"Risposta AI"** (Obiettivo: *"rispondi al dubbio
+   sul prezzo e proponi una call"*).
+4. Rinomina in `Test prezzo`, spunta **"Attiva"**, **"Salva"** → torni all'elenco con badge **Attiva**.
+5. **Verifica struttura**: riapri con **"Apri sulla lavagnetta"** → nodi e collegamenti sono persistiti.
+
+**Variante negativa (validazione trigger)**: aggiungi un **secondo** trigger → compare *"Un'automazione
+richiede esattamente un nodo trigger (ora: 2)."* e **"Salva"** è disabilitato. Rimuovine uno per riabilitarlo.
+Lo stesso vale con **zero** nodi.
+
+### 6.3 — «Se (E / O)» composito
+Aggiungi **"Se (E / O)"** → **Combinazione** `Tutte (E)` → **"+ Aggiungi condizione"** due volte: clausola 1
+`Punteggio lead ≥ 60`, clausola 2 `Finestra 24h aperta` con **«Nega (NOT)»** spuntata. Atteso: il ramo «sì»
+parte solo se *score ≥ 60* **E** *NON* in finestra 24h. Con `Almeno una (O)` basta una clausola vera.
+
+### 6.4 — Come "parte" un'automazione (il motore)
+Il motore è **event-driven**: il cron **`automation_dispatch`** (ogni minuto) fa il *tail* di `analytics_events`
+e accoda un `automation_run` per ogni automazione **personalizzata + Attiva** sottoscritta a quell'evento.
+Mappa **evento → trigger**:
+
+| Evento (`analytics_events.event_type`) | Trigger lavagnetta |
+|---|---|
+| `message.received` | Messaggio ricevuto |
+| `booking.created` | Prenotazione creata |
+| `booking.failed` | Prenotazione fallita |
+| `reminder.sent` | Nessuna risposta |
+| `lead_reactivation.sent` | Lead dormiente |
+
+I **flussi di sistema sono esclusi** dal dispatcher (li guidano gli scheduler) → niente doppia esecuzione.
+Altre regole: **dedup 24h** per coppia (flusso, evento); **una sola «Risposta AI» per run** (anti-loop);
+i nodi **«Attendi»** rinviano il resto del flusso e lo ri-accodano dopo i minuti indicati.
+
+**Test end-to-end (Traccia A reale)**
+1. Crea automazione: trigger **"Messaggio ricevuto"** → azione **"Aggiorna lead/CRM"** (Campo *Tag*, Valore
+   `vip`, **Sincronizza su GHL** ON). **Attiva** + Salva.
+2. Scrivi su WhatsApp dal telefono del lead → si emette `message.received`.
+3. **Atteso (Y)**: al tick successivo del cron (entro ~1 min) l'automazione gira. Per non aspettare, **forza il
+   dispatch** a richiesta (Appendice B, snippet "automazioni").
+4. **Verifica (Z)**: nei **log del worker** compaiono `automation.dispatch` (con `dispatched=…`) e
+   `automation.run` (con `automation_id`, `sent`, `deferred`); il **tag `vip`** appare sul contatto in GHL.
+   *(Non esiste una tabella `automation_runs`: l'audit è nei log; lo stato si verifica dagli effetti — tag,
+   `leads.score`, `conversations.handoff_at`, messaggi inviati.)*
+
+### 6.5 — Comportamento delle azioni "infrastrutturali"
+- **Risposta AI** (`ai_reply`): genera e invia **un** messaggio proattivo mirato, rispettando la **finestra 24h**
+  (testo libero entro, template di fallback fuori); può dispatchare le sole **Azioni AI consentite** che hai
+  spuntato (es. `Prenota appuntamento`, `Avanza in pipeline`). **Guard**: se la conversazione è in **takeover**
+  (handoff attivo) la Risposta AI viene **saltata** (log `automation.ai_reply.skipped reason=takeover`).
+- **Aggiorna lead/CRM** (`set_lead_field`): *Punteggio (delta)* → applica un delta allo score (`update_score`);
+  *Tag* / *Campo personalizzato* → propagati su **GHL** se **«Sincronizza su GHL»** è ON. Senza GHL collegato →
+  **salta in modo pulito** (log `…skipped reason=no_ghl`). Non invia nessun messaggio.
+- **Passa a operatore** (`human_handoff`): mette la chat in **gestione umana** (takeover): `auto_reply=false`,
+  `handoff_at` valorizzato; l'AI **smette di rispondere** (vedi §9).
+
+> Stringhe ed etichette verbatim della lavagnetta: **Appendice C**. Query/log di verifica: **Appendice B**.
+
+---
+
+## 7. Agente: loop tool-use (anti-falsa-conferma) + consegna «umana»
+
+L'agente ora ragiona come **Amalia**: nello **stesso turno** può chiamare **strumenti di lettura** per ancorarsi
+a dati reali **prima** di rispondere — così non promette più uno slot occupato (ADR 0013).
+**Gate** (Bot → Configurazione, sezione **agent**): `agent.tool_use_enabled` (default **ON**) ·
+`agent.max_tool_iterations` (default **3**, range 1–5; **1 = single-shot** classico, niente strumenti).
+
+### 7.1 — Anti-falsa-conferma (Playground + reale)
+**Prerequisito**: **GHL collegato** (gli strumenti leggono calendario/appuntamenti dal mirror GHL).
+1. Prenota uno slot (UC-02), poi prova a prenotare lo **stesso** slot **occupato**: `prenota domani alle 15`.
+2. **Atteso (Y)**: il bot **non** dice subito *"ho prenotato"*. Manda prima una **frase di passaggio**
+   (*"un attimo che verifico"* / *"procedo subito e ti confermo"*); a metà turno gira `check_availability`,
+   scopre che è occupato e la risposta **finale** propone alternative reali:
+   *"Lo slot richiesto … NON è libero. Disponibilità reali più vicine: …"*.
+3. **Sotto-test disponibilità**: `quando siete liberi?` → `check_availability` legge le disponibilità **vere**
+   da GHL e propone slot reali.
+4. **Sotto-test appuntamento**: `vorrei spostare il mio appuntamento` → `lookup_appointment` recupera
+   l'appuntamento e il bot risponde con i **dettagli reali** prima di proporre lo spostamento.
+
+**Variante negativa**: porta `agent.max_tool_iterations` a **1** → torna **single-shot** (nessuna verifica
+mid-turn). **Senza GHL**: *"Calendario non collegato: non posso verificare le disponibilità reali."* e il bot
+non promette nulla.
+
+> Funziona identico nel **Playground** (stesso system prompt del flusso reale): se il GHL è collegato, vedi gli
+> stessi strumenti di lettura agire prima della risposta.
+
+### 7.2 — Fail-safe su errore dell'AI
+Se l'LLM va in errore, il cliente riceve **sempre** cortesia + handoff:
+*"Grazie per il tuo messaggio! Lo passo subito a un nostro operatore che ti risponderà a brevissimo."* e la
+conversazione passa in **gestione umana** (`handoff_reason='ai_error'`). **Verifica**: riga `role='assistant'`
+col testo di cortesia, `conversations.handoff_at` valorizzato, evento `conversation.escalated` con
+`reason='ai_error'`. *(Override per merchant: `escalation.handoff_message`.)*
+
+### 7.3 — Staleness inbound (niente risposte a vecchi backlog)
+`schedule.inbound_staleness_min` (default **10** min, `0` = disattiva). Un inbound **più vecchio** della soglia
+(es. backlog accumulato durante un downtime) viene **salvato ma non risposto**, così il bot non risponde fuori
+contesto. **Verifica**: in `messages` resta solo la riga `role='user'`; log `uc01.auto_reply_skipped`
+`reason='stale'`. *(Il timestamp arriva dal webhook Meta, propagato al worker.)*
+
+### 7.4 — Consegna «umana» (debounce / typing / multi-bolla)
+Tutti i default `delivery.*` sono **ON**: **debounce** 8 s (accorpa messaggi ravvicinati), **typing indicator**
++ spunte di lettura, **pausa di digitazione** 1–6 s (proporzionale alla lunghezza, con jitter deterministico),
+**multi-bolla** max 2 (split a 600 caratteri).
+- **Debounce**: manda **3 messaggi in < 8 s** → il bot risponde **una volta sola** (turno unico su tutti e 3).
+  DB: 3 righe `role='user'`, **1** risposta. Log `uc01.debounced` poi `uc01.handled`.
+- **Typing/pausa**: sul telefono vedi le **spunte di lettura** e *"sta scrivendo…"* prima della risposta.
+- **Multi-bolla**: una risposta lunga (> 600 char) arriva in **2 bolle** separate; in **Conversazioni** resta
+  **una sola** riga assistant (testo intero).
+
+### 7.5 — Throttler 360dialog + Retry-After
+Il client 360dialog limita ~**8 msg/s per canale** e rispetta l'header **Retry-After** sui `429` (backoff).
+Osservabile soprattutto nei **log** (`d360.send.retry`, `d360.send_failed`) — non c'è un test "telefono" diretto.
+
+### 7.6 — Sezioni di configurazione sbloccate
+Bot → **Configurazione** ora espone le sezioni operative prima nascoste: **No answer (UC-03)**,
+**Reactivation (UC-06)**, **Scoring (UC-05)**, **Booking (UC-02)**, **Consegna (tono umano)**, **agent**,
+**Escalation**. I campi mostrano i badge **Inherited / Customized / Locked**; sotto **impersonazione agenzia**
+compaiono come **Override agenzia** (e l'agenzia può **bloccare** una chiave per il merchant).
+
+---
+
+## 8. Template WhatsApp — validazione
+
+web-merchant → **Messaggistica → Template WhatsApp** (`/whatsapp-templates`). Servono per scrivere **fuori dalla
+finestra 24h** (riattivazioni, follow-up, promemoria). Il backend **valida l'intero ruleset Meta prima**
+dell'invio, così non aspetti ore per scoprire un rifiuto.
+
+### 8.1 — Crea, valida, invia
+1. **"Nuovo template"** → compila **Scopo**, **Categoria** (`UTILITY`/`MARKETING`/`AUTHENTICATION`), **Lingua**,
+   **Corpo del messaggio** (con variabili `{{1}}`, `{{2}}`…), **Valori di esempio per le variabili**, e
+   facoltativi **Intestazione**, **Footer**, **Pulsanti**. A lato, **anteprima a bolla WhatsApp** in tempo reale.
+2. **"Salva come bozza"** (non invia) **oppure** **"Crea e invia per approvazione"** (→ 360dialog/Meta).
+3. **Stati**: **Bozza → In approvazione → Approvato / Rifiutato**. **"Sincronizza stato"** aggiorna da Meta.
+   Un template **Rifiutato** si può **"Modifica"**re e re-inviare (riparte da Bozza).
+
+### 8.2 — Regole che il validatore blocca (con esempi)
+Prova a creare/validare un template che viola una regola → ottieni **errori** (bloccano) o **warning**
+(consigli). Endpoint **read-only** per pre-controllare senza creare nulla:
+`POST /whatsapp-templates/validate`.
+
+| Cosa provi | Esito atteso |
+|---|---|
+| Variabili adiacenti: `Ciao {{1}}{{2}}` | **errore** (le variabili vanno separate da testo) |
+| Corpo che **inizia** con `{{1}}` | **errore** |
+| Variabili nel corpo ma **senza** valori di esempio | **warning** |
+| **Footer** > 60 caratteri o con `{{1}}` | **errore** |
+| Pulsante **URL** non `https://` | **errore** |
+| Pulsante telefono non in formato `+E.164` | **errore** |
+| `AUTHENTICATION` con **URL nel corpo** | **errore** |
+| **Intestazione immagine** | **errore** (non supportata in V1) |
+| Parole promozionali (`sconto`, `offerta`) in `UTILITY` | **warning** (valuta `MARKETING`) |
+| Lingua sconosciuta (es. `xx_XX`) | **warning** (non errore) |
+
+**Persistenza esempi** (migrazione 0026): crea una bozza con esempi, riaprila → i **Valori di esempio** sono
+salvati; modificali e ri-salva → restano persistiti.
+
+---
+
+## 9. Handoff & correzioni del bot
+
+### 9.1 — Pausa AI / takeover (`ai_disabled_until`)
+In **Conversazioni**, l'intestazione del thread mostra lo stato: **Auto-risposta attiva** / **Risposta manuale**
+/ **Risposta manuale (account)**.
+- **Risposta manuale**: se rispondi dal **Composer**, la chat passa in **gestione umana** (`auto_reply=false`,
+  `handoff_at` valorizzato). Banner: **"Stai gestendo tu questa chat"**.
+- **Soft-pause**: il pulsante **"Pausa 2h"** mette l'AI in pausa **senza spegnere** l'auto-reply
+  (`ai_disabled_until = now + 2h`) e poi **riprende da sola**; **"Riattiva AI"** la riattiva subito. Banner:
+  **"AI in pausa · riprende tra …"**.
+- API: `POST /conversations/{id}/ai-pause` (default **168h / 7 giorni**, range 1–720) · `…/ai-resume`.
+
+**Verifica (Z)**: durante la pausa un inbound **non** riceve risposta del bot; `conversations.ai_disabled_until`
+è valorizzato; scaduta la pausa (o premendo **"Riattiva AI"**) il bot torna a rispondere.
+
+### 9.2 — Correzioni del bot (loop di addestramento dal Playground)
+Nel **Playground**, dopo una risposta del bot premi **"Modifica"**, scrivi la versione **giusta** e
+**"Salva correzione"** (badge **"corretta"**). La correzione (`trigger_message` + `original_response` +
+`corrected_response`) viene confrontata con i messaggi **futuri** simili e iniettata nel system prompt come
+**override obbligatorio**, **per merchant**.
+- API: `POST/GET/PATCH/DELETE /catalog/{merchant_id}/corrections` (max **200** attive). Tabella `bot_corrections`.
+- **Verifica (Z)**: la correzione compare nell'elenco; rimanda un messaggio simile al `trigger_message` → la
+  nuova risposta segue la correzione. Disattivandola (`is_active=false`) **non** viene più applicata.
+
+> Le correzioni sono parte della **lavorazione in corso** UC-08: il *matching* è euristico (sovrapposizione di
+> parole) e si valuta a tempo di turno — vedi **§12 Limitazioni**.
+
+---
+
+## 10. Altri test (trasversali) — consigliati
 
 ### 6.1 — Isolamento multitenant (RLS)
 Come **merchant_user** (con il JWT del merchant):
@@ -434,7 +658,7 @@ In **Configurazione** imposta `bot.formality = "dai-del-lei"` → il bot inizia 
 
 ---
 
-## 7. Checklist finale
+## 11. Checklist finale
 
 | UC | Descrizione | Esito |
 |----|-------------|:----:|
@@ -451,13 +675,31 @@ In **Configurazione** imposta `bot.formality = "dai-del-lei"` → il bot inizia 
 | UC-11 | Dashboard merchant | ☐ |
 | UC-12 | Dashboard agenzia + ranking | ☐ |
 | UC-13 | Report obiezioni (merchant + agenzia) | ☐ |
+| §6 | Lavagnetta: crea/attiva automazione · «Se (E/O)» · run su evento | ☐ |
+| §7 | Agente: anti-falsa-conferma (tool-use) · fail-safe · staleness · consegna umana | ☐ |
+| §8 | Template WhatsApp: validazione + ciclo Bozza→Approvato | ☐ |
+| §9 | Handoff (pausa/takeover) · correzioni del bot | ☐ |
 | Extra | RLS · firma webhook · off-hours · escalation · 24h · persona | ☐ |
 
 ---
 
-## 8. Limitazioni note (da non scambiare per bug)
+## 12. Limitazioni note (da non scambiare per bug)
 
 - **Export CSV (UC-12)**: backend pronto, **pulsante UI non ancora cablato**.
+- **Lavagnetta — audit dei run (§6)**: **non esiste** una tabella `automation_runs`; l'esecuzione si verifica dai
+  **log** (`automation.dispatch` / `automation.run`) e dagli **effetti** (tag, score, messaggi). Le automazioni
+  personalizzate partono **solo se "Attive"** e con un ritardo fino a ~1 min (cron `automation_dispatch`); per i
+  test immediati forza il dispatch a richiesta (Appendice B).
+- **Intestazione immagine nei template (§8)**: `header_type=IMAGE` **non supportato in V1** (il validatore lo
+  blocca). Solo intestazione testuale.
+- **Correzioni del bot (§9.2)**: il *matching* sul messaggio del cliente è **euristico** (sovrapposizione di
+  parole) e risolto a tempo di turno; è **lavoro in corso** — verificalo nel Playground con un messaggio molto
+  simile al `trigger_message`.
+- **Qualification**: non esiste un pulsante di qualificazione manuale; la qualifica è **guidata dal bot**
+  (azione `move_pipeline` quando il lead supera la soglia, UC-04) e richiede GHL collegato.
+- **Tool-use agente (§7.1)**: gli strumenti di lettura (`check_availability`/`lookup_appointment`) richiedono
+  **GHL collegato**; la regola anti-falsa-conferma è nel prompt (compliance del modello), non un vincolo rigido —
+  il loop tool-use **riduce** il rischio ancorando il bot prima della risposta.
 - **Custom field GHL (UC-04)**: i dati raccolti viaggiano nella **nota** del contatto; la mappatura sui custom
   field GHL è rimandata (servono gli ID dei campi del tuo account).
 - **Webhook dati GHL (UC-03 "chiamata fallita", sync contatti/opportunità)**: dipendono dalla *Default Webhook
@@ -569,6 +811,38 @@ from objections where merchant_id='<merchant_id>' order by created_at desc limit
 
 ---
 
+**A.14 — Automazioni / Lavagnetta (§6)**
+```sql
+-- flussi del merchant (sistema + personalizzati)
+select id, name, enabled, system_key, trigger_type
+from automation_flows where merchant_id='<merchant_id>' order by system_key nulls last, name;
+
+-- nodi e collegamenti di un'automazione
+select node_key, kind, type, config from automation_nodes where automation_id='<automation_id>';
+select source_key, target_key, branch from automation_edges where automation_id='<automation_id>';
+
+-- evento che fa da trigger (per innescare un flusso a mano, vedi Appendice B)
+select id, event_type, subject_type, subject_id, occurred_at
+from analytics_events
+where merchant_id='<merchant_id>' and event_type in
+  ('message.received','booking.created','booking.failed','reminder.sent','lead_reactivation.sent')
+order by occurred_at desc limit 10;
+```
+
+**A.15 — Handoff / pausa AI / correzioni (§9)**
+```sql
+-- stato handoff / soft-pause
+select id, auto_reply, ai_disabled_until, handoff_at, handoff_reason, handoff_resolved_at
+from conversations where merchant_id='<merchant_id>' and wa_contact_phone='<phone>'
+order by last_message_at desc;
+
+-- correzioni del bot (UC-08)
+select trigger_message, original_response, corrected_response, is_active, created_at
+from bot_corrections where merchant_id='<merchant_id>' order by created_at desc limit 20;
+```
+
+---
+
 ## Appendice B — Far partire i job a richiesta (Railway)
 
 I cron girano dentro il **worker**. Per non aspettare la schedulazione, **accoda** il job: il worker in
@@ -607,6 +881,23 @@ asyncio.run(main())
 "
 ```
 
+**Far scattare subito un'automazione personalizzata (§6)** — forza il *tail* degli eventi senza aspettare il
+cron (gira ogni minuto). Prima genera l'evento (es. scrivi su WhatsApp per `message.received`, oppure inserisci
+una riga in `analytics_events`), poi:
+```bash
+railway run --service worker python -c "
+import asyncio
+from arq import create_pool
+from arq.connections import RedisSettings
+from shared import get_settings
+async def main():
+    pool = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
+    await pool.enqueue_job('automation_dispatch')   # accoda gli automation_run delle automazioni Attive
+    print('automation_dispatch accodato')
+asyncio.run(main())
+"
+```
+
 **Leggere i log** (utile quando un test non dà l'esito atteso):
 ```bash
 railway logs --service worker
@@ -623,6 +914,13 @@ railway logs --service api
 `max_followups=2` · `reactivation.dormant_days=90` · `interval_days=7` · `max_attempts=3` ·
 `booking.default_duration_min=30` · `booking.lookahead_days=14` · `rag.top_k=5` · `rag.min_score=0.7` ·
 `schedule.active_hours="24/7"` · `schedule.timezone="Europe/Rome"` · `conversation.idle_close_minutes=120`.
+
+**Default — agente & consegna (§7)** (sovrascrivibili per merchant/agenzia):
+`agent.tool_use_enabled=true` · `agent.max_tool_iterations=3` (1–5) · `schedule.inbound_staleness_min=10` (0–1440,
+0=off) · `delivery.debounce_window_s=8` (0–30) · `delivery.typing_indicator_enabled=true` ·
+`delivery.typing_delay_base_s=1.0` · `delivery.typing_delay_min_s=1.0` · `delivery.typing_delay_max_s=6.0` ·
+`delivery.typing_jitter_frac=0.25` · `delivery.multi_bubble_max=2` (1–4) · `delivery.bubble_max_chars=600` ·
+`escalation.handoff_message=null` (vuoto = usa la frase di cortesia predefinita).
 
 **Categorie obiezioni** (default): `prezzo, fiducia, tempistiche, concorrenza, necessita, altro`.
 
@@ -643,8 +941,26 @@ railway logs --service api
 - Riattivazione #3: `Ci ripassi volentieri quando ti torna utile. A presto!`
 - Off-hours: `Grazie per averci contattato! Ti risponderemo al più presto.`
 - Nota GHL (UC-04): `[Reloop AI] Lead spostato in pipeline dalla conversazione WhatsApp.` + `Motivo:` / `Sentiment:` / `Nome:` / `Email:`.
+- Fail-safe AI (§7.2): `Grazie per il tuo messaggio! Lo passo subito a un nostro operatore che ti risponderà a brevissimo.`
+- Tool-use — slot libero (§7.1): `Lo slot richiesto (…) è LIBERO: puoi proporre di confermarlo.`
+- Tool-use — slot occupato (§7.1): `Lo slot richiesto (…) NON è libero. Disponibilità reali più vicine: …`
+- Tool-use — calendario assente (§7.1): `Calendario non collegato: non posso verificare le disponibilità reali.`
+- Tool-use — nessun appuntamento (§7.1): `Il cliente non ha appuntamenti futuri registrati.`
 
 **Parole di opt-out** (messaggio esatto): `stop, cancella, cancellami, annulla, disiscrivi, disiscrivimi, unsubscribe`.
+
+**Etichette Lavagnetta (§6)** — Trigger: `Messaggio ricevuto` · `Nessuna risposta` · `Prenotazione creata` ·
+`Prenotazione fallita` · `Lead dormiente`. Condizioni: `Temperatura lead` · `Punteggio lead` ·
+`Finestra 24h aperta` · `Fascia oraria (UTC)` · `Messaggio contiene` · `Se (E / O)`. Azioni: `Invia messaggio` ·
+`Risposta AI` · `Aggiorna lead/CRM` · `Passa a operatore` · `Attendi`. Badge: `Sistema` / `Attiva` / `Bozza`.
+Flussi di sistema: `Nessuna risposta` · `Riattivazione dormienti` · `Promemoria appuntamento` · `Primo contatto`.
+
+**Etichette Template WhatsApp (§8)**: stati `Bozza` / `In approvazione` / `Approvato` / `Rifiutato`; azioni
+`Salva come bozza` / `Crea e invia per approvazione` / `Sincronizza stato` / `Modifica`.
+
+**Etichette Handoff (§9)**: intestazione `Auto-risposta attiva` / `Risposta manuale` / `Risposta manuale (account)`;
+banner `Stai gestendo tu questa chat` · `AI in pausa · riprende tra …` · pulsanti `Pausa 2h` / `Riattiva AI`;
+Playground `Modifica` / `Salva correzione` / badge `corretta`.
 
 ---
 
