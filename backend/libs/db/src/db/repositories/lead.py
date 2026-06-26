@@ -294,3 +294,53 @@ class LeadRepository:
             ),
             {"lead_id": str(lead_id)},
         )
+
+    async def update_behavioral_signals(
+        self,
+        lead_id: UUID,
+        *,
+        response_latency_s: int | None = None,
+        message_length: int | None = None,
+    ) -> None:
+        """Update behavioral scoring signals with exponential moving average (α=0.3)."""
+        updates: list[str] = []
+        params: dict = {"lead_id": str(lead_id)}
+        if response_latency_s is not None:
+            updates.append(
+                "avg_response_latency_seconds = COALESCE("
+                "  ROUND(0.7 * avg_response_latency_seconds + 0.3 * :latency)::int,"
+                "  :latency"
+                ")"
+            )
+            params["latency"] = response_latency_s
+        if message_length is not None:
+            updates.append(
+                "avg_message_length_chars = COALESCE("
+                "  ROUND(0.7 * avg_message_length_chars + 0.3 * :msg_len)::int,"
+                "  :msg_len"
+                ")"
+            )
+            params["msg_len"] = message_length
+        if not updates:
+            return
+        await self._session.execute(
+            text(f"UPDATE leads SET {', '.join(updates)} WHERE id = :lead_id"),
+            params,
+        )
+
+    async def update_read_receipt_ratio(self, lead_id: UUID, *, was_read: bool) -> None:
+        """Update read_receipt_ratio with exponential moving average (α=0.2)."""
+        value = 1.0 if was_read else 0.0
+        await self._session.execute(
+            text(
+                """
+                UPDATE leads
+                SET read_receipt_ratio = COALESCE(
+                    0.8 * read_receipt_ratio + 0.2 * :v,
+                    :v
+                )
+                WHERE id = :lead_id
+                """
+            ),
+            {"lead_id": str(lead_id), "v": value},
+        )

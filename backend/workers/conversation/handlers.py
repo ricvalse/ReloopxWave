@@ -905,6 +905,23 @@ async def update_outbound_status(
 
         await session.execute(update(Message).where(Message.id == msg.id).values(**values))
 
+        # S-03: update read_receipt_ratio when a message is read
+        if new_status == "read" and msg.conversation_id:
+            try:
+                conv_row = (
+                    await session.execute(
+                        select(Conversation).where(Conversation.id == msg.conversation_id)
+                    )
+                ).scalar_one_or_none()
+                if conv_row and conv_row.lead_id:
+                    from db.repositories.lead import LeadRepository
+
+                    await LeadRepository(session).update_read_receipt_ratio(
+                        conv_row.lead_id, was_read=True
+                    )
+            except Exception as _e:
+                logger.debug("wa.status.read_ratio_failed", error=str(_e))
+
     logger.info(
         "wa.status.updated",
         wa_message_id=wa_message_id,

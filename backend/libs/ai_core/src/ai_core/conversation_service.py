@@ -721,6 +721,20 @@ class ConversationService:
                     wa_message_id=wa_message_id,
                     variant_id=conv.variant_id,
                 )
+                # S-03: capture behavioral signals (latency + message length)
+                latency_s: int | None = None
+                if prior_last_message_at is not None:
+                    delta = datetime.now(UTC) - (
+                        prior_last_message_at.replace(tzinfo=UTC)
+                        if prior_last_message_at.tzinfo is None
+                        else prior_last_message_at
+                    )
+                    latency_s = max(0, int(delta.total_seconds()))
+                await LeadRepository(session).update_behavioral_signals(
+                    lead.id,
+                    response_latency_s=latency_s,
+                    message_length=len(text),
+                )
                 # Open/refresh the 24h customer-service window on a new inbound.
                 await convs.touch_last_inbound(conv.id)
                 received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}

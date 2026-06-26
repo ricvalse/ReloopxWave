@@ -108,6 +108,9 @@ async def daily_kpi_rollup(ctx: dict[str, Any]) -> dict[str, Any]:
             )
             written += 3
 
+    # S-03: apply score decay and compute velocity flags
+    await _apply_score_decay_and_velocity(session)
+
     logger.info(
         "kpi.daily.rollup.done",
         day=start.date().isoformat(),
@@ -119,3 +122,66 @@ async def daily_kpi_rollup(ctx: dict[str, Any]) -> dict[str, Any]:
         "events_written": written,
         "tenants": len(tenants_touched),
     }
+
+
+async def _apply_score_decay_and_velocity(session: Any) -> None:
+    """Update effective_score (score * exponential decay) and velocity_flag.
+
+    effective_score = score * exp(-0.02 * days_since_last_interaction)
+    velocity_flag: 'stalled' if days_in_current_state > 2x merchant median,
+                   'high' if < 0.5x median, 'normal' otherwise.
+    """
+    from sqlalchemy import text as sqla_text
+
+    # Score decay: effective_score decays for all non-terminal leads
+    await session.execute(
+        sqla_text(
+            """
+            UPDATE leads
+            SET effective_score = score * EXP(
+                -0.02 * GREATEST(0,
+                    EXTRACT(EPOCH FROM (
+                        NOW() - COALESCE(
+                            TO_TIMESTAMP(last_interaction_at, 'YYYY-MM-DD"T"HH24:MI:SS'),
+                            updated_at
+                        )
+                    )) / 86400.0
+                )
+            )
+            WHERE status NOT IN ('booked', 'dead', 'opted_out')
+            """
+        )
+    )
+
+    # Velocity flag: compare days in current conversation state vs merchant median
+    await session.execute(
+        sqla_text(
+            """
+            WITH lead_ages AS (
+                SELECT
+                    l.id,
+                    l.merchant_id,
+                    EXTRACT(EPOCH FROM (NOW() - l.updated_at)) / 86400.0 AS days_active
+                FROM leads l
+                WHERE l.status NOT IN ('booked', 'dead', 'opted_out')
+            ),
+            merchant_medians AS (
+                SELECT
+                    merchant_id,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY days_active) AS median_days
+                FROM lead_ages
+                GROUP BY merchant_id
+            )
+            UPDATE leads l
+            SET velocity_flag = CASE
+                WHEN la.days_active > 2.0 * GREATEST(mm.median_days, 0.5) THEN 'stalled'
+                WHEN la.days_active < 0.5 * GREATEST(mm.median_days, 0.5) THEN 'high'
+                ELSE 'normal'
+            END
+            FROM lead_ages la
+            JOIN merchant_medians mm ON mm.merchant_id = la.merchant_id
+            WHERE l.id = la.id
+            """
+        )
+    )
+    logger.info("kpi.scoring.decay_and_velocity.done")
