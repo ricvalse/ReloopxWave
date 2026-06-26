@@ -63,7 +63,7 @@ class Conversation(Base, TimestampMixin):
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821
-    messages: Mapped[list[Message]] = relationship(back_populates="conversation")
+    messages: Mapped[list[Message]] = relationship(back_populates="conversation", passive_deletes=True)
 
 
 class Message(Base):

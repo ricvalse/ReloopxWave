@@ -1,6 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { useConversationsContext } from '../lib/context';
 import { CONV_LIST_KEY } from './use-conversations';
 import type { Conversation } from '../types';
@@ -42,11 +43,15 @@ export function useDeleteConversation() {
       return { snapshot };
     },
 
-    onError: (_err, _id, ctx) => {
-      if (!ctx) return;
-      for (const [key, value] of ctx.snapshot) {
-        queryClient.setQueryData(key, value);
+    onError: (err, _id, ctx) => {
+      if (ctx) {
+        for (const [key, value] of ctx.snapshot) {
+          queryClient.setQueryData(key, value);
+        }
       }
+      toast.error('Impossibile eliminare la conversazione', {
+        description: (err as Error).message ?? 'Errore sconosciuto',
+      });
     },
 
     onSettled: () => {
