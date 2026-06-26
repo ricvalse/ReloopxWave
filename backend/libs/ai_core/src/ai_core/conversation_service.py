@@ -36,6 +36,9 @@ from ai_core.rag import Embedder, RAGEngine
 from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
+from ai_core.quality.coherence import CoherenceGuard
+from ai_core.quality.compressor import ContextCompressor, memory_block_as_message
+from ai_core.state_machine import ConvState, next_state, state_system_hint
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     ABRepository,
@@ -207,10 +210,13 @@ class _ReplyContext:
     from_phone: str
     phone_number_id: str
     text: str
+    conv_current_state: str | None = None
     latest_wa_message_id: str | None = None
     # UC-05 — True when the lead replied within 10min of the previous turn
     # (derived from the conversation's prior last_message_at at inbound time).
     responded_within_10min: bool = False
+    # S-09: behavioral latency signal (EMA from LeadRepository).
+    lead_avg_latency_seconds: int | None = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -531,6 +537,8 @@ class ConversationService:
         # availability/appointment data mid-turn. None = single-shot turns.
         self._tool_executor = tool_executor
         self._kek = kek_base64
+        # Cached nano LLM client for RAG HyDE + re-ranking (low-cost operations).
+        self._rag_nano_client: Any = None
 
     async def handle_inbound(
         self,
@@ -717,6 +725,25 @@ class ConversationService:
                     wa_message_id=wa_message_id,
                     variant_id=conv.variant_id,
                 )
+                # S-03: capture behavioral signals (latency + message length)
+                latency_s: int | None = None
+                if prior_last_message_at is not None:
+                    delta = datetime.now(UTC) - (
+                        prior_last_message_at.replace(tzinfo=UTC)
+                        if prior_last_message_at.tzinfo is None
+                        else prior_last_message_at
+                    )
+                    latency_s = max(0, int(delta.total_seconds()))
+                lead_repo = LeadRepository(session)
+                await lead_repo.update_behavioral_signals(
+                    lead.id,
+                    response_latency_s=latency_s,
+                    message_length=len(text),
+                )
+                # S-05: compute intake score on the very first inbound message.
+                if prior_last_message_at is None:
+                    intake = _compute_intake_score(text)
+                    await lead_repo.update_intake_score(lead.id, score=intake)
                 # Open/refresh the 24h customer-service window on a new inbound.
                 await convs.touch_last_inbound(conv.id)
                 received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}
@@ -758,6 +785,7 @@ class ConversationService:
             # (zero added latency; the current turn's sentiment is computed later
             # and updates the lead for the NEXT turn).
             lead_sentiment = lead.sentiment
+            conv_current_state = conv.current_state
             chat_history = _to_chat_history(history)
 
             # Per-merchant debounce window (0 = off). Resolved here so the worker
@@ -793,6 +821,7 @@ class ConversationService:
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
                 text=text,
+                conv_current_state=conv_current_state,
                 latest_wa_message_id=wa_message_id,
             )
 
@@ -862,7 +891,9 @@ class ConversationService:
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
                 text=text,
+                conv_current_state=conv.current_state,
                 latest_wa_message_id=wa_message_id,
+                lead_avg_latency_seconds=lead.avg_response_latency_seconds,
             )
         return await self._generate_and_deliver(rc)
 
@@ -901,9 +932,28 @@ class ConversationService:
                     min_score = await self._resolve_float(
                         session, resolved.merchant_id, ConfigKey.RAG_MIN_SCORE, default=0.7
                     )
-                    rag = RAGEngine(session, self._embedder)
+                    hyde_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.RAG_HYDE_ENABLED, default=True
+                    )
+                    rerank_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_ENABLED, default=True
+                    )
+                    rerank_top_k = await self._resolve_int(
+                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_TOP_K, default=5
+                    )
+                    freshness_decay = await self._resolve_float(
+                        session, resolved.merchant_id, ConfigKey.RAG_FRESHNESS_DECAY, default=0.01
+                    )
+                    rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
                     kb_chunks = await rag.retrieve(
-                        rc.text, merchant_id=resolved.merchant_id, top_k=top_k, min_score=min_score
+                        rc.text,
+                        merchant_id=resolved.merchant_id,
+                        top_k=top_k,
+                        min_score=min_score,
+                        hyde_enabled=hyde_enabled,
+                        rerank_enabled=rerank_enabled,
+                        rerank_top_k=rerank_top_k,
+                        freshness_decay=freshness_decay,
                     )
                 except Exception as e:
                     logger.warning("uc01.rag_failed", error=str(e))
@@ -921,6 +971,74 @@ class ConversationService:
                 session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
 
+            # FSM: load current state, inject hint into system prompt
+            fsm_state = ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
+            fsm_hint = state_system_hint(fsm_state)
+            if fsm_hint:
+                system_prompt = system_prompt + "\n\n" + fsm_hint
+
+            # S-09: proactive escalation risk — inject empathy hint when risk ≥ 60
+            from ai_core.escalation_predictor import predict_escalation_risk
+            from sqlalchemy import func, select as sa_select
+            from db.models import Objection as ObjModel
+
+            try:
+                obj_count_row = await session.execute(
+                    sa_select(func.count()).select_from(ObjModel).where(
+                        ObjModel.conversation_id == rc.conv_id
+                    )
+                )
+                obj_count = obj_count_row.scalar() or 0
+            except Exception:
+                obj_count = 0
+
+            recent_user_msgs = [
+                m.content for m in rc.chat_history[-6:] if m.role == "user"
+            ]
+            esc_risk = predict_escalation_risk(
+                turn_count=len(rc.chat_history),
+                lead_score=rc.lead_score,
+                hot_threshold=advance_threshold,
+                sentiment=rc.lead_sentiment,
+                objection_count=obj_count,
+                recent_messages=recent_user_msgs,
+                avg_response_latency_seconds=rc.lead_avg_latency_seconds,
+            )
+            if esc_risk.score >= 60:
+                system_prompt = (
+                    system_prompt
+                    + "\n\nATTENZIONE: il lead mostra segnali di frustrazione o tensione. "
+                    "Sii particolarmente empatico, paziente e rassicurante in questa risposta."
+                )
+                if esc_risk.score >= 75:
+                    await analytics.emit(
+                        tenant_id=resolved.tenant_id,
+                        merchant_id=resolved.merchant_id,
+                        event_type="escalation.risk_high",
+                        subject_type="conversation",
+                        subject_id=rc.conv_id,
+                        properties={"risk_score": esc_risk.score, "factors": esc_risk.factors},
+                    )
+
+            # S-04: context compression — replace old turns with a memory block
+            effective_history = rc.chat_history
+            compress_threshold = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD, default=30
+            )
+            if len(effective_history) > compress_threshold:
+                nano_client = self._rag_llm_client()
+                if nano_client is not None:
+                    from ai_core.quality.compressor import _KEEP_RECENT
+
+                    compressor = ContextCompressor(nano_client)
+                    block = await compressor.compress(effective_history)
+                    if block is not None:
+                        await convs.save_context_summary(
+                            rc.conv_id,
+                            {"text": block.text, "compressed_turns": block.compressed_turns, "compressed_at": block.compressed_at},
+                        )
+                        effective_history = [memory_block_as_message(block)] + effective_history[-_KEEP_RECENT:]
+
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
                 tenant_id=resolved.tenant_id,
@@ -928,7 +1046,7 @@ class ConversationService:
                 lead_score=rc.lead_score,
                 hot_threshold=hot_threshold,
                 system_prompt=system_prompt,
-                history=rc.chat_history,
+                history=effective_history,
                 kb_chunks=kb_chunks,
                 variant_id=rc.conv_variant_id,
                 advance_threshold=advance_threshold,
@@ -952,6 +1070,22 @@ class ConversationService:
             else:
                 try:
                     response = await self._run_orchestrator(session, ctx, rc)
+                    # S-04: coherence guard — retry once if the reply contradicts prior facts
+                    coherence_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.AGENT_COHERENCE_GUARD_ENABLED, default=True
+                    )
+                    if coherence_enabled:
+                        nano_client = self._rag_llm_client()
+                        if nano_client is not None:
+                            guard = CoherenceGuard(nano_client)
+                            result = await guard.check(effective_history, response.reply_text)
+                            if not result.coherent:
+                                logger.info(
+                                    "uc01.coherence_retry",
+                                    issue=result.issue,
+                                    conversation_id=str(rc.conv_id),
+                                )
+                                response = await self._run_orchestrator(session, ctx, rc)
                 except Exception as e:
                     # Fail-safe: never leave the customer in silence on an LLM
                     # error. Send a courtesy line and hand off to a human (the
@@ -1023,6 +1157,11 @@ class ConversationService:
                 )
                 if rc.lead_id is not None and sentiment:
                     await LeadRepository(session).update_sentiment(rc.lead_id, sentiment=sentiment)
+
+            # FSM: transition and persist new state
+            new_fsm_state = next_state(fsm_state, response.actions, turn_count=len(rc.chat_history))
+            if new_fsm_state != fsm_state:
+                await convs.update_state(rc.conv_id, new_fsm_state.value)
 
             if not suppress_reply:
                 await msgs.persist_assistant_message(
@@ -1183,6 +1322,25 @@ class ConversationService:
             conversation_id=rc.conv_id,
             reply_text=response.reply_text,
         )
+
+    def _rag_llm_client(self) -> Any:
+        """Return a cheap nano LLM client for RAG HyDE + re-ranking.
+
+        Lazily built from the orchestrator's router. Returns None if the router
+        doesn't expose a nano model (safe: RAGEngine falls back to raw query).
+        """
+        if self._rag_nano_client is not None:
+            return self._rag_nano_client
+        try:
+            from ai_core.llm import OpenAIClient
+            from ai_core.router import ModelRouter
+
+            router: ModelRouter = self._orchestrator._router  # type: ignore[attr-defined]
+            client = OpenAIClient(model="gpt-4.1-nano", api_key=router._api_key)  # type: ignore[attr-defined]
+            self._rag_nano_client = client
+            return client
+        except Exception:
+            return None
 
     async def _run_orchestrator(
         self, session: Any, ctx: ConversationContext, rc: _ReplyContext
@@ -1546,16 +1704,108 @@ def _responded_within_10min(prior_last_message_at: datetime | None) -> bool:
     return (datetime.now(UTC) - prior_last_message_at) <= _RESPONDED_FAST_WINDOW
 
 
+_INTAKE_HIGH_INTENT = frozenset(
+    [
+        "prezzo",
+        "costo",
+        "acquistare",
+        "comprare",
+        "disponibile",
+        "preventivo",
+        "offerta",
+        "sconto",
+        "quando",
+        "appuntamento",
+        "informazioni",
+        "interessato",
+        "vorrei",
+        "voglio",
+        "book",
+        "price",
+        "buy",
+        "available",
+    ]
+)
+
+
+def _compute_intake_score(text: str) -> int:
+    """Heuristic intent/intake score (0-100) for the first inbound message.
+
+    Long messages and presence of high-intent keywords push the score up.
+    This gives the scheduler and scoring a lightweight signal before any LLM call.
+    """
+    lower = text.lower()
+    words = lower.split()
+    keyword_hits = sum(1 for w in words if w.rstrip(".,!?") in _INTAKE_HIGH_INTENT)
+    length_score = min(40, len(text) // 5)
+    keyword_score = min(60, keyword_hits * 20)
+    return min(100, length_score + keyword_score)
+
+
 async def _assign_ab_variant(session: Any, *, merchant_id: UUID, lead_id: UUID) -> str | None:
-    """Pick the oldest running experiment (if any) and hash-assign the lead."""
+    """Pick the oldest running experiment and assign a variant.
+
+    S-06: When AB_THOMPSON_SAMPLING_ENABLED is True (default), uses Thompson
+    Sampling to select the arm with the highest Beta-sampled conversion rate.
+    Falls back to deterministic hash-pick if the bandit logic fails.
+    """
+    from ai_core.bandit.thompson import thompson_sample
+
     try:
         ab = ABRepository(session)
         running = await ab.list_active_for_merchant(merchant_id)
         if not running:
             return None
+
+        experiment = running[0]
+        variants = experiment.variants or []
+        if not variants:
+            return "default"
+
+        # Check if Thompson Sampling is enabled for this merchant.
+        try:
+            resolver = ConfigResolver(session)
+            use_ts = await resolver.resolve(
+                ConfigKey.AB_THOMPSON_SAMPLING_ENABLED, merchant_id=merchant_id
+            )
+            thompson_enabled = bool(use_ts) if use_ts is not None else True
+        except Exception:
+            thompson_enabled = True
+
+        if thompson_enabled:
+            # Check for an existing assignment first (idempotency).
+            from sqlalchemy import select as sa_select
+            from db.models import ABAssignment
+
+            existing_stmt = sa_select(ABAssignment).where(
+                ABAssignment.experiment_id == experiment.id,
+                ABAssignment.lead_id == lead_id,
+            )
+            existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                return existing.variant_id
+
+            # Draw from Beta posteriors for each variant.
+            wins, totals = await ab.get_variant_stats(
+                experiment.id, primary_metric=experiment.primary_metric
+            )
+            variant_id = thompson_sample(variants, variant_wins=wins, variant_totals=totals)
+
+            # Persist the assignment.
+            session.add(
+                ABAssignment(
+                    experiment_id=experiment.id,
+                    merchant_id=merchant_id,
+                    lead_id=lead_id,
+                    variant_id=variant_id,
+                )
+            )
+            await session.flush()
+            return variant_id
+
         return cast(
             "str | None",
-            await ab.assign_variant(running[0], lead_id=lead_id, merchant_id=merchant_id),
+            await ab.assign_variant(experiment, lead_id=lead_id, merchant_id=merchant_id),
         )
     except Exception as e:  # pragma: no cover — defensive only
         logger.warning("uc09.assignment_failed", error=str(e))

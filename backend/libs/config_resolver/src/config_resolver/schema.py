@@ -60,6 +60,10 @@ class ConfigKey(StrEnum):
     # UC-07 RAG
     RAG_TOP_K = "rag.top_k"
     RAG_MIN_SCORE = "rag.min_score"
+    RAG_HYDE_ENABLED = "rag.hyde_enabled"
+    RAG_RERANK_ENABLED = "rag.rerank_enabled"
+    RAG_RERANK_TOP_K = "rag.rerank_top_k"
+    RAG_FRESHNESS_DECAY = "rag.freshness_decay"
 
     # Bot
     BOT_LANGUAGE = "bot.language"
@@ -142,6 +146,10 @@ class ConfigKey(StrEnum):
     # per turn (1 = single-shot, no tool grounding).
     AGENT_TOOL_USE_ENABLED = "agent.tool_use_enabled"
     AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
+    AGENT_COHERENCE_GUARD_ENABLED = "agent.coherence_guard_enabled"
+    AGENT_CONTEXT_COMPRESS_THRESHOLD = "agent.context_compress_threshold"
+    # S-06: Thompson Sampling replaces uniform hash-pick for A/B variant assignment.
+    AB_THOMPSON_SAMPLING_ENABLED = "ab.thompson_sampling_enabled"
 
     # GHL CRM sync (contratto capitolato sez.5) — map our collected lead fields
     # to the merchant's GHL custom-field ids, and tag every synced contact.
@@ -193,6 +201,10 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
     ConfigKey.RAG_MIN_SCORE: 0.7,
+    ConfigKey.RAG_HYDE_ENABLED: True,
+    ConfigKey.RAG_RERANK_ENABLED: True,
+    ConfigKey.RAG_RERANK_TOP_K: 5,
+    ConfigKey.RAG_FRESHNESS_DECAY: 0.01,
     ConfigKey.BOT_LANGUAGE: "it",
     ConfigKey.BOT_TONE: "professionale-amichevole",
     ConfigKey.ESCALATION_ENABLED: True,
@@ -242,6 +254,9 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     # twice before replying.
     ConfigKey.AGENT_TOOL_USE_ENABLED: True,
     ConfigKey.AGENT_MAX_TOOL_ITERATIONS: 3,
+    ConfigKey.AGENT_COHERENCE_GUARD_ENABLED: True,
+    ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD: 30,
+    ConfigKey.AB_THOMPSON_SAMPLING_ENABLED: True,
     ConfigKey.GHL_CONTACT_FIELD_MAP: {},
     ConfigKey.GHL_CONTACT_DEFAULT_TAGS: [],
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,6 +42,15 @@ class Lead(Base, TimestampMixin):
     opted_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_interaction_at: Mapped[str | None] = mapped_column(String(64))  # ISO ts cached for filters
     pipeline_stage_id: Mapped[str | None] = mapped_column(String(120))
+    # S-03: behavioral scoring signals
+    avg_response_latency_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_message_length_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    read_receipt_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    effective_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    velocity_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # S-05: pre-conversation intelligence
+    optimal_send_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    intake_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="leads")  # type: ignore[name-defined]  # noqa: F821

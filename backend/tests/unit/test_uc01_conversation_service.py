@@ -49,6 +49,7 @@ class FakeConversation:
     handoff_reason: str | None = None
     handoff_resolved_at: Any = None
     last_message_at: Any = None
+    current_state: str | None = None
 
 
 class FakeSession:
@@ -158,6 +159,12 @@ def service(
         async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return lead
 
+        async def update_behavioral_signals(self, lead_id, **kw):
+            return None
+
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
@@ -173,6 +180,12 @@ def service(
             return None
 
         async def touch_last_inbound(self, conversation_id):
+            return None
+
+        async def update_state(self, conversation_id, state):
+            return None
+
+        async def save_context_summary(self, conversation_id, summary):
             return None
 
     class FakeMsgRepo:
@@ -359,6 +372,12 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return lead
 
+        async def update_behavioral_signals(self, lead_id, **kw):
+            return None
+
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
@@ -371,6 +390,12 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
             return None
 
         async def touch_last_inbound(self, conversation_id):
+            return None
+
+        async def update_state(self, conversation_id, state):
+            return None
+
+        async def save_context_summary(self, conversation_id, summary):
             return None
 
     class FakeMsgRepo:
@@ -477,6 +502,12 @@ async def test_inbound_idempotent_on_redelivery(
         async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return FakeLead()
 
+        async def update_behavioral_signals(self, lead_id, **kw):
+            return None
+
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
@@ -489,6 +520,12 @@ async def test_inbound_idempotent_on_redelivery(
             return None
 
         async def touch_last_inbound(self, conversation_id):
+            return None
+
+        async def update_state(self, conversation_id, state):
+            return None
+
+        async def save_context_summary(self, conversation_id, summary):
             return None
 
     class FakeMsgRepo:

@@ -15,7 +15,7 @@ from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import ConfigKey, ConfigResolver
 from db import AnalyticsRepository, MerchantRepository
-from db.models import AnalyticsEvent
+from db.models import AnalyticsEvent, Objection
 from integrations import SupabaseStorage
 from shared import (
     IntegrationError,
@@ -273,3 +273,166 @@ async def list_events(
             for r in rows
         ]
     )
+
+
+# S-08: objection trend analytics
+
+
+class ObjectionTrendOut(BaseModel):
+    category: str
+    count_current_week: int
+    count_prior_week: int
+    growth_pct: float
+    is_trending: bool
+    suggested_rebuttal: str | None = None
+
+
+@router.get(
+    "/merchant/objection-trends",
+    response_model=list[ObjectionTrendOut],
+    dependencies=[Depends(require_role({"merchant_admin", "merchant_user", "tenant_admin"}))],
+)
+async def objection_trends(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+    with_suggestions: bool = Query(default=False, description="Generate LLM rebuttals for trending categories"),
+) -> list[ObjectionTrendOut]:
+    """Return objection category counts for the current vs prior 7 days.
+
+    Pass `with_suggestions=true` to get LLM-generated rebuttal scripts for
+    trending categories (uses one LLM call per trending category).
+    """
+    from collections import defaultdict
+
+    from ai_core.llm import OpenAIClient
+    from ai_core.objection_trends import compute_trends, suggest_rebuttal
+
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+    now = datetime.now(tz=UTC)
+    current_start = now - timedelta(days=7)
+    prior_start = now - timedelta(days=14)
+
+    # Fetch current week objections
+    curr_rows = (
+        await session.execute(
+            select(Objection.category, Objection.quote)
+            .where(
+                Objection.merchant_id == target,
+                Objection.created_at >= current_start,
+            )
+        )
+    ).all()
+
+    # Fetch prior week objections
+    prior_rows = (
+        await session.execute(
+            select(Objection.category)
+            .where(
+                Objection.merchant_id == target,
+                Objection.created_at >= prior_start,
+                Objection.created_at < current_start,
+            )
+        )
+    ).all()
+
+    current_week: dict[str, int] = defaultdict(int)
+    category_quotes: dict[str, list[str]] = defaultdict(list)
+    for cat, quote in curr_rows:
+        current_week[cat] += 1
+        if quote:
+            category_quotes[cat].append(quote)
+
+    prior_week: dict[str, int] = defaultdict(int)
+    for (cat,) in prior_rows:
+        prior_week[cat] += 1
+
+    trends = compute_trends(current_week=dict(current_week), prior_week=dict(prior_week))
+
+    if with_suggestions:
+        settings = get_settings()
+        if settings.openai_api_key:
+            client = OpenAIClient(api_key=settings.openai_api_key, model="gpt-4.1-mini")
+            for t in trends:
+                if t.is_trending:
+                    t.suggested_rebuttal = await suggest_rebuttal(
+                        client,
+                        category=t.category,
+                        sample_quotes=category_quotes.get(t.category),
+                    )
+
+    return [ObjectionTrendOut(**t.__dict__) for t in trends]
+
+
+# S-10: predictive lead scoring
+
+
+class PredictiveLeadScoreOut(BaseModel):
+    lead_id: UUID
+    probability: int
+    dominant_feature: str
+    effective_score: float | None
+    sentiment: str | None
+
+
+@router.get(
+    "/merchant/lead-scores",
+    response_model=list[PredictiveLeadScoreOut],
+    dependencies=[Depends(require_role({"merchant_admin", "merchant_user", "tenant_admin"}))],
+)
+async def predictive_lead_scores(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[PredictiveLeadScoreOut]:
+    """Return predictive booking-probability scores for the top leads.
+
+    Scores are computed server-side from the accumulated behavioral and content
+    signals. Higher probability → higher chance of converting to a booking.
+    """
+    from ai_core.predictive_scoring import compute_booking_probability
+    from db.models import Conversation, Lead
+
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+
+    # Fetch leads with any engagement (have at least one conversation)
+    subq = select(Conversation.lead_id).where(Conversation.merchant_id == target).distinct()
+    leads = (
+        await session.execute(
+            select(Lead)
+            .where(Lead.merchant_id == target, Lead.id.in_(subq), Lead.status != "erased")
+            .order_by(Lead.score.desc())
+            .limit(limit * 2)  # over-fetch; predictive sort may reorder
+        )
+    ).scalars().all()
+
+    results: list[PredictiveLeadScoreOut] = []
+    for lead in leads:
+        content_signals: dict[str, bool] = (lead.meta or {}).get("content_signals", {})
+        # Approximate turn_count from score_reasons (not perfect but avoids extra query).
+        turn_count = max(len(lead.score_reasons or []), 1)
+
+        ps = compute_booking_probability(
+            content_signals=content_signals,
+            effective_score=lead.effective_score,
+            sentiment=lead.sentiment,
+            avg_response_latency_seconds=lead.avg_response_latency_seconds,
+            intake_score=lead.intake_score,
+            turn_count=turn_count,
+            was_read=lead.read_receipt_ratio,
+            velocity_flag=lead.velocity_flag,
+        )
+        results.append(
+            PredictiveLeadScoreOut(
+                lead_id=lead.id,
+                probability=ps.probability,
+                dominant_feature=ps.dominant_feature,
+                effective_score=lead.effective_score,
+                sentiment=lead.sentiment,
+            )
+        )
+
+    # Sort by predictive probability descending, trim to requested limit.
+    results.sort(key=lambda r: r.probability, reverse=True)
+    return results[:limit]
