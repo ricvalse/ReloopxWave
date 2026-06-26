@@ -75,10 +75,20 @@ class IntegrationRepository:
                 Integration.meta["phone_number_id"].astext == phone_number_id,
                 Integration.status == "active",
             )
+            .order_by(Integration.updated_at.desc())
         )
-        row = (await self._session.execute(stmt)).one_or_none()
-        if row is None:
+        rows = (await self._session.execute(stmt)).all()
+        if not rows:
             return None
+        if len(rows) > 1:
+            from shared import get_logger as _get_logger
+            _get_logger(__name__).warning(
+                "integrations.resolve_whatsapp.duplicate",
+                phone_number_id=phone_number_id,
+                count=len(rows),
+                merchant_ids=[str(r[0].merchant_id) for r in rows],
+            )
+        row = rows[0]
         integration, tenant_id = row
         meta = dict(integration.meta or {})
         base_url = meta.get("waba_base_url")
@@ -178,6 +188,17 @@ class IntegrationRepository:
             raise ValueError("api_key is required (router delivers per-channel keys)")
         aad = f"wa:{merchant_id}".encode()
         secret = encrypt_secret(api_key, kek_base64=self._kek, aad=aad)
+
+        # If another merchant previously owned this phone_number_id, remove their
+        # stale row — a WhatsApp number can only belong to one merchant at a time.
+        # This handles number transfers and reconnect cycles where a phantom row
+        # from a different merchant_id survives the per-merchant disconnect.
+        stale_stmt = delete(Integration).where(
+            Integration.provider == "whatsapp",
+            Integration.meta["phone_number_id"].astext == phone_number_id,
+            Integration.merchant_id != merchant_id,
+        )
+        await self._session.execute(stale_stmt)
 
         integration = await self._get("whatsapp", merchant_id)
         meta: dict[str, Any] = {
