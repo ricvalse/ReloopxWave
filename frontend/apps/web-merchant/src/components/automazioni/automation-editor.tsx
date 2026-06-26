@@ -48,6 +48,7 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
     if (type === 'lead_score') return { op: '>=', value: 80 };
     if (type === 'time_of_day') return { from: '09:00', to: '18:00' };
     if (type === 'message_contains') return { keywords: [] };
+    if (type === 'ai_check') return { prompt: '', model: '' };
     if (type === 'condition_group') return { operator: 'and', clauses: [] };
   }
   if (kind === 'action') {

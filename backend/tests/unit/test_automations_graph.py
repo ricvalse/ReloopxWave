@@ -1,6 +1,7 @@
 """Unit tests for the automation graph logic — pure functions only (no DB/IO)."""
 
 from ai_core.automations import (
+    _ATOMIC_CONDITION_TYPES,  # type: ignore[attr-defined]
     evaluate_condition,
     outgoing_targets,
     resolve_send_node_at,
@@ -201,6 +202,39 @@ def test_validate_condition_group_config() -> None:
         [],
     )
     assert ok.ok
+
+
+def test_validate_ai_check_config() -> None:
+    def _ai_check(**cfg: object) -> dict:
+        return {"node_key": "c", "kind": "condition", "type": "ai_check", "config": cfg}
+
+    # Missing prompt → error.
+    missing = validate_graph([_trigger(), _ai_check()], [])
+    assert any("ai_check needs a prompt" in e for e in missing.errors)
+
+    # Empty prompt → error.
+    empty = validate_graph([_trigger(), _ai_check(prompt="  ")], [])
+    assert any("ai_check needs a prompt" in e for e in empty.errors)
+
+    # Valid prompt → accepted.
+    ok = validate_graph([_trigger(), _ai_check(prompt="Il lead ha chiesto il prezzo?")], [])
+    assert ok.ok
+
+    # ai_check is NOT a valid clause inside condition_group (async-only).
+    assert "ai_check" not in _ATOMIC_CONDITION_TYPES
+    bad_clause = validate_graph(
+        [
+            _trigger(),
+            {
+                "node_key": "g",
+                "kind": "condition",
+                "type": "condition_group",
+                "config": {"operator": "and", "clauses": [{"type": "ai_check", "prompt": "x"}]},
+            },
+        ],
+        [],
+    )
+    assert any("invalid type" in e for e in bad_clause.errors)
 
 
 def test_validate_ai_reply_config() -> None:

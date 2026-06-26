@@ -47,6 +47,33 @@ class ConversationRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def get_active_or_reopen_latest(
+        self,
+        *,
+        merchant_id: UUID,
+        wa_contact_phone: str,
+    ) -> Conversation | None:
+        """Returns the active conversation for this phone number, or reopens the
+        most recent closed one. Returns None only if no conversation exists at all.
+
+        Called on inbound messages and phone echoes so a new message from a known
+        contact continues the existing thread rather than opening a duplicate.
+        """
+        stmt = (
+            select(Conversation)
+            .where(
+                Conversation.merchant_id == merchant_id,
+                Conversation.wa_contact_phone == wa_contact_phone,
+            )
+            .order_by(Conversation.started_at.desc())
+            .limit(1)
+        )
+        conv = (await self._session.execute(stmt)).scalar_one_or_none()
+        if conv is not None and conv.status != "active":
+            conv.status = "active"
+            await self._session.flush()
+        return conv
+
     async def create(
         self,
         *,

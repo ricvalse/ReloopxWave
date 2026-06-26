@@ -44,6 +44,7 @@ CONDITION_TYPES = (
     "within_24h_window",  # cfg: {} — true when the 24h service window is open
     "time_of_day",  # cfg: {"from": "09:00", "to": "18:00"}
     "message_contains",  # cfg: {"keywords": ["prezzo", "costo"]}
+    "ai_check",  # cfg: {"prompt": str, "model": str|None} — LLM evaluates prompt → bool
     # Composite "se": combine atomic clauses with AND/OR (+ per-clause negate).
     # cfg: {"operator": "and|or",
     #       "clauses": [{"type": <atomic CONDITION_TYPE>, "negate": bool, ...atomic cfg keys}]}

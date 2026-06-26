@@ -32,6 +32,7 @@ from ai_core.automations import evaluate_condition, outgoing_targets
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
+from ai_core.router import RoutingRequest
 from db import (
     AutomationRepository,
     ConversationRepository,
@@ -340,9 +341,12 @@ async def _walk(
             continue
 
         if node.kind == "condition":
-            passed = evaluate_condition(
-                node.type, node.config or {}, run_ctx.as_condition_context()
-            )
+            if node.type == "ai_check":
+                passed = await _evaluate_ai_check(node, node.config or {}, run_ctx, ai_deps)
+            else:
+                passed = evaluate_condition(
+                    node.type, node.config or {}, run_ctx.as_condition_context()
+                )
             queue.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
         elif node.kind == "action":
             if node.type == "wait":
@@ -613,11 +617,11 @@ async def _build_ai_reply_deps(
     run_ctx: RunContext,
     merchant_id: UUID,
 ) -> AiReplyDeps | None:
-    """Assemble AI-reply deps only when the flow has an ai_reply node and we have
-    a conversation + a runtime with the orchestrator/dispatcher wired."""
+    """Assemble AI deps only when the flow has an ai_reply or ai_check node and we
+    have a conversation + a runtime with the orchestrator/dispatcher wired."""
     if run_ctx.conversation_id is None:
         return None
-    if not any(n.type == "ai_reply" for n in automation.nodes):
+    if not any(n.type in ("ai_reply", "ai_check") for n in automation.nodes):
         return None
     runtime = ctx.get("runtime")
     if runtime is None:
@@ -640,6 +644,79 @@ def _history_to_chat(messages: list[Message]) -> list[ChatMessage]:
         ChatMessage(role="assistant" if m.role == "agent" else m.role, content=m.content)
         for m in messages
     ]
+
+
+async def _evaluate_ai_check(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    ai_deps: AiReplyDeps | None,
+) -> bool:
+    """Evaluate an ai_check condition via a lightweight LLM yes/no call.
+
+    Builds a minimal context (lead info + last 10 messages) and asks the LLM
+    to return {"result": true|false}. Fails closed (False) on any error.
+    """
+    if ai_deps is None or run_ctx.conversation_id is None:
+        logger.info("automation.ai_check.skipped", node=node.node_key, reason="no_deps")
+        return False
+    prompt = str(cfg.get("prompt", "")).strip()
+    if not prompt:
+        return False
+    model_override = str(cfg.get("model") or "") or None
+
+    history_text = "\n".join(
+        f"{'AI' if m.role == 'assistant' else 'Lead'}: {m.content}"
+        for m in ai_deps.history[-10:]
+    )
+    lead_context = (
+        f"Lead: {run_ctx.name or 'sconosciuto'}, "
+        f"punteggio={run_ctx.score}, temperatura={run_ctx.temperature}"
+    )
+    messages = [
+        ChatMessage(
+            role="system",
+            content=(
+                "Sei un valutatore booleano. Analizza il contesto della conversazione "
+                'e rispondi SOLO con JSON {"result": true} oppure {"result": false}.'
+            ),
+        ),
+        ChatMessage(
+            role="user",
+            content=(
+                f"{lead_context}\n\nConversazione recente:\n"
+                f"{history_text or '(nessun messaggio)'}"
+                f"\n\nDomanda da valutare: {prompt}"
+            ),
+        ),
+    ]
+
+    try:
+        import json
+
+        req = RoutingRequest(
+            merchant_id=run_ctx.merchant_id,
+            tenant_id=run_ctx.tenant_id,
+            context_tokens=len(history_text) // 4,
+            turn_count=len(ai_deps.history),
+            lead_score=run_ctx.score,
+            hot_threshold=ai_deps.hot_threshold,
+            escalate_keywords_matched=False,
+            force_model=model_override,
+        )
+        client = await ai_deps.orchestrator._router.select(req)
+        result = await client.complete(
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+        data = json.loads(result.content)
+        passed = bool(data.get("result", False))
+        logger.info("automation.ai_check", node=node.node_key, passed=passed)
+        return passed
+    except Exception as exc:
+        logger.warning("automation.ai_check.error", node=node.node_key, error=str(exc))
+        return False
 
 
 async def _do_set_lead_field(

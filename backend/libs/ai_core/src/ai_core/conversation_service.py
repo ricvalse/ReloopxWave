@@ -613,7 +613,7 @@ class ConversationService:
                 merchant_id=resolved.merchant_id, phone=from_phone, campaign=campaign
             )
 
-            conv = await convs.get_active(
+            conv = await convs.get_active_or_reopen_latest(
                 merchant_id=resolved.merchant_id, wa_contact_phone=from_phone
             )
             if conv is None:
@@ -1275,7 +1275,7 @@ class ConversationService:
             lead = await leads.upsert_by_phone(
                 merchant_id=resolved.merchant_id, phone=customer_phone
             )
-            conv = await convs.get_active(
+            conv = await convs.get_active_or_reopen_latest(
                 merchant_id=resolved.merchant_id, wa_contact_phone=customer_phone
             )
             if conv is None:

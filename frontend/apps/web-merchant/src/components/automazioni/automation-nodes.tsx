@@ -77,6 +77,20 @@ export const CONDITION_DEFS: TypeDef[] = [
     fields: [{ key: 'keywords', label: 'Parole chiave', kind: 'keywords', placeholder: 'prezzo, costo' }],
   },
   {
+    type: 'ai_check',
+    label: 'Condizione AI',
+    description: "L'AI valuta un tuo prompt sul contesto della conversazione e risponde sì/no.",
+    fields: [
+      {
+        key: 'prompt',
+        label: 'Prompt di verifica',
+        kind: 'text',
+        placeholder: 'Es. Il lead ha chiesto esplicitamente il prezzo?',
+      },
+      { key: 'model', label: 'Modello (opzionale)', kind: 'text', placeholder: 'auto' },
+    ],
+  },
+  {
     type: 'condition_group',
     label: 'Se (E / O)',
     description: 'Combina più condizioni con E (tutte) oppure O (almeno una).',
@@ -95,9 +109,10 @@ export const CONDITION_DEFS: TypeDef[] = [
   },
 ];
 
-// Atomic condition defs a `condition_group` clause may use (everything except itself).
+// Atomic condition defs a `condition_group` clause may use.
+// Excludes `condition_group` (no nesting) and `ai_check` (async — not evaluable inline).
 export const ATOMIC_CONDITION_DEFS: TypeDef[] = CONDITION_DEFS.filter(
-  (d) => d.type !== 'condition_group',
+  (d) => d.type !== 'condition_group' && d.type !== 'ai_check',
 );
 
 const WINDOW_POLICY_OPTIONS = [
@@ -205,6 +220,10 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
       return Array.isArray(kw) ? kw.join(', ') : '';
     }
     if (type === 'within_24h_window') return 'finestra aperta';
+    if (type === 'ai_check') {
+      const p = String(config.prompt ?? '');
+      return p.length > 40 ? p.slice(0, 37) + '…' : p || 'prompt AI';
+    }
     if (type === 'condition_group') {
       const cl = config.clauses;
       const n = Array.isArray(cl) ? cl.length : 0;

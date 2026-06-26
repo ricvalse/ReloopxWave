@@ -65,7 +65,7 @@ export function useThread(conversationId: string | null) {
       const { data, error } = await supabase
         .from('messages')
         .select(
-          'id, conversation_id, role, direction, content, status, client_message_id, wa_message_id, delivered_at, read_at, failed_at, error, created_at',
+          'id, conversation_id, role, direction, content, status, client_message_id, wa_message_id, delivered_at, read_at, failed_at, error, meta, created_at',
         )
         .eq('conversation_id', conversationId!)
         .order('created_at', { ascending: true })

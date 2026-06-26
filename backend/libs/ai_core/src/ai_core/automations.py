@@ -23,10 +23,10 @@ _VALID_TYPES: dict[str, set[str]] = {
     "action": set(ACTION_TYPES),
 }
 
-# Atomic conditions a `condition_group` clause may reference (everything except the
-# composite itself — no nesting in V1).
+# Atomic conditions a `condition_group` clause may reference.
+# Excludes `condition_group` (no nesting) and `ai_check` (async — not evaluable inline).
 _ATOMIC_CONDITION_TYPES: frozenset[str] = frozenset(
-    t for t in CONDITION_TYPES if t != "condition_group"
+    t for t in CONDITION_TYPES if t not in ("condition_group", "ai_check")
 )
 
 # ActionKinds an `ai_reply` node may let the AI dispatch (mirrors the orchestrator
@@ -167,10 +167,15 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
 
 
 def _condition_config_errors(node: dict[str, Any]) -> list[str]:
-    """Validate condition config. Only `condition_group` is checked (atomic
-    conditions stay lax, matching the existing behaviour). Structural-only:
-    operator in {and,or} and a non-empty list of clauses with atomic types."""
-    if node.get("type") != "condition_group":
+    """Validate condition config. `ai_check` and `condition_group` are checked;
+    other atomic conditions stay lax, matching the existing behaviour."""
+    ntype = node.get("type")
+    if ntype == "ai_check":
+        cfg = node.get("config") or {}
+        if not str(cfg.get("prompt", "")).strip():
+            return [f"node {node.get('node_key')!r}: ai_check needs a prompt"]
+        return []
+    if ntype != "condition_group":
         return []
     cfg = node.get("config") or {}
     key = node.get("node_key")

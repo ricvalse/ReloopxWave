@@ -57,7 +57,7 @@ export function ConversationsRoute({ selectedId }: ConversationsRouteProps) {
       customerDetailEnabled
       dsarEnabled
     >
-      <div className="h-full overflow-hidden">
+      <div className="absolute inset-0 overflow-hidden">
         <ConversationsWorkspace selectedId={selectedId} onSelect={handleSelect} />
       </div>
     </ConversationsProvider>
