@@ -21,15 +21,14 @@ interface UpdateNoteArgs {
  * re-open / other open panel re-reads the canonical note.
  */
 export function useUpdateNotes() {
-  const { supabase, apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ conversationId, note }: UpdateNoteArgs) => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      const token = getAccessToken
+        ? await getAccessToken()
+        : (await supabase.auth.getSession()).data.session?.access_token ?? null;
       if (!token) throw new Error('Sessione scaduta. Effettua il login.');
 
       const res = await fetch(`${apiBaseUrl}/conversations/${conversationId}/notes`, {

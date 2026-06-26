@@ -31,15 +31,14 @@ interface SendArgs {
  * composer can surface a retry affordance.
  */
 export function useSendMessage() {
-  const { supabase, apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ conversationId, text, clientMessageId, template }: SendArgs) => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      const token = getAccessToken
+        ? await getAccessToken()
+        : (await supabase.auth.getSession()).data.session?.access_token ?? null;
       if (!token) throw new Error('Sessione scaduta. Effettua il login.');
 
       const res = await fetch(`${apiBaseUrl}/conversations/${conversationId}/messages`, {

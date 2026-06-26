@@ -6,14 +6,19 @@ import { CONV_LIST_KEY } from './use-conversations';
 import type { Conversation } from '../types';
 
 export function useDeleteConversation() {
-  const { apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (conversationId: string) => {
+      const token = getAccessToken
+        ? await getAccessToken()
+        : (await supabase.auth.getSession()).data.session?.access_token ?? null;
+      if (!token) throw new Error('Sessione scaduta. Effettua il login.');
+
       const res = await fetch(`${apiBaseUrl}/conversations/${conversationId}`, {
         method: 'DELETE',
-        credentials: 'include',
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

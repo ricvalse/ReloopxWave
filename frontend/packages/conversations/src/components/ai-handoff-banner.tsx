@@ -58,7 +58,17 @@ export function AiHandoffBanner({ conversation }: { conversation: Conversation }
       ) : (
         <span className="flex-1" />
       )}
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {resume.isError && (
+          <span className="text-[11px] text-red-600 dark:text-red-400">
+            {resume.error instanceof Error ? resume.error.message : 'Errore riattivazione'}
+          </span>
+        )}
+        {pause.isError && (
+          <span className="text-[11px] text-red-600 dark:text-red-400">
+            {pause.error instanceof Error ? pause.error.message : 'Errore pausa'}
+          </span>
+        )}
         {!countdown ? (
           <Button
             variant="ghost"

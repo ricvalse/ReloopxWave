@@ -25,17 +25,16 @@ export function templatesQueryKey() {
  * is deliverable out-of-window.
  */
 export function useApprovedTemplates(enabled = true) {
-  const { supabase, apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
 
   return useQuery({
     queryKey: templatesQueryKey(),
     enabled,
     staleTime: 60_000,
     queryFn: async (): Promise<WhatsAppTemplate[]> => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token;
+      const token = getAccessToken
+        ? await getAccessToken()
+        : (await supabase.auth.getSession()).data.session?.access_token ?? null;
       if (!token) throw new Error('Sessione scaduta. Effettua il login.');
 
       const res = await fetch(`${apiBaseUrl}/whatsapp-templates?status=approved`, {

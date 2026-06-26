@@ -13,24 +13,24 @@ import { LEAD_DETAIL_KEY } from './use-lead-detail';
 
 async function authHeader(
   supabase: ReturnType<typeof useConversationsContext>['supabase'],
+  getAccessToken?: () => Promise<string | null>,
 ): Promise<string> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const token = session?.access_token;
+  const token = getAccessToken
+    ? await getAccessToken()
+    : (await supabase.auth.getSession()).data.session?.access_token ?? null;
   if (!token) throw new Error('Sessione scaduta. Effettua il login.');
   return `Bearer ${token}`;
 }
 
 /** Right of access: download the lead + conversations + messages as JSON. */
 export function useExportLead() {
-  const { supabase, apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
 
   return useMutation({
     mutationFn: async (leadId: string): Promise<Record<string, unknown>> => {
       const res = await fetch(`${apiBaseUrl}/dsar/leads/${leadId}/export`, {
         method: 'GET',
-        headers: { Authorization: await authHeader(supabase) },
+        headers: { Authorization: await authHeader(supabase, getAccessToken) },
       });
       if (!res.ok) {
         const body = await res.text();
@@ -43,7 +43,7 @@ export function useExportLead() {
 
 /** Right to erasure: delete conversations + strip PII for a lead. */
 export function useEraseLead() {
-  const { supabase, apiBaseUrl } = useConversationsContext();
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -52,7 +52,7 @@ export function useEraseLead() {
     ): Promise<{ erased: boolean; lead_id: string; conversations_deleted: number }> => {
       const res = await fetch(`${apiBaseUrl}/dsar/leads/${leadId}/erase`, {
         method: 'POST',
-        headers: { Authorization: await authHeader(supabase) },
+        headers: { Authorization: await authHeader(supabase, getAccessToken) },
       });
       if (!res.ok) {
         const body = await res.text();

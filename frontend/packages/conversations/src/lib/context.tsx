@@ -14,6 +14,13 @@ export interface ConversationsContextValue {
   supabase: AnySupabaseClient;
   /** API base URL for POSTing messages — typically NEXT_PUBLIC_API_BASE_URL. */
   apiBaseUrl: string;
+  /**
+   * Optional override to retrieve the Bearer token for backend API calls.
+   * Required during agency→merchant impersonation, where `supabase.auth.getSession()`
+   * returns null (no Supabase auth session) but the HS256 impersonation token lives
+   * in a cookie. When omitted, hooks fall back to `supabase.auth.getSession()`.
+   */
+  getAccessToken?: () => Promise<string | null>;
   /** Optional merchant filter for the admin inbox (when set, the list rail is filtered). */
   merchantFilter?: string | null;
   /**
