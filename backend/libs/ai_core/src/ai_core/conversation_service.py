@@ -36,6 +36,8 @@ from ai_core.rag import Embedder, RAGEngine
 from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
+from ai_core.quality.coherence import CoherenceGuard
+from ai_core.quality.compressor import ContextCompressor, memory_block_as_message
 from ai_core.state_machine import ConvState, next_state, state_system_hint
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -967,6 +969,25 @@ class ConversationService:
             if fsm_hint:
                 system_prompt = system_prompt + "\n\n" + fsm_hint
 
+            # S-04: context compression — replace old turns with a memory block
+            effective_history = rc.chat_history
+            compress_threshold = await self._resolve_int(
+                session, resolved.merchant_id, ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD, default=30
+            )
+            if len(effective_history) > compress_threshold:
+                nano_client = self._rag_llm_client()
+                if nano_client is not None:
+                    from ai_core.quality.compressor import _KEEP_RECENT
+
+                    compressor = ContextCompressor(nano_client)
+                    block = await compressor.compress(effective_history)
+                    if block is not None:
+                        await convs.save_context_summary(
+                            rc.conv_id,
+                            {"text": block.text, "compressed_turns": block.compressed_turns, "compressed_at": block.compressed_at},
+                        )
+                        effective_history = [memory_block_as_message(block)] + effective_history[-_KEEP_RECENT:]
+
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
                 tenant_id=resolved.tenant_id,
@@ -974,7 +995,7 @@ class ConversationService:
                 lead_score=rc.lead_score,
                 hot_threshold=hot_threshold,
                 system_prompt=system_prompt,
-                history=rc.chat_history,
+                history=effective_history,
                 kb_chunks=kb_chunks,
                 variant_id=rc.conv_variant_id,
                 advance_threshold=advance_threshold,
@@ -998,6 +1019,22 @@ class ConversationService:
             else:
                 try:
                     response = await self._run_orchestrator(session, ctx, rc)
+                    # S-04: coherence guard — retry once if the reply contradicts prior facts
+                    coherence_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.AGENT_COHERENCE_GUARD_ENABLED, default=True
+                    )
+                    if coherence_enabled:
+                        nano_client = self._rag_llm_client()
+                        if nano_client is not None:
+                            guard = CoherenceGuard(nano_client)
+                            result = await guard.check(effective_history, response.reply_text)
+                            if not result.coherent:
+                                logger.info(
+                                    "uc01.coherence_retry",
+                                    issue=result.issue,
+                                    conversation_id=str(rc.conv_id),
+                                )
+                                response = await self._run_orchestrator(session, ctx, rc)
                 except Exception as e:
                     # Fail-safe: never leave the customer in silence on an LLM
                     # error. Send a courtesy line and hand off to a human (the

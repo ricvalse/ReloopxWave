@@ -62,6 +62,8 @@ class Conversation(Base, TimestampMixin):
     internal_note: Mapped[str | None] = mapped_column(String, nullable=True)
     # FSM state — see ai_core.state_machine.ConvState. NULL = legacy row (treated as GREETING).
     current_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Compressed summary of older turns (S-04 context compressor).
+    context_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821

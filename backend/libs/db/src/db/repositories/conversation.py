@@ -345,3 +345,14 @@ class ConversationRepository:
             text("UPDATE conversations SET current_state = :state WHERE id = :cid"),
             {"state": state, "cid": str(conversation_id)},
         )
+
+    async def save_context_summary(self, conversation_id: UUID, summary: dict) -> None:
+        """Persist the context compressor memory block."""
+        import json
+
+        await self._session.execute(
+            text(
+                "UPDATE conversations SET context_summary = :s::jsonb WHERE id = :cid"
+            ),
+            {"s": json.dumps(summary), "cid": str(conversation_id)},
+        )

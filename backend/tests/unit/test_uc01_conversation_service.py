@@ -182,6 +182,9 @@ def service(
         async def update_state(self, conversation_id, state):
             return None
 
+        async def save_context_summary(self, conversation_id, summary):
+            return None
+
     class FakeMsgRepo:
         def __init__(self, session):
             self.user_calls: list = []
@@ -386,6 +389,9 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         async def update_state(self, conversation_id, state):
             return None
 
+        async def save_context_summary(self, conversation_id, summary):
+            return None
+
     class FakeMsgRepo:
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
@@ -505,6 +511,9 @@ async def test_inbound_idempotent_on_redelivery(
             return None
 
         async def update_state(self, conversation_id, state):
+            return None
+
+        async def save_context_summary(self, conversation_id, summary):
             return None
 
     class FakeMsgRepo:

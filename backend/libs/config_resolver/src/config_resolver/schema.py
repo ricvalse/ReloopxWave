@@ -143,6 +143,8 @@ class ConfigKey(StrEnum):
     # per turn (1 = single-shot, no tool grounding).
     AGENT_TOOL_USE_ENABLED = "agent.tool_use_enabled"
     AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
+    AGENT_COHERENCE_GUARD_ENABLED = "agent.coherence_guard_enabled"
+    AGENT_CONTEXT_COMPRESS_THRESHOLD = "agent.context_compress_threshold"
 
     # GHL CRM sync (contratto capitolato sez.5) — map our collected lead fields
     # to the merchant's GHL custom-field ids, and tag every synced contact.
@@ -246,6 +248,8 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     # twice before replying.
     ConfigKey.AGENT_TOOL_USE_ENABLED: True,
     ConfigKey.AGENT_MAX_TOOL_ITERATIONS: 3,
+    ConfigKey.AGENT_COHERENCE_GUARD_ENABLED: True,
+    ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD: 30,
     ConfigKey.GHL_CONTACT_FIELD_MAP: {},
     ConfigKey.GHL_CONTACT_DEFAULT_TAGS: [],
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,
