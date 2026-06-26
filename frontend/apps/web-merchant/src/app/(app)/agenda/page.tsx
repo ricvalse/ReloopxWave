@@ -6,7 +6,7 @@ export default function AgendaPage() {
     <>
       <PageHeader
         title="Agenda"
-        description="Appuntamenti sincronizzati con GoHighLevel — sposta o annulla direttamente da qui."
+        description="Appuntamenti prenotati dall'assistente — sposta o annulla direttamente da qui."
       />
       <div className="p-6">
         <AgendaPanel />

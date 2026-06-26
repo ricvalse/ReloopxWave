@@ -84,26 +84,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'business.website', label: 'Sito web', kind: 'text', placeholder: 'https://…' },
     ],
   },
-  {
-    section: 'no_answer',
-    title: 'No answer (UC-03)',
-    description: 'Follow-up se il lead non risponde.',
-    fields: [
-      { key: 'no_answer.first_reminder_min', label: '1° reminder (min)', kind: 'int', min: 30, max: 480 },
-      { key: 'no_answer.second_reminder_min', label: '2° reminder (min)', kind: 'int', min: 720, max: 2880 },
-      { key: 'no_answer.max_followups', label: 'Max follow-up', kind: 'int', min: 1, max: 4 },
-    ],
-  },
-  {
-    section: 'reactivation',
-    title: 'Reactivation (UC-06)',
-    description: 'Riattivazione lead dormienti.',
-    fields: [
-      { key: 'reactivation.dormant_days', label: 'Giorni dormienza', kind: 'int', min: 30, max: 180 },
-      { key: 'reactivation.interval_days', label: 'Intervallo tentativi (giorni)', kind: 'int', min: 3, max: 30 },
-      { key: 'reactivation.max_attempts', label: 'Max tentativi', kind: 'int', min: 1, max: 5 },
-    ],
-  },
+
   {
     section: 'scoring',
     title: 'Scoring (UC-05)',

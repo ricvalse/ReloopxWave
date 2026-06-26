@@ -75,7 +75,8 @@ class ConfigResolver:
                 await self._cache(cache_key, value)
                 return value
 
-        # 2. Agency default (resolve the merchant's tenant first, then their default template)
+        # 2. Agency default (resolve the merchant's tenant first, then pick the template:
+        #    prefer the merchant's specific template_id if linked, else the tenant default)
         tenant_id_row = await self._session.execute(
             select(Merchant.tenant_id).where(Merchant.id == merchant_id)
         )
@@ -83,13 +84,17 @@ class ConfigResolver:
         if tenant_id is None:
             raise ValueError(f"Merchant {merchant_id} does not exist")
 
-        tmpl = await self._session.execute(
-            select(BotTemplate).where(
-                BotTemplate.tenant_id == tenant_id,
-                BotTemplate.is_default.is_(True),
+        specific_template_id = bot_cfg.template_id if bot_cfg is not None else None
+        if specific_template_id is not None:
+            template = await self._session.get(BotTemplate, specific_template_id)
+        else:
+            tmpl = await self._session.execute(
+                select(BotTemplate).where(
+                    BotTemplate.tenant_id == tenant_id,
+                    BotTemplate.is_default.is_(True),
+                )
             )
-        )
-        template = tmpl.scalar_one_or_none()
+            template = tmpl.scalar_one_or_none()
         if template is not None:
             value = _lookup(template.defaults, key_str)
             if value is not None:
@@ -125,12 +130,14 @@ class ConfigResolver:
             except Exception as e:  # Redis down / network blip → fall back to DB.
                 logger.warning("config.cache.get_failed", key=cache_key, error=str(e))
 
-        # 1. Merchant override bag (single query).
-        overrides = (
+        # 1. Merchant override bag + template link (single query).
+        bot_cfg_row = (
             await self._session.execute(
-                select(BotConfig.overrides).where(BotConfig.merchant_id == merchant_id)
+                select(BotConfig).where(BotConfig.merchant_id == merchant_id)
             )
-        ).scalar_one_or_none() or {}
+        ).scalar_one_or_none()
+        overrides = dict(bot_cfg_row.overrides or {}) if bot_cfg_row else {}
+        specific_template_id = bot_cfg_row.template_id if bot_cfg_row is not None else None
 
         # 2. Resolve the merchant's tenant (single query).
         tenant_id = (
@@ -141,15 +148,19 @@ class ConfigResolver:
         if tenant_id is None:
             raise ValueError(f"Merchant {merchant_id} does not exist")
 
-        # 3. Agency default template defaults (single query).
-        defaults = (
-            await self._session.execute(
-                select(BotTemplate.defaults).where(
-                    BotTemplate.tenant_id == tenant_id,
-                    BotTemplate.is_default.is_(True),
+        # 3. Agency defaults — prefer merchant's linked template, fall back to tenant default.
+        if specific_template_id is not None:
+            tmpl_row = await self._session.get(BotTemplate, specific_template_id)
+            defaults = dict(tmpl_row.defaults or {}) if tmpl_row else {}
+        else:
+            defaults = (
+                await self._session.execute(
+                    select(BotTemplate.defaults).where(
+                        BotTemplate.tenant_id == tenant_id,
+                        BotTemplate.is_default.is_(True),
+                    )
                 )
-            )
-        ).scalar_one_or_none() or {}
+            ).scalar_one_or_none() or {}
 
         resolved: dict[str, Any] = {}
         for key in ConfigKey:

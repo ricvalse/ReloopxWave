@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle, PageHeader } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
+import { BulkApplyDialog } from '@/components/merchants/bulk-apply-dialog';
 
 type Template = components['schemas']['TemplateOut'];
 type TemplateIn = components['schemas']['TemplateIn'];
@@ -148,6 +149,7 @@ type Draft = {
 
 export function TemplatesPanel() {
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [bulkTemplate, setBulkTemplate] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const list = useQuery({
@@ -194,6 +196,12 @@ export function TemplatesPanel() {
             isDefault: t.is_default,
           })
         }
+        onApplyToMerchants={(t) => setBulkTemplate(t.id)}
+      />
+      <BulkApplyDialog
+        open={bulkTemplate !== null}
+        onClose={() => setBulkTemplate(null)}
+        preselectedTemplateId={bulkTemplate ?? undefined}
       />
     </>
   );
@@ -202,9 +210,11 @@ export function TemplatesPanel() {
 function TemplateList({
   query,
   onEdit,
+  onApplyToMerchants,
 }: {
   query: ReturnType<typeof useQuery<Template[]>>;
   onEdit: (t: Template) => void;
+  onApplyToMerchants: (t: Template) => void;
 }) {
   if (query.isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Caricamento template…</div>;
@@ -247,9 +257,14 @@ function TemplateList({
                 <p className="mt-1 text-sm text-muted-foreground">{t.description}</p>
               ) : null}
             </div>
-            <Button variant="outline" size="sm" onClick={() => onEdit(t)}>
-              Modifica
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => onApplyToMerchants(t)}>
+                Applica a merchant…
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => onEdit(t)}>
+                Modifica
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">

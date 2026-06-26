@@ -5,9 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, CardHeader, CardTitle, KPICard } from '@reloop/ui';
-import { getApiClient } from '@/lib/api';
+import { toast } from '@reloop/ui';
+import { getApiClient, apiFetch } from '@/lib/api';
 import { InviteUserCard } from './invite-user-card';
 import { StatusBadge } from './status-badge';
+
+type Template = components['schemas']['TemplateOut'];
 
 type Merchant = components['schemas']['MerchantOut'];
 type Kpis = components['schemas']['MerchantKpisOut'];
@@ -319,6 +322,8 @@ export function MerchantDetail({ merchantId }: { merchantId: string }) {
 
       <MerchantKpiSection merchantId={merchantId} />
 
+      <MerchantProfileSection merchantId={merchantId} />
+
       <InviteUserCard merchantId={merchantId} />
     </div>
   );
@@ -387,5 +392,214 @@ function MerchantKpiSection({ merchantId }: { merchantId: string }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ---- Profilo configurazione bot ----------------------------------------
+
+const MERCHANT_SPECIFIC_KEYS = [
+  { key: 'pipeline.default_pipeline_id', label: 'Pipeline ID (GHL)' },
+  { key: 'pipeline.new_stage_id', label: 'New-lead stage ID (GHL)' },
+  { key: 'pipeline.qualified_stage_id', label: 'Qualified stage ID (GHL)' },
+  { key: 'booking.default_calendar_id', label: 'Calendar ID (GHL)' },
+];
+
+function MerchantProfileSection({ merchantId }: { merchantId: string }) {
+  const queryClient = useQueryClient();
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
+  const [snapshotName, setSnapshotName] = useState('');
+  const [snapshotDesc, setSnapshotDesc] = useState('');
+  const [excludeKeys, setExcludeKeys] = useState<Set<string>>(
+    new Set(MERCHANT_SPECIFIC_KEYS.map((k) => k.key)),
+  );
+
+  // Current overrides row — contains template_id
+  const overridesQuery = useQuery({
+    queryKey: ['merchant-overrides', merchantId],
+    queryFn: async (): Promise<{ template_id: string | null }> => {
+      return apiFetch<{ template_id: string | null }>(
+        `/bot-config/${merchantId}/overrides`,
+      );
+    },
+  });
+
+  // All templates for the tenant
+  const templatesQuery = useQuery({
+    queryKey: ['templates', 'list'],
+    queryFn: async (): Promise<Template[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/bot-config/templates');
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as Template[];
+    },
+  });
+
+  const currentTemplateId = overridesQuery.data?.template_id ?? null;
+  const currentTemplate = templatesQuery.data?.find((t) => t.id === currentTemplateId);
+
+  const setTemplate = useMutation({
+    mutationFn: async (templateId: string | null) => {
+      return apiFetch(`/bot-config/${merchantId}/template`, {
+        method: 'PUT',
+        body: JSON.stringify({ template_id: templateId }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['merchant-overrides', merchantId] });
+      toast.success('Profilo aggiornato');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Errore'),
+  });
+
+  const snapshot = useMutation({
+    mutationFn: async () => {
+      if (!snapshotName.trim()) throw new Error('Inserisci un nome');
+      return apiFetch<Template>(`/bot-config/templates/from-merchant/${merchantId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: snapshotName.trim(),
+          description: snapshotDesc.trim() || null,
+          exclude_keys: [...excludeKeys],
+        }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['templates', 'list'] });
+      toast.success('Profilo creato dalla configurazione del merchant');
+      setSnapshotOpen(false);
+      setSnapshotName('');
+      setSnapshotDesc('');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Errore'),
+  });
+
+  function toggleExcludeKey(key: string) {
+    setExcludeKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Profilo configurazione bot</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Template corrente */}
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-muted-foreground min-w-24">Profilo attivo</span>
+          {overridesQuery.isLoading ? (
+            <span className="text-muted-foreground">Caricamento…</span>
+          ) : (
+            <span className="font-medium">
+              {currentTemplate ? currentTemplate.name : 'Default di sistema / tenant'}
+            </span>
+          )}
+        </div>
+
+        {/* Dropdown cambio template */}
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-muted-foreground min-w-24" htmlFor="tmpl-select">
+            Cambia profilo
+          </label>
+          <select
+            id="tmpl-select"
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm w-64"
+            value={currentTemplateId ?? ''}
+            disabled={setTemplate.isPending || templatesQuery.isLoading}
+            onChange={(e) => {
+              const val = e.target.value || null;
+              setTemplate.mutate(val);
+            }}
+          >
+            <option value="">Default di sistema / tenant</option>
+            {(templatesQuery.data ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.is_default ? ' (Default)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Salva come profilo */}
+        {snapshotOpen ? (
+          <div className="rounded-md border p-4 space-y-3">
+            <p className="text-sm font-medium">Salva configurazione come nuovo profilo</p>
+            <p className="text-sm text-muted-foreground">
+              Cattura la config risolta di questo merchant (override + cascata) come template riutilizzabile.
+            </p>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-xs font-medium" htmlFor="snap-name">Nome profilo</label>
+                <input
+                  id="snap-name"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={snapshotName}
+                  onChange={(e) => setSnapshotName(e.target.value)}
+                  placeholder="Es. Agenzia Immobiliare Standard"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium" htmlFor="snap-desc">Descrizione (opzionale)</label>
+                <input
+                  id="snap-desc"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={snapshotDesc}
+                  onChange={(e) => setSnapshotDesc(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-medium">Escludi chiavi merchant-specifiche</p>
+              <p className="text-xs text-muted-foreground">
+                Le chiavi escluse non saranno copiate nel profilo (consigliato per ID GHL specifici del merchant).
+              </p>
+              <div className="grid gap-1">
+                {MERCHANT_SPECIFIC_KEYS.map((k) => (
+                  <label key={k.key} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={excludeKeys.has(k.key)}
+                      onChange={() => toggleExcludeKey(k.key)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <span className="font-mono">{k.key}</span>
+                    <span className="text-muted-foreground">{k.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={() => snapshot.mutate()}
+                disabled={snapshot.isPending || !snapshotName.trim()}
+              >
+                {snapshot.isPending ? 'Salvataggio…' : 'Crea profilo'}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setSnapshotOpen(false)}
+                disabled={snapshot.isPending}
+              >
+                Annulla
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSnapshotOpen(true)}
+          >
+            Salva come nuovo profilo…
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }

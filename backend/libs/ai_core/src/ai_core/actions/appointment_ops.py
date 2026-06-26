@@ -21,6 +21,8 @@ from db import (
     GHLMarketplaceRepository,
     GhlSyncRepository,
     IntegrationRepository,
+    build_reminder_schedule,
+    next_reminder_due,
     session_scope,
 )
 from db.models import Appointment
@@ -88,7 +90,21 @@ async def reschedule_appointment(
 ) -> AppointmentOpResult:
     """Move `appointment` to a new slot in GHL, then mirror it locally."""
     if not appointment.ghl_appointment_id:
-        return AppointmentOpResult(False, "no_ghl_handle")
+        # Appuntamento locale (senza GHL): aggiorna solo il mirror.
+        appointment.start_at = new_start
+        appointment.end_at = new_end
+        appointment.status = "booked"
+        r_schedule = build_reminder_schedule(new_start, [24])
+        appointment.reminder_schedule = r_schedule
+        appointment.reminder_due_at = next_reminder_due(r_schedule)
+        if tenant_id is not None:
+            await _emit_analytics(
+                session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+                lead_id=appointment.lead_id, conversation_id=conversation_id,
+                event_type="booking.rescheduled",
+                properties={"local_only": True, "new_start": new_start.isoformat()},
+            )
+        return AppointmentOpResult(True, "local_only")
     client = await _build_client(
         session,
         merchant_id=appointment.merchant_id,
@@ -157,7 +173,17 @@ async def cancel_appointment(
 ) -> AppointmentOpResult:
     """Cancel `appointment` in GHL, then mark the mirror row cancelled."""
     if not appointment.ghl_appointment_id:
-        return AppointmentOpResult(False, "no_ghl_handle")
+        # Appuntamento locale (senza GHL): aggiorna solo il mirror.
+        appointment.status = "cancelled"
+        appointment.reminder_due_at = None
+        if tenant_id is not None:
+            await _emit_analytics(
+                session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+                lead_id=appointment.lead_id, conversation_id=conversation_id,
+                event_type="booking.cancelled",
+                properties={"local_only": True},
+            )
+        return AppointmentOpResult(True, "local_only")
     client = await _build_client(
         session,
         merchant_id=appointment.merchant_id,

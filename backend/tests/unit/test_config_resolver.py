@@ -25,6 +25,14 @@ class _Result:
         return self._value
 
 
+class FakeBotConfig:
+    """Minimal stand-in for a BotConfig ORM row returned by the first execute()."""
+
+    def __init__(self, overrides: dict[str, Any], template_id: Any = None) -> None:
+        self.overrides = overrides
+        self.template_id = template_id
+
+
 class FakeSession:
     """Returns canned scalar results in FIFO order, one per `execute()`."""
 
@@ -63,7 +71,7 @@ async def test_resolve_all_cascade_precedence() -> None:
     tenant_id = uuid.uuid4()
     overrides = {"scoring": {"hot_threshold": 90}}
     defaults = {"scoring": {"hot_threshold": 70, "cold_threshold": 20}}
-    session = FakeSession([overrides, tenant_id, defaults])
+    session = FakeSession([FakeBotConfig(overrides), tenant_id, defaults])
     resolver = ConfigResolver(session, redis=None)  # type: ignore[arg-type]
 
     flat = await resolver.resolve_all(merchant_id=merchant_id)
@@ -89,7 +97,7 @@ async def test_resolve_all_uses_and_writes_cache() -> None:
     merchant_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     redis = FakeRedis()
-    session = FakeSession([{}, tenant_id, {}])
+    session = FakeSession([FakeBotConfig({}), tenant_id, {}])
     resolver = ConfigResolver(session, redis=redis)  # type: ignore[arg-type]
 
     first = await resolver.resolve_all(merchant_id=merchant_id)

@@ -75,8 +75,15 @@ class GhlReadToolExecutor:
             if ghl is None:
                 return ToolResult(
                     "check_availability",
-                    False,
-                    "Calendario non collegato: non posso verificare le disponibilità reali.",
+                    True,
+                    (
+                        "Il calendario esterno (GoHighLevel) non è collegato. "
+                        "Il sistema è in modalità agenda locale: chiedi al cliente "
+                        "la data e l'ora preferita, poi procedi direttamente con "
+                        "book_slot. L'appuntamento sarà salvato internamente "
+                        "e confermato da un operatore."
+                    ),
+                    data={"local_only": True, "free_slots": []},
                 )
             config = ConfigResolver(session)
             calendar_id = action.payload.get("calendar_id") or await config.resolve(

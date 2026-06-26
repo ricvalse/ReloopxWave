@@ -350,10 +350,12 @@ async def test_book_slot_naive_time_interpreted_in_merchant_tz(
     assert kwargs["slot_end_iso"] == "2026-07-15T15:30:00+02:00"
 
 
-async def test_book_slot_no_ghl_integration_sends_graceful_fallback(
+async def test_book_slot_no_ghl_saves_local_appointment(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext
 ) -> None:
-    _patch_session(monkeypatch, ghl=None)
+    """Senza GHL: l'appuntamento viene salvato localmente e la conferma WhatsApp
+    informa il cliente che sarà confermato da un operatore."""
+    appt_calls = _patch_session(monkeypatch, ghl=None)
     sender = FakeSender()
 
     handler = BookSlotHandler(
@@ -365,5 +367,12 @@ async def test_book_slot_no_ghl_integration_sends_graceful_fallback(
 
     await handler(OrchestratorAction(kind="book_slot", payload={}), turn_ctx)
 
+    # Il messaggio deve confermare la prenotazione locale, non dare un errore.
     assert len(sender.calls) == 1
-    assert "non riesco" in sender.calls[0]["text"]
+    assert "operatore" in sender.calls[0]["text"]
+    assert "non riesco" not in sender.calls[0]["text"]
+
+    # Il record locale deve essere stato scritto con ghl_appointment_id=None.
+    assert len(appt_calls) == 1
+    assert appt_calls[0]["ghl_appointment_id"] is None
+    assert appt_calls[0]["source"] == "bot_local"

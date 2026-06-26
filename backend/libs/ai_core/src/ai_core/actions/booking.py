@@ -64,6 +64,9 @@ class BookingOutcome:
     contact_id: str | None = None
     calendar_id: str | None = None
     tz_name: str | None = None
+    # True quando GHL non è disponibile e l'appointment è stato salvato solo
+    # nell'agenda interna (ghl_appointment_id=NULL).
+    local_only: bool = False
 
 
 class BookSlotHandler:
@@ -106,8 +109,62 @@ class BookSlotHandler:
 
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
             if ghl is None:
-                logger.warning("book_slot.no_ghl", merchant_id=str(turn_ctx.merchant_id))
-                outcome = BookingOutcome(False, None, None, [], "no_ghl_integration")
+                # GHL non connesso: salva l'appuntamento nell'agenda locale.
+                logger.info("book_slot.local_only", merchant_id=str(turn_ctx.merchant_id))
+                tz_name_local = str(
+                    await config.resolve(
+                        ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
+                    ) or "Europe/Rome"
+                )
+                duration_local = int(
+                    action.payload.get("duration_min")
+                    or await config.resolve(
+                        ConfigKey.BOOKING_DEFAULT_DURATION_MIN,
+                        merchant_id=turn_ctx.merchant_id,
+                    )
+                    or 30
+                )
+                reminder_raw_local = await config.resolve(
+                    ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                )
+                if reminder_raw_local:
+                    reminder_lead_hours = list(reminder_raw_local)
+
+                tz_local = _resolve_tz(tz_name_local)
+                preferred_iso_local = action.payload.get("preferred_start_iso")
+                start_dt_local = _parse_iso(preferred_iso_local, tz_local) or _next_business_hour(
+                    tz_local
+                )
+                end_dt_local = start_dt_local + timedelta(minutes=duration_local)
+                slot_start_iso_local = start_dt_local.isoformat()
+                slot_end_iso_local = end_dt_local.isoformat()
+
+                try:
+                    r_schedule_local = build_reminder_schedule(start_dt_local, reminder_lead_hours)
+                    r_due_at_local = next_reminder_due(r_schedule_local)
+                    await AppointmentRepository(session).record_booking(
+                        merchant_id=turn_ctx.merchant_id,
+                        lead_id=turn_ctx.lead_id,
+                        ghl_appointment_id=None,
+                        ghl_contact_id=None,
+                        calendar_id=None,
+                        start_at=start_dt_local,
+                        end_at=end_dt_local,
+                        tz_name=tz_name_local,
+                        source="bot_local",
+                        reminder_schedule=r_schedule_local,
+                        reminder_due_at=r_due_at_local,
+                    )
+                    await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
+                except Exception as e:
+                    logger.warning("book_slot.local_write_failed", error=str(e))
+
+                outcome = BookingOutcome(
+                    True, None, slot_start_iso_local, [], "local_only",
+                    slot_end_iso=slot_end_iso_local,
+                    tz_name=tz_name_local,
+                    local_only=True,
+                )
             else:
                 calendar_id = action.payload.get("calendar_id") or await config.resolve(
                     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
@@ -536,6 +593,7 @@ class BookSlotHandler:
             booked=outcome.booked,
             slot_start_iso=outcome.slot_start_iso,
             suggested=outcome.suggested,
+            local_only=outcome.local_only,
         )
         await self._reply_sender.send(
             phone_number_id=turn_ctx.phone_number_id,
@@ -722,13 +780,19 @@ def _format_human(iso: str) -> str:
 
 
 def format_booking_confirmation(
-    *, booked: bool, slot_start_iso: str | None, suggested: list[str]
+    *, booked: bool, slot_start_iso: str | None, suggested: list[str],
+    local_only: bool = False,
 ) -> str:
     """Italian WhatsApp confirmation text for a booking outcome (pure).
 
     Reused by the live handler's `_send_confirmation` and by the UC-08 playground
     simulator, so the dry-run shows the exact message a real booking would send.
     """
+    if booked and slot_start_iso and local_only:
+        return (
+            f"Ho registrato il tuo appuntamento per il {_format_human(slot_start_iso)}. "
+            "Sarà confermato da un operatore a breve. Ti invieremo il promemoria."
+        )
     if booked and slot_start_iso:
         return (
             f"Perfetto, ho prenotato per te l'appuntamento del "

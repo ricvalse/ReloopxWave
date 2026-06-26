@@ -1163,8 +1163,9 @@ class ConversationService:
             if new_fsm_state != fsm_state:
                 await convs.update_state(rc.conv_id, new_fsm_state.value)
 
+            _out_msg = None
             if not suppress_reply:
-                await msgs.persist_assistant_message(
+                _out_msg = await msgs.persist_assistant_message(
                     conversation_id=rc.conv_id,
                     merchant_id=resolved.merchant_id,
                     content=response.reply_text,
@@ -1245,6 +1246,7 @@ class ConversationService:
         if bubbles and typing_indicator_enabled and rc.latest_wa_message_id:
             await self._maybe_send_typing(rc, rc.latest_wa_message_id)
 
+        _last_wamid: str | None = None
         for i, bubble in enumerate(bubbles):
             delay = compute_typing_delay_s(
                 bubble,
@@ -1257,13 +1259,25 @@ class ConversationService:
             )
             if delay > 0:
                 await asyncio.sleep(delay)
-            await self._sender.send(
+            _last_wamid = await self._sender.send(
                 phone_number_id=rc.phone_number_id,
                 api_key=resolved.api_key,
                 to_phone=rc.from_phone,
                 text=bubble,
                 waba_base_url=resolved.waba_base_url,
             )
+
+        if _out_msg is not None and _last_wamid:
+            from db import session_scope
+            from db.models.conversation import Message as _Message
+            from sqlalchemy import update as _update
+
+            async with session_scope() as _s:
+                await _s.execute(
+                    _update(_Message)
+                    .where(_Message.id == _out_msg.id)
+                    .values(wa_message_id=_last_wamid, status="sent")
+                )
 
         turn_ctx = TurnContext(
             tenant_id=resolved.tenant_id,

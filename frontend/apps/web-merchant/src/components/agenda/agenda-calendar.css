@@ -1,0 +1,121 @@
+.agenda-calendar-wrapper {
+  --rbc-border: hsl(var(--border));
+  --rbc-primary: hsl(var(--primary));
+  --rbc-muted: hsl(var(--muted));
+  --rbc-muted-fg: hsl(var(--muted-foreground));
+}
+
+.agenda-calendar-wrapper .rbc-calendar {
+  font-family: inherit;
+  font-size: 0.875rem;
+}
+
+/* Toolbar */
+.agenda-calendar-wrapper .rbc-toolbar {
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.agenda-calendar-wrapper .rbc-toolbar button {
+  font-family: inherit;
+  font-size: 0.8125rem;
+  border: 1px solid var(--rbc-border);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.625rem;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+  transition: background 0.15s;
+}
+.agenda-calendar-wrapper .rbc-toolbar button:hover {
+  background: var(--rbc-muted);
+}
+.agenda-calendar-wrapper .rbc-toolbar button.rbc-active {
+  background: var(--rbc-primary);
+  color: hsl(var(--primary-foreground, 0 0% 98%));
+  border-color: var(--rbc-primary);
+}
+.agenda-calendar-wrapper .rbc-toolbar-label {
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+/* Header giorni */
+.agenda-calendar-wrapper .rbc-header {
+  border-color: var(--rbc-border);
+  padding: 0.35rem 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rbc-muted-fg);
+}
+
+/* Griglia */
+.agenda-calendar-wrapper .rbc-month-view,
+.agenda-calendar-wrapper .rbc-time-view,
+.agenda-calendar-wrapper .rbc-agenda-view {
+  border-color: var(--rbc-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.agenda-calendar-wrapper .rbc-day-bg,
+.agenda-calendar-wrapper .rbc-month-row {
+  border-color: var(--rbc-border);
+}
+.agenda-calendar-wrapper .rbc-off-range-bg {
+  background: var(--rbc-muted);
+}
+.agenda-calendar-wrapper .rbc-today {
+  background: hsl(var(--primary) / 0.07);
+}
+
+/* Slot numero giorno */
+.agenda-calendar-wrapper .rbc-date-cell {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8125rem;
+}
+.agenda-calendar-wrapper .rbc-date-cell.rbc-current > a {
+  background: var(--rbc-primary);
+  color: hsl(var(--primary-foreground, 0 0% 98%));
+  border-radius: 50%;
+  padding: 0.1rem 0.35rem;
+}
+
+/* Popup "more" link */
+.agenda-calendar-wrapper .rbc-show-more {
+  color: hsl(var(--primary));
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Evento GHL confermato */
+.agenda-calendar-wrapper .rbc-event {
+  border: none;
+  border-radius: 0.3rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground, 0 0% 98%));
+  cursor: pointer;
+}
+.agenda-calendar-wrapper .rbc-event:focus {
+  outline: 2px solid var(--rbc-primary);
+  outline-offset: 1px;
+}
+
+/* Evento locale (senza GHL) */
+.agenda-calendar-wrapper .rbc-event.rbc-event--local-only {
+  background: #fbbf24;
+  color: #1a1000;
+}
+
+/* Overlay popup */
+.agenda-calendar-wrapper .rbc-overlay {
+  border: 1px solid var(--rbc-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.12);
+  background: hsl(var(--card, 0 0% 100%));
+  padding: 0.5rem;
+  z-index: 50;
+}
