@@ -323,6 +323,7 @@ export function AutomationEditor({
               <NodeConfigPanel
                 node={selectedNode}
                 approvedTemplates={approvedTemplates}
+                allTemplates={templates.data ?? []}
                 onChange={(key, value) => updateConfig(selectedNode.id, key, value)}
                 onDelete={deleteSelected}
               />
@@ -342,11 +343,13 @@ export function AutomationEditor({
 function NodeConfigPanel({
   node,
   approvedTemplates,
+  allTemplates,
   onChange,
   onDelete,
 }: {
   node: Node;
   approvedTemplates: Template[];
+  allTemplates: Template[];
   onChange: (key: string, value: unknown) => void;
   onDelete: () => void;
 }) {
@@ -366,6 +369,30 @@ function NodeConfigPanel({
         </Button>
       </div>
       {def?.description ? <p className="text-xs text-muted-foreground">{def.description}</p> : null}
+
+      {data.type === 'send_message' && (
+        <div className="space-y-1">
+          <Label className="text-xs">Importa testo da template</Label>
+          <select
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            defaultValue=""
+            onChange={(e) => {
+              const t = allTemplates.find((tmpl) => tmpl.id === e.target.value);
+              if (t?.body) onChange('text', t.body);
+            }}
+          >
+            <option value="">— scegli template da cui copiare il testo —</option>
+            {allTemplates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}{t.status !== 'approved' ? ` (${t.status})` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-muted-foreground">
+            Copia il body del template nel campo qui sotto. I pulsanti non vengono inviati (finestra 24h = solo testo libero).
+          </p>
+        </div>
+      )}
 
       {def?.fields.length === 0 ? (
         <p className="text-xs text-muted-foreground">Nessun parametro da configurare.</p>
