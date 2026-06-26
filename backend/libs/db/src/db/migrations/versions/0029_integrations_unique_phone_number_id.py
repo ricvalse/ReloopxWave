@@ -1,6 +1,6 @@
 """add unique index on integrations(provider, phone_number_id) for active rows
 
-Revision ID: 0029_integrations_unique_phone_number_id
+Revision ID: 0029_uq_wa_phone_number_id
 Revises: 0028_merge_lifecycle_flows
 Create Date: 2026-06-26
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0029_integrations_unique_phone_number_id"
+revision = "0029_uq_wa_phone_number_id"
 down_revision = "0028_merge_lifecycle_flows"
 branch_labels = None
 depends_on = None
