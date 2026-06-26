@@ -36,6 +36,7 @@ from ai_core.rag import Embedder, RAGEngine
 from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
+from ai_core.state_machine import ConvState, next_state, state_system_hint
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     ABRepository,
@@ -207,6 +208,7 @@ class _ReplyContext:
     from_phone: str
     phone_number_id: str
     text: str
+    conv_current_state: str | None = None
     latest_wa_message_id: str | None = None
     # UC-05 — True when the lead replied within 10min of the previous turn
     # (derived from the conversation's prior last_message_at at inbound time).
@@ -758,6 +760,7 @@ class ConversationService:
             # (zero added latency; the current turn's sentiment is computed later
             # and updates the lead for the NEXT turn).
             lead_sentiment = lead.sentiment
+            conv_current_state = conv.current_state
             chat_history = _to_chat_history(history)
 
             # Per-merchant debounce window (0 = off). Resolved here so the worker
@@ -793,6 +796,7 @@ class ConversationService:
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
                 text=text,
+                conv_current_state=conv_current_state,
                 latest_wa_message_id=wa_message_id,
             )
 
@@ -862,6 +866,7 @@ class ConversationService:
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
                 text=text,
+                conv_current_state=conv.current_state,
                 latest_wa_message_id=wa_message_id,
             )
         return await self._generate_and_deliver(rc)
@@ -920,6 +925,12 @@ class ConversationService:
             qualified_stage_id = await self._resolve_optional_str(
                 session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
+
+            # FSM: load current state, inject hint into system prompt
+            fsm_state = ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
+            fsm_hint = state_system_hint(fsm_state)
+            if fsm_hint:
+                system_prompt = system_prompt + "\n\n" + fsm_hint
 
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,
@@ -1023,6 +1034,11 @@ class ConversationService:
                 )
                 if rc.lead_id is not None and sentiment:
                     await LeadRepository(session).update_sentiment(rc.lead_id, sentiment=sentiment)
+
+            # FSM: transition and persist new state
+            new_fsm_state = next_state(fsm_state, response.actions, turn_count=len(rc.chat_history))
+            if new_fsm_state != fsm_state:
+                await convs.update_state(rc.conv_id, new_fsm_state.value)
 
             if not suppress_reply:
                 await msgs.persist_assistant_message(

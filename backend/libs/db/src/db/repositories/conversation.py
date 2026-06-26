@@ -338,3 +338,10 @@ class ConversationRepository:
             ),
             {"conversation_id": str(conversation_id)},
         )
+
+    async def update_state(self, conversation_id: UUID, state: str) -> None:
+        """Persist the FSM current_state for the conversation."""
+        await self._session.execute(
+            text("UPDATE conversations SET current_state = :state WHERE id = :cid"),
+            {"state": state, "cid": str(conversation_id)},
+        )

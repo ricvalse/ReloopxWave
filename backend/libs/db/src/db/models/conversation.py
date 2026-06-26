@@ -60,6 +60,8 @@ class Conversation(Base, TimestampMixin):
     # Free-text internal note shown in the inbox detail panel. Per-thread,
     # edited by an agent; NULL when empty. See migration 0012.
     internal_note: Mapped[str | None] = mapped_column(String, nullable=True)
+    # FSM state — see ai_core.state_machine.ConvState. NULL = legacy row (treated as GREETING).
+    current_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="conversations")  # type: ignore[name-defined]  # noqa: F821
