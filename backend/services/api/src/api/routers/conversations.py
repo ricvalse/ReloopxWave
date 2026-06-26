@@ -226,7 +226,6 @@ async def send_message(
             "send_outbound_whatsapp",
             str(msg.id),
             _job_id=f"wa:out:{msg.id}",
-            _queue_name="wa:outbound",
         )
     except Exception:
         logger.exception(

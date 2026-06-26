@@ -275,14 +275,12 @@ async def ghl_marketplace_webhook(
         await arq.enqueue_job(
             "handle_ghl_install",
             payload,
-            _queue_name="ghl:events",
             _job_id=f"ghl:install:{location_id}",
         )
     elif event_type == "UNINSTALL" and location_id:
         await arq.enqueue_job(
             "handle_ghl_uninstall",
             str(location_id),
-            _queue_name="ghl:events",
             _job_id=f"ghl:uninstall:{location_id}",
         )
     elif location_id and raw_type:
@@ -297,7 +295,6 @@ async def ghl_marketplace_webhook(
             str(location_id),
             raw_type,
             payload,
-            _queue_name="ghl:events",
             _job_id=f"ghl:event:{_ghl_event_dedup_key(payload, location_id, raw_type)}",
         )
     else:
