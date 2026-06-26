@@ -328,6 +328,20 @@ class LeadRepository:
             params,
         )
 
+    async def update_optimal_send_hour(self, lead_id: UUID, *, hour: int) -> None:
+        """Persist the inferred optimal send hour (0-23) for this lead."""
+        await self._session.execute(
+            text("UPDATE leads SET optimal_send_hour = :h WHERE id = :lid"),
+            {"h": hour, "lid": str(lead_id)},
+        )
+
+    async def update_intake_score(self, lead_id: UUID, *, score: int) -> None:
+        """Persist the intent/intake score computed at first contact (0-100)."""
+        await self._session.execute(
+            text("UPDATE leads SET intake_score = :s WHERE id = :lid"),
+            {"s": score, "lid": str(lead_id)},
+        )
+
     async def update_read_receipt_ratio(self, lead_id: UUID, *, was_read: bool) -> None:
         """Update read_receipt_ratio with exponential moving average (α=0.2)."""
         value = 1.0 if was_read else 0.0

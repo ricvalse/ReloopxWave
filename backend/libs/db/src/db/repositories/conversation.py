@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Integer, cast, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Conversation, Merchant
+from db.models import Conversation, Lead, Merchant
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,6 +23,8 @@ class ReminderCandidate:
     # Last inbound (customer) message — drives the 24h window decision. May be
     # None on legacy rows created before migration 0014.
     last_inbound_at: datetime | None = None
+    # S-05: preferred send hour (0-23) learned by the send-time optimizer.
+    optimal_send_hour: int | None = None
 
 
 class ConversationRepository:
@@ -144,8 +146,10 @@ class ConversationRepository:
                 Conversation.last_inbound_at,
                 reminders_sent_expr.label("reminders_sent"),
                 Conversation.meta["last_reminder_at"].astext.label("last_reminder_at"),
+                Lead.optimal_send_hour,
             )
             .join(Merchant, Merchant.id == Conversation.merchant_id)
+            .outerjoin(Lead, Lead.id == Conversation.lead_id)
             .where(
                 Conversation.status == "active",
                 Conversation.last_message_at.is_not(None),
@@ -177,6 +181,7 @@ class ConversationRepository:
                     reminders_sent=int(row["reminders_sent"]),
                     last_reminder_at=last_reminder_at,
                     last_inbound_at=row["last_inbound_at"],
+                    optimal_send_hour=row["optimal_send_hour"],
                 )
             )
         return results

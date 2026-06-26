@@ -145,6 +145,8 @@ class ConfigKey(StrEnum):
     AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
     AGENT_COHERENCE_GUARD_ENABLED = "agent.coherence_guard_enabled"
     AGENT_CONTEXT_COMPRESS_THRESHOLD = "agent.context_compress_threshold"
+    # S-06: Thompson Sampling replaces uniform hash-pick for A/B variant assignment.
+    AB_THOMPSON_SAMPLING_ENABLED = "ab.thompson_sampling_enabled"
 
     # GHL CRM sync (contratto capitolato sez.5) — map our collected lead fields
     # to the merchant's GHL custom-field ids, and tag every synced contact.
@@ -250,6 +252,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.AGENT_MAX_TOOL_ITERATIONS: 3,
     ConfigKey.AGENT_COHERENCE_GUARD_ENABLED: True,
     ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD: 30,
+    ConfigKey.AB_THOMPSON_SAMPLING_ENABLED: True,
     ConfigKey.GHL_CONTACT_FIELD_MAP: {},
     ConfigKey.GHL_CONTACT_DEFAULT_TAGS: [],
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,

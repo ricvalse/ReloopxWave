@@ -31,7 +31,11 @@ def _pair(conv, user="ciao vorrei info", assistant="certo, ecco le info utili") 
 
 def test_quality_keeps_clean_conversation() -> None:
     c = uuid4()
-    report = filter_pairs([_pair(c), _pair(c)])
+    # Use distinct user messages so S-07 dedup doesn't collapse identical pairs.
+    report = filter_pairs([
+        _pair(c, user="ciao vorrei info", assistant="certo, ecco le info utili"),
+        _pair(c, user="e il prezzo?", assistant="il prezzo è molto competitivo"),
+    ])
     assert len(report.kept) == 2
     assert report.dropped == 0
 

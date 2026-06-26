@@ -172,6 +172,38 @@ class ABRepository:
         ]
 
 
+    async def get_variant_stats(
+        self, experiment_id: UUID, *, primary_metric: str
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        """Return (variant_wins, variant_totals) for Thompson Sampling.
+
+        variant_wins counts analytics events whose type matches `primary_metric`.
+        variant_totals counts all ab_assignments per variant.
+        Both default to 0 for unseen variants.
+        """
+        totals_stmt = (
+            select(ABAssignment.variant_id, func.count(ABAssignment.id))
+            .where(ABAssignment.experiment_id == experiment_id)
+            .group_by(ABAssignment.variant_id)
+        )
+        totals: dict[str, int] = dict(
+            (await self._session.execute(totals_stmt)).tuples().all()
+        )
+
+        wins_stmt = (
+            select(AnalyticsEvent.variant_id, func.count(AnalyticsEvent.id))
+            .where(
+                AnalyticsEvent.variant_id.in_(list(totals.keys())),
+                AnalyticsEvent.event_type == primary_metric,
+            )
+            .group_by(AnalyticsEvent.variant_id)
+        )
+        wins: dict[str, int] = dict(
+            (await self._session.execute(wins_stmt)).tuples().all()
+        )
+        return wins, totals
+
+
 def _hash_pick(*, experiment_id: UUID, lead_id: UUID, variants: list[dict[str, Any]]) -> str:
     """Cumulative-weight bucketing of a hash in [0, 100) across variant weights."""
     h = hashlib.sha256(f"{experiment_id}:{lead_id}".encode()).digest()

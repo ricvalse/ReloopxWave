@@ -107,6 +107,22 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
         if next_attempt > max_attempts:
             return False
 
+        # S-05: if the lead has a learned optimal send hour, defer until that window.
+        if cand.optimal_send_hour is not None:
+            current_hour = now.hour
+            dist = min(
+                abs(current_hour - cand.optimal_send_hour),
+                24 - abs(current_hour - cand.optimal_send_hour),
+            )
+            if dist > 2:
+                logger.debug(
+                    "uc03.deferred_optimal_hour",
+                    conversation_id=str(cand.conversation_id),
+                    optimal=cand.optimal_send_hour,
+                    current=current_hour,
+                )
+                return False
+
         threshold_min = first_min if next_attempt == 1 else second_min
         reference = cand.last_reminder_at or cand.last_message_at
         if now - reference < timedelta(minutes=threshold_min):

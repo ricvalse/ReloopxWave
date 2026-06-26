@@ -48,6 +48,9 @@ class Lead(Base, TimestampMixin):
     read_receipt_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     effective_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     velocity_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # S-05: pre-conversation intelligence
+    optimal_send_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    intake_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     merchant: Mapped[Merchant] = relationship(back_populates="leads")  # type: ignore[name-defined]  # noqa: F821

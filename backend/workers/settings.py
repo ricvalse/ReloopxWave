@@ -45,6 +45,7 @@ from workers.scheduler.handlers import (
     integration_health_check,
     kb_reindex,
     objection_extraction,
+    optimize_send_times,
     reactivate_dormant_leads,
     send_appointment_reminders,
     sync_appointments,
@@ -113,6 +114,8 @@ class WorkerSettings:
         # WhatsApp template approval-status sync (webhook-driven + cron fallback)
         apply_template_status_event,
         template_status_sync,
+        # S-05: optimal send-time optimizer
+        optimize_send_times,
         # Automazioni — visual flow builder dispatch + run
         automation_dispatch,
         automation_run,
@@ -164,4 +167,6 @@ class WorkerSettings:
         cron(send_appointment_reminders, minute={5, 35}, timeout=300, max_tries=1),
         # Automazioni: tail analytics_events every minute and fan out flow runs.
         cron(automation_dispatch, minute=set(range(60)), timeout=120, max_tries=1),
+        # S-05: compute optimal send hour per lead — weekly (Sunday 06:00 UTC).
+        cron(optimize_send_times, weekday=6, hour=6, minute=0, timeout=600, max_tries=1),
     ]

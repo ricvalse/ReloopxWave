@@ -215,6 +215,8 @@ class _ReplyContext:
     # UC-05 — True when the lead replied within 10min of the previous turn
     # (derived from the conversation's prior last_message_at at inbound time).
     responded_within_10min: bool = False
+    # S-09: behavioral latency signal (EMA from LeadRepository).
+    lead_avg_latency_seconds: int | None = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -732,11 +734,16 @@ class ConversationService:
                         else prior_last_message_at
                     )
                     latency_s = max(0, int(delta.total_seconds()))
-                await LeadRepository(session).update_behavioral_signals(
+                lead_repo = LeadRepository(session)
+                await lead_repo.update_behavioral_signals(
                     lead.id,
                     response_latency_s=latency_s,
                     message_length=len(text),
                 )
+                # S-05: compute intake score on the very first inbound message.
+                if prior_last_message_at is None:
+                    intake = _compute_intake_score(text)
+                    await lead_repo.update_intake_score(lead.id, score=intake)
                 # Open/refresh the 24h customer-service window on a new inbound.
                 await convs.touch_last_inbound(conv.id)
                 received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}
@@ -886,6 +893,7 @@ class ConversationService:
                 text=text,
                 conv_current_state=conv.current_state,
                 latest_wa_message_id=wa_message_id,
+                lead_avg_latency_seconds=lead.avg_response_latency_seconds,
             )
         return await self._generate_and_deliver(rc)
 
@@ -968,6 +976,49 @@ class ConversationService:
             fsm_hint = state_system_hint(fsm_state)
             if fsm_hint:
                 system_prompt = system_prompt + "\n\n" + fsm_hint
+
+            # S-09: proactive escalation risk — inject empathy hint when risk ≥ 60
+            from ai_core.escalation_predictor import predict_escalation_risk
+            from sqlalchemy import func, select as sa_select
+            from db.models import Objection as ObjModel
+
+            try:
+                obj_count_row = await session.execute(
+                    sa_select(func.count()).select_from(ObjModel).where(
+                        ObjModel.conversation_id == rc.conv_id
+                    )
+                )
+                obj_count = obj_count_row.scalar() or 0
+            except Exception:
+                obj_count = 0
+
+            recent_user_msgs = [
+                m.content for m in rc.chat_history[-6:] if m.role == "user"
+            ]
+            esc_risk = predict_escalation_risk(
+                turn_count=len(rc.chat_history),
+                lead_score=rc.lead_score,
+                hot_threshold=advance_threshold,
+                sentiment=rc.lead_sentiment,
+                objection_count=obj_count,
+                recent_messages=recent_user_msgs,
+                avg_response_latency_seconds=rc.lead_avg_latency_seconds,
+            )
+            if esc_risk.score >= 60:
+                system_prompt = (
+                    system_prompt
+                    + "\n\nATTENZIONE: il lead mostra segnali di frustrazione o tensione. "
+                    "Sii particolarmente empatico, paziente e rassicurante in questa risposta."
+                )
+                if esc_risk.score >= 75:
+                    await analytics.emit(
+                        tenant_id=resolved.tenant_id,
+                        merchant_id=resolved.merchant_id,
+                        event_type="escalation.risk_high",
+                        subject_type="conversation",
+                        subject_id=rc.conv_id,
+                        properties={"risk_score": esc_risk.score, "factors": esc_risk.factors},
+                    )
 
             # S-04: context compression — replace old turns with a memory block
             effective_history = rc.chat_history
@@ -1653,16 +1704,108 @@ def _responded_within_10min(prior_last_message_at: datetime | None) -> bool:
     return (datetime.now(UTC) - prior_last_message_at) <= _RESPONDED_FAST_WINDOW
 
 
+_INTAKE_HIGH_INTENT = frozenset(
+    [
+        "prezzo",
+        "costo",
+        "acquistare",
+        "comprare",
+        "disponibile",
+        "preventivo",
+        "offerta",
+        "sconto",
+        "quando",
+        "appuntamento",
+        "informazioni",
+        "interessato",
+        "vorrei",
+        "voglio",
+        "book",
+        "price",
+        "buy",
+        "available",
+    ]
+)
+
+
+def _compute_intake_score(text: str) -> int:
+    """Heuristic intent/intake score (0-100) for the first inbound message.
+
+    Long messages and presence of high-intent keywords push the score up.
+    This gives the scheduler and scoring a lightweight signal before any LLM call.
+    """
+    lower = text.lower()
+    words = lower.split()
+    keyword_hits = sum(1 for w in words if w.rstrip(".,!?") in _INTAKE_HIGH_INTENT)
+    length_score = min(40, len(text) // 5)
+    keyword_score = min(60, keyword_hits * 20)
+    return min(100, length_score + keyword_score)
+
+
 async def _assign_ab_variant(session: Any, *, merchant_id: UUID, lead_id: UUID) -> str | None:
-    """Pick the oldest running experiment (if any) and hash-assign the lead."""
+    """Pick the oldest running experiment and assign a variant.
+
+    S-06: When AB_THOMPSON_SAMPLING_ENABLED is True (default), uses Thompson
+    Sampling to select the arm with the highest Beta-sampled conversion rate.
+    Falls back to deterministic hash-pick if the bandit logic fails.
+    """
+    from ai_core.bandit.thompson import thompson_sample
+
     try:
         ab = ABRepository(session)
         running = await ab.list_active_for_merchant(merchant_id)
         if not running:
             return None
+
+        experiment = running[0]
+        variants = experiment.variants or []
+        if not variants:
+            return "default"
+
+        # Check if Thompson Sampling is enabled for this merchant.
+        try:
+            resolver = ConfigResolver(session)
+            use_ts = await resolver.resolve(
+                ConfigKey.AB_THOMPSON_SAMPLING_ENABLED, merchant_id=merchant_id
+            )
+            thompson_enabled = bool(use_ts) if use_ts is not None else True
+        except Exception:
+            thompson_enabled = True
+
+        if thompson_enabled:
+            # Check for an existing assignment first (idempotency).
+            from sqlalchemy import select as sa_select
+            from db.models import ABAssignment
+
+            existing_stmt = sa_select(ABAssignment).where(
+                ABAssignment.experiment_id == experiment.id,
+                ABAssignment.lead_id == lead_id,
+            )
+            existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                return existing.variant_id
+
+            # Draw from Beta posteriors for each variant.
+            wins, totals = await ab.get_variant_stats(
+                experiment.id, primary_metric=experiment.primary_metric
+            )
+            variant_id = thompson_sample(variants, variant_wins=wins, variant_totals=totals)
+
+            # Persist the assignment.
+            session.add(
+                ABAssignment(
+                    experiment_id=experiment.id,
+                    merchant_id=merchant_id,
+                    lead_id=lead_id,
+                    variant_id=variant_id,
+                )
+            )
+            await session.flush()
+            return variant_id
+
         return cast(
             "str | None",
-            await ab.assign_variant(running[0], lead_id=lead_id, merchant_id=merchant_id),
+            await ab.assign_variant(experiment, lead_id=lead_id, merchant_id=merchant_id),
         )
     except Exception as e:  # pragma: no cover — defensive only
         logger.warning("uc09.assignment_failed", error=str(e))

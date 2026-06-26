@@ -19,6 +19,7 @@ from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
 from workers.scheduler.reactivation import reactivate_dormant_leads  # re-export
 from workers.scheduler.retention import enforce_retention  # re-export
+from workers.scheduler.send_time import optimize_send_times  # re-export  # S-05
 from workers.scheduler.template_sync import (  # re-export
     apply_template_status_event,
     template_status_sync,
@@ -37,6 +38,7 @@ __all__ = [
     "integration_health_check",
     "kb_reindex",
     "objection_extraction",
+    "optimize_send_times",
     "reactivate_dormant_leads",
     "send_appointment_reminders",
     "sync_appointments",

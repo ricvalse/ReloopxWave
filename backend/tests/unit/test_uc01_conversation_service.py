@@ -162,6 +162,9 @@ def service(
         async def update_behavioral_signals(self, lead_id, **kw):
             return None
 
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
@@ -372,6 +375,9 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         async def update_behavioral_signals(self, lead_id, **kw):
             return None
 
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
@@ -495,6 +501,12 @@ async def test_inbound_idempotent_on_redelivery(
         def __init__(self, session): ...
         async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
             return FakeLead()
+
+        async def update_behavioral_signals(self, lead_id, **kw):
+            return None
+
+        async def update_intake_score(self, lead_id, **kw):
+            return None
 
     class FakeConvRepo:
         def __init__(self, session): ...
