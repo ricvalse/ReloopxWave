@@ -347,6 +347,40 @@ async def resume_ai(
     return _conv_to_dict(conv)
 
 
+@router.delete("/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: UUID,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> None:
+    """Permanently delete a conversation and its messages (CASCADE).
+
+    RLS scopes the lookup to the caller's merchant. A missing row means
+    not-found-or-not-yours — we return 404 either way.
+    """
+    if ctx.merchant_id is None and ctx.role != "agency_admin":
+        raise PermissionDeniedError(
+            "Merchant context required to delete conversations",
+            error_code="no_merchant_context",
+        )
+
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    await session.delete(conv)
+    await session.commit()
+
+    logger.info(
+        "conversations.deleted",
+        conversation_id=str(conversation_id),
+        merchant_id=str(conv.merchant_id),
+        actor_id=str(ctx.actor_id) if ctx.actor_id else None,
+    )
+
+
 def _conv_to_dict(c: Conversation) -> dict[str, Any]:
     return {
         "id": str(c.id),

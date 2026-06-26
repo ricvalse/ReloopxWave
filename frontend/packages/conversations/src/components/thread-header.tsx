@@ -5,13 +5,21 @@ import {
   AvatarFallback,
   Badge,
   Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
   Switch,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
   cn,
 } from '@reloop/ui';
-import { ArrowLeft, PanelRight, Search } from 'lucide-react';
+import { ArrowLeft, PanelRight, Search, Trash2 } from 'lucide-react';
 import { useToggleAutoReply } from '../hooks/use-toggle-auto-reply';
 import { useConversationsContext } from '../lib/context';
 import { contactDisplayName, contactInitials } from '../lib/initials';
@@ -24,6 +32,10 @@ interface ThreadHeaderProps {
   onToggleDetail?: () => void;
   /** Whether the detail panel is currently open (for the toggle's active state). */
   detailActive?: boolean;
+  /** Called after the user confirms deletion. */
+  onDelete?: () => void;
+  /** Whether a delete action is in progress. */
+  isDeleting?: boolean;
 }
 
 export function ThreadHeader({
@@ -31,6 +43,8 @@ export function ThreadHeader({
   onBack,
   onToggleDetail,
   detailActive,
+  onDelete,
+  isDeleting,
 }: ThreadHeaderProps) {
   const { merchantAutoReplyEnabled } = useConversationsContext();
   const toggle = useToggleAutoReply();
@@ -128,6 +142,48 @@ export function ThreadHeader({
       >
         <Search className="h-4 w-4" />
       </Button>
+
+      {onDelete && (
+        <Dialog>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                  aria-label="Elimina conversazione"
+                  disabled={isDeleting}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Elimina conversazione</TooltipContent>
+          </Tooltip>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Eliminare la conversazione?</DialogTitle>
+              <DialogDescription>
+                Tutti i messaggi con{' '}
+                <span className="font-medium">{display}</span> verranno eliminati
+                definitivamente. L&apos;operazione non è reversibile.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button variant="outline">Annulla</Button>
+              </DialogClose>
+              <DialogClose asChild>
+                <Button variant="destructive" onClick={onDelete} disabled={isDeleting}>
+                  {isDeleting ? 'Eliminazione…' : 'Elimina'}
+                </Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
       {onToggleDetail && (
         <Tooltip>
           <TooltipTrigger asChild>

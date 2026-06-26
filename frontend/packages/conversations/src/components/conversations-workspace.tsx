@@ -4,6 +4,7 @@ import { cn, EmptyState, Input, Sheet, SheetContent, SheetTitle } from '@reloop/
 import { MessageSquare, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useConversations } from '../hooks/use-conversations';
+import { useDeleteConversation } from '../hooks/use-delete-conversation';
 import { useSendMessage } from '../hooks/use-send-message';
 import { useThread } from '../hooks/use-thread';
 import { useConversationsContext } from '../lib/context';
@@ -48,6 +49,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
   const conversationsQuery = useConversations({ limit: 100 });
   const threadQuery = useThread(selectedId);
   const sendMutation = useSendMessage();
+  const deleteMutation = useDeleteConversation();
 
   const conversations = conversationsQuery.data ?? [];
 
@@ -167,6 +169,12 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
               onBack={() => onSelect(null)}
               onToggleDetail={customerDetailEnabled ? handleToggleDetail : undefined}
               detailActive={showDesktopDetail || (isMobile && mobileDetailOpen)}
+              onDelete={() => {
+                deleteMutation.mutate(selectedConversation.id, {
+                  onSuccess: () => onSelect(null),
+                });
+              }}
+              isDeleting={deleteMutation.isPending}
             />
             <AiHandoffBanner conversation={selectedConversation} />
             <div className="min-h-0 flex-1">
