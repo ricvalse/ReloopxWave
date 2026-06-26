@@ -533,6 +533,8 @@ class ConversationService:
         # availability/appointment data mid-turn. None = single-shot turns.
         self._tool_executor = tool_executor
         self._kek = kek_base64
+        # Cached nano LLM client for RAG HyDE + re-ranking (low-cost operations).
+        self._rag_nano_client: Any = None
 
     async def handle_inbound(
         self,
@@ -906,9 +908,28 @@ class ConversationService:
                     min_score = await self._resolve_float(
                         session, resolved.merchant_id, ConfigKey.RAG_MIN_SCORE, default=0.7
                     )
-                    rag = RAGEngine(session, self._embedder)
+                    hyde_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.RAG_HYDE_ENABLED, default=True
+                    )
+                    rerank_enabled = await self._resolve_bool(
+                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_ENABLED, default=True
+                    )
+                    rerank_top_k = await self._resolve_int(
+                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_TOP_K, default=5
+                    )
+                    freshness_decay = await self._resolve_float(
+                        session, resolved.merchant_id, ConfigKey.RAG_FRESHNESS_DECAY, default=0.01
+                    )
+                    rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
                     kb_chunks = await rag.retrieve(
-                        rc.text, merchant_id=resolved.merchant_id, top_k=top_k, min_score=min_score
+                        rc.text,
+                        merchant_id=resolved.merchant_id,
+                        top_k=top_k,
+                        min_score=min_score,
+                        hyde_enabled=hyde_enabled,
+                        rerank_enabled=rerank_enabled,
+                        rerank_top_k=rerank_top_k,
+                        freshness_decay=freshness_decay,
                     )
                 except Exception as e:
                     logger.warning("uc01.rag_failed", error=str(e))
@@ -1199,6 +1220,25 @@ class ConversationService:
             conversation_id=rc.conv_id,
             reply_text=response.reply_text,
         )
+
+    def _rag_llm_client(self) -> Any:
+        """Return a cheap nano LLM client for RAG HyDE + re-ranking.
+
+        Lazily built from the orchestrator's router. Returns None if the router
+        doesn't expose a nano model (safe: RAGEngine falls back to raw query).
+        """
+        if self._rag_nano_client is not None:
+            return self._rag_nano_client
+        try:
+            from ai_core.llm import OpenAIClient
+            from ai_core.router import ModelRouter
+
+            router: ModelRouter = self._orchestrator._router  # type: ignore[attr-defined]
+            client = OpenAIClient(model="gpt-4.1-nano", api_key=router._api_key)  # type: ignore[attr-defined]
+            self._rag_nano_client = client
+            return client
+        except Exception:
+            return None
 
     async def _run_orchestrator(
         self, session: Any, ctx: ConversationContext, rc: _ReplyContext

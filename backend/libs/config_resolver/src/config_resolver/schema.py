@@ -60,6 +60,10 @@ class ConfigKey(StrEnum):
     # UC-07 RAG
     RAG_TOP_K = "rag.top_k"
     RAG_MIN_SCORE = "rag.min_score"
+    RAG_HYDE_ENABLED = "rag.hyde_enabled"
+    RAG_RERANK_ENABLED = "rag.rerank_enabled"
+    RAG_RERANK_TOP_K = "rag.rerank_top_k"
+    RAG_FRESHNESS_DECAY = "rag.freshness_decay"
 
     # Bot
     BOT_LANGUAGE = "bot.language"
@@ -190,6 +194,10 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
     ConfigKey.RAG_MIN_SCORE: 0.7,
+    ConfigKey.RAG_HYDE_ENABLED: True,
+    ConfigKey.RAG_RERANK_ENABLED: True,
+    ConfigKey.RAG_RERANK_TOP_K: 5,
+    ConfigKey.RAG_FRESHNESS_DECAY: 0.01,
     ConfigKey.BOT_LANGUAGE: "it",
     ConfigKey.BOT_TONE: "professionale-amichevole",
     ConfigKey.ESCALATION_ENABLED: True,

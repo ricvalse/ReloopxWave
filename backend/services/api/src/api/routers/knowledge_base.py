@@ -212,3 +212,70 @@ def _infer_source(filename: str, content_type: str | None) -> Literal["pdf", "do
     if (content_type or "") == docx_ct or lower.endswith(".docx"):
         return "docx"
     return "txt"
+
+
+# ---------------------------------------------------------------------------
+# S-02: KB Gap Detection
+# ---------------------------------------------------------------------------
+
+
+class KBGapOut(BaseModel):
+    id: UUID
+    question_text: str
+    frequency: int
+    resolved: bool
+
+    @classmethod
+    def from_row(cls, row: Any) -> "KBGapOut":
+        return cls(
+            id=row.id,
+            question_text=row.question_text,
+            frequency=row.frequency,
+            resolved=row.resolved,
+        )
+
+
+@router.get("/merchants/{merchant_id}/knowledge-base/gaps", response_model=list[KBGapOut])
+async def list_kb_gaps(
+    merchant_id: UUID,
+    session: DBSession,
+    ctx: CurrentContext,
+    resolved: bool = False,
+) -> list[KBGapOut]:
+    """Return questions the KB could not answer, ordered by frequency."""
+    _assert_merchant_scope(ctx, merchant_id)
+    from sqlalchemy import text as sqla_text
+
+    rows = await session.execute(
+        sqla_text(
+            """
+            SELECT id, question_text, frequency, resolved
+            FROM kb_gaps
+            WHERE merchant_id = :mid AND resolved = :resolved
+            ORDER BY frequency DESC
+            LIMIT 50
+            """
+        ),
+        {"mid": str(merchant_id), "resolved": resolved},
+    )
+    return [KBGapOut.from_row(r) for r in rows.mappings()]
+
+
+@router.patch("/merchants/{merchant_id}/knowledge-base/gaps/{gap_id}/resolve")
+async def resolve_kb_gap(
+    merchant_id: UUID,
+    gap_id: UUID,
+    session: DBSession,
+    ctx: CurrentContext,
+) -> dict:
+    """Mark a KB gap as resolved (merchant has added the missing content)."""
+    _assert_merchant_scope(ctx, merchant_id)
+    from sqlalchemy import text as sqla_text
+
+    await session.execute(
+        sqla_text(
+            "UPDATE kb_gaps SET resolved = true WHERE id = :gap_id AND merchant_id = :mid"
+        ),
+        {"gap_id": str(gap_id), "mid": str(merchant_id)},
+    )
+    return {"ok": True}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector  # type: ignore[import-untyped]  # no py.typed marker
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -60,4 +61,27 @@ class KBChunk(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(String, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=text("now()")
+    )
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class KBGap(Base):
+    """Domande dei lead che non hanno trovato risposta nella KB del merchant."""
+
+    __tablename__ = "kb_gaps"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    merchant_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("merchants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    question_text: Mapped[str] = mapped_column(String, nullable=False)
+    frequency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
