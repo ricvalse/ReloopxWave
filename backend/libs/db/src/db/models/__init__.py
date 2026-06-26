@@ -8,7 +8,7 @@ from db.models.catalog import BotCorrection, FaqEntry, Product, StorePolicy
 from db.models.conversation import Conversation, Message
 from db.models.flow import Flow, FlowStep
 from db.models.ft import FTModel
-from db.models.ghl import GHLAgencyInstall, GHLLocationToken
+from db.models.ghl import GHLAgencyInstall, GHLLocationToken, GhlSyncLog
 from db.models.integration import Integration
 from db.models.kb import KBChunk, KnowledgeBaseDoc
 from db.models.lead import Lead, Objection
@@ -34,6 +34,7 @@ __all__ = [
     "FlowStep",
     "GHLAgencyInstall",
     "GHLLocationToken",
+    "GhlSyncLog",
     "Integration",
     "KBChunk",
     "KnowledgeBaseDoc",

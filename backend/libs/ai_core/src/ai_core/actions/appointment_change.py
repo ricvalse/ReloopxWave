@@ -86,6 +86,8 @@ class CancelSlotHandler:
                     kek=self._kek,
                     client_id=self._client_id,
                     client_secret=self._client_secret,
+                    tenant_id=turn_ctx.tenant_id,
+                    conversation_id=turn_ctx.conversation_id,
                 )
                 text = (
                     f"Ho annullato il tuo appuntamento del {when}."
@@ -152,6 +154,8 @@ class RescheduleSlotHandler:
                         kek=self._kek,
                         client_id=self._client_id,
                         client_secret=self._client_secret,
+                        tenant_id=turn_ctx.tenant_id,
+                        conversation_id=turn_ctx.conversation_id,
                     )
                     text = (
                         f"Fatto! Ho spostato il tuo appuntamento al "

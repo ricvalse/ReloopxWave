@@ -163,6 +163,9 @@ def service(
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return None
 
+        async def get_active_or_reopen_latest(self, *, merchant_id, wa_contact_phone):
+            return None
+
         async def create(self, **kw):
             return conv
 
@@ -361,6 +364,9 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return conv
 
+        async def get_active_or_reopen_latest(self, *, merchant_id, wa_contact_phone):
+            return conv
+
         async def touch_last_message(self, conversation_id):
             return None
 
@@ -474,6 +480,9 @@ async def test_inbound_idempotent_on_redelivery(
     class FakeConvRepo:
         def __init__(self, session): ...
         async def get_active(self, *, merchant_id, wa_contact_phone):
+            return conv
+
+        async def get_active_or_reopen_latest(self, *, merchant_id, wa_contact_phone):
             return conv
 
         async def touch_last_message(self, conversation_id):

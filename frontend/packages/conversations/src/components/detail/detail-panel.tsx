@@ -6,6 +6,7 @@ import { useLeadDetail } from '../../hooks/use-lead-detail';
 import { useConversationsContext } from '../../lib/context';
 import { contactDisplayName, contactInitials } from '../../lib/initials';
 import type { Conversation } from '../../types';
+import { ActivityTimeline } from './activity-timeline';
 import { ContactInfo } from './contact-info';
 import { DsarActions } from './dsar-actions';
 import { LeadScore } from './lead-score';
@@ -130,6 +131,14 @@ export function DetailPanel({ conversation, onClose, hideClose }: DetailPanelPro
               <section className="border-t border-border px-4 py-4">
                 <NotesEditor conversationId={conversation.id} note={data?.note ?? null} />
               </section>
+              {lead ? (
+                <section className="border-t border-border px-4 py-4">
+                  <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Attività
+                  </p>
+                  <ActivityTimeline leadId={lead.id} />
+                </section>
+              ) : null}
               {dsarEnabled && conversation.lead_id ? (
                 <section className="border-t border-border px-4 py-4">
                   <DsarActions leadId={conversation.lead_id} contactLabel={display} />

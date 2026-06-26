@@ -24,6 +24,7 @@ from db.repositories.ghl_marketplace import (
     ResolvedAgencyInstall,
     ResolvedLocationToken,
 )
+from db.repositories.ghl_sync import GhlSyncEntry, GhlSyncRepository
 from db.repositories.integration import (
     IntegrationRepository,
     IntegrationStatus,
@@ -58,6 +59,8 @@ __all__ = [
     "FlowRepository",
     "GHLLocationSummary",
     "GHLMarketplaceRepository",
+    "GhlSyncEntry",
+    "GhlSyncRepository",
     "IntegrationRepository",
     "IntegrationStatus",
     "KnowledgeBaseRepository",

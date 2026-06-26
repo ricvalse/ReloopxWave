@@ -27,6 +27,7 @@ from db import (
     AnalyticsRepository,
     AppointmentRepository,
     GHLMarketplaceRepository,
+    GhlSyncRepository,
     IntegrationRepository,
     LeadRepository,
     TenantContext,
@@ -94,6 +95,7 @@ class BookSlotHandler:
             ghl_repo = IntegrationRepository(session, kek_base64=self._kek)
             leads = LeadRepository(session)
             analytics = AnalyticsRepository(session)
+            ghl_sync = GhlSyncRepository(session)
             config = ConfigResolver(session)
 
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
@@ -184,6 +186,11 @@ class BookSlotHandler:
                         custom_fields=custom_fields,
                         tags=tags,
                         on_token_refresh=_persist_tokens,
+                        ghl_sync=ghl_sync,
+                        tenant_id=turn_ctx.tenant_id,
+                        merchant_id=turn_ctx.merchant_id,
+                        lead_id=turn_ctx.lead_id,
+                        conversation_id=turn_ctx.conversation_id,
                     )
 
             if outcome and outcome.booked and outcome.booking_id:
@@ -276,6 +283,11 @@ class BookSlotHandler:
         custom_fields: list[dict[str, Any]] | None = None,
         tags: list[str] | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
+        ghl_sync: GhlSyncRepository | None = None,
+        tenant_id: Any | None = None,
+        merchant_id: Any | None = None,
+        lead_id: Any | None = None,
+        conversation_id: Any | None = None,
     ) -> BookingOutcome:
         client = GHLClient(
             token_bundle=GHLTokenBundle(
@@ -288,20 +300,62 @@ class BookSlotHandler:
             client_secret=self._client_secret,
             on_token_refresh=on_token_refresh,
         )
+        _sync_kwargs: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "merchant_id": merchant_id,
+            "lead_id": lead_id,
+            "conversation_id": conversation_id,
+        }
+
+        async def _log_sync(
+            operation: str,
+            ghl_entity_type: str,
+            ghl_entity_id: str | None,
+            status: str = "success",
+            payload: dict[str, Any] | None = None,
+            result: dict[str, Any] | None = None,
+            error_detail: str | None = None,
+        ) -> None:
+            if ghl_sync is not None:
+                try:
+                    await ghl_sync.emit(
+                        operation=operation,
+                        ghl_entity_type=ghl_entity_type,
+                        ghl_entity_id=ghl_entity_id,
+                        status=status,
+                        payload=payload,
+                        result=result,
+                        error_detail=error_detail,
+                        **_sync_kwargs,
+                    )
+                except Exception as _e:
+                    logger.warning("ghl_sync.emit_failed", error=str(_e), operation=operation)
+
         try:
+            contact_payload: dict[str, Any] = {
+                "phone": contact_phone,
+                "email": contact_fields.get("email"),
+                "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
+                "lastName": contact_fields.get("last_name"),
+            }
             contact = await client.upsert_contact(
-                {
-                    "phone": contact_phone,
-                    "email": contact_fields.get("email"),
-                    "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
-                    "lastName": contact_fields.get("last_name"),
-                },
+                contact_payload,
                 custom_fields=custom_fields,
                 tags=tags,
             )
             contact_id = contact.get("contact", {}).get("id") or contact.get("id")
             if not contact_id:
+                await _log_sync(
+                    "contact.upserted", "contact", None,
+                    status="error", error_detail="no contact_id in response",
+                    payload=contact_payload,
+                )
                 return BookingOutcome(False, None, None, [], "contact_upsert_failed")
+            await _log_sync(
+                "contact.upserted", "contact", contact_id,
+                payload={k: v for k, v in contact_payload.items() if v},
+                result={"id": contact_id},
+            )
 
             opportunity_id = await self._ensure_opportunity(
                 client=client,
@@ -310,12 +364,19 @@ class BookSlotHandler:
                 contact_fields=contact_fields,
                 pipeline_id=pipeline_id,
                 new_stage_id=new_stage_id,
+                log_sync=_log_sync,
             )
 
             tz = _resolve_tz(tz_name)
             slot_start = _parse_iso(preferred_start_iso, tz) or _next_business_hour(tz)
             slot_end = slot_start + timedelta(minutes=duration_min)
 
+            booking_payload: dict[str, Any] = {
+                "calendar_id": calendar_id,
+                "contact_id": contact_id,
+                "slot_start_iso": slot_start.isoformat(),
+                "slot_end_iso": slot_end.isoformat(),
+            }
             try:
                 booking = await client.create_booking(
                     calendar_id,
@@ -324,6 +385,11 @@ class BookSlotHandler:
                     slot_end_iso=slot_end.isoformat(),
                 )
                 booking_id = booking.get("id") or booking.get("event", {}).get("id")
+                await _log_sync(
+                    "booking.created", "appointment", str(booking_id) if booking_id else None,
+                    payload=booking_payload,
+                    result={"id": booking_id},
+                )
                 return BookingOutcome(
                     True,
                     booking_id,
@@ -342,6 +408,10 @@ class BookSlotHandler:
                 # free slots would likely fail too, and proposing alternatives
                 # would be misleading. Fall back gracefully ("ti ricontatteremo").
                 if not _is_slot_conflict(e):
+                    await _log_sync(
+                        "booking.created", "appointment", None,
+                        status="error", error_detail=str(e), payload=booking_payload,
+                    )
                     return BookingOutcome(
                         False,
                         None,
@@ -362,6 +432,12 @@ class BookSlotHandler:
                 )
                 raw_suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
                 suggestions: list[str] = [s for s in raw_suggestions if s]
+                await _log_sync(
+                    "booking.created", "appointment", None,
+                    status="error", error_detail="slot_taken",
+                    payload=booking_payload,
+                    result={"suggested_slots": suggestions},
+                )
                 return BookingOutcome(
                     False,
                     None,
@@ -383,6 +459,7 @@ class BookSlotHandler:
         contact_fields: dict[str, Any],
         pipeline_id: str | None,
         new_stage_id: str | None,
+        log_sync: Any = None,
     ) -> str | None:
         """Find or create a GHL opportunity for this contact.
 
@@ -404,6 +481,12 @@ class BookSlotHandler:
                     if isinstance(opp_id, str):
                         return opp_id
             name = contact_fields.get("name") or contact_fields.get("first_name") or "Lead WhatsApp"
+            opp_payload: dict[str, Any] = {
+                "pipeline_id": pipeline_id,
+                "stage_id": new_stage_id,
+                "contact_id": contact_id,
+                "name": str(name),
+            }
             created = await client.create_opportunity(
                 pipeline_id=pipeline_id,
                 stage_id=new_stage_id,
@@ -412,9 +495,19 @@ class BookSlotHandler:
                 name=str(name),
             )
             opp_id = created.get("id") or created.get("opportunity", {}).get("id")
+            if log_sync is not None and isinstance(opp_id, str):
+                await log_sync(
+                    "opportunity.created", "opportunity", opp_id,
+                    payload=opp_payload, result={"id": opp_id},
+                )
             return opp_id if isinstance(opp_id, str) else None
         except IntegrationError as e:
             logger.warning("book_slot.opportunity_failed", error=str(e))
+            if log_sync is not None:
+                await log_sync(
+                    "opportunity.created", "opportunity", None,
+                    status="error", error_detail=str(e),
+                )
             return None
 
     async def _send_confirmation(

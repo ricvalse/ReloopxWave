@@ -106,6 +106,7 @@ async def reschedule(
         kek=settings.integrations_kek_base64,
         client_id=settings.ghl_client_id,
         client_secret=settings.ghl_client_secret,
+        tenant_id=ctx.tenant_id,
     )
     _raise_for_failure(result)
     return AppointmentOut(
@@ -132,6 +133,7 @@ async def cancel(
         kek=settings.integrations_kek_base64,
         client_id=settings.ghl_client_id,
         client_secret=settings.ghl_client_secret,
+        tenant_id=ctx.tenant_id,
     )
     _raise_for_failure(result)
     return AppointmentOut(

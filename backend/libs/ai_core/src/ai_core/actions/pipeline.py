@@ -28,6 +28,7 @@ from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
     GHLMarketplaceRepository,
+    GhlSyncRepository,
     IntegrationRepository,
     LeadRepository,
     TenantContext,
@@ -78,6 +79,7 @@ class MovePipelineHandler:
             ghl_repo = IntegrationRepository(session, kek_base64=self._kek)
             leads = LeadRepository(session)
             analytics = AnalyticsRepository(session)
+            ghl_sync = GhlSyncRepository(session)
             config = ConfigResolver(session)
 
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
@@ -163,6 +165,11 @@ class MovePipelineHandler:
                         custom_fields=custom_fields,
                         tags=tags,
                         on_token_refresh=_persist_tokens,
+                        ghl_sync=ghl_sync,
+                        tenant_id=turn_ctx.tenant_id,
+                        merchant_id=turn_ctx.merchant_id,
+                        lead_id=turn_ctx.lead_id,
+                        conversation_id=turn_ctx.conversation_id,
                     )
 
             if outcome.moved and outcome.stage_id:
@@ -217,14 +224,30 @@ class MovePipelineHandler:
         return "\n".join(lines)
 
     @staticmethod
-    async def _maybe_note(client: Any, contact_id: str, body: str | None) -> None:
+    async def _maybe_note(
+        client: Any,
+        contact_id: str,
+        body: str | None,
+        log_sync: Any = None,
+    ) -> None:
         """Best-effort contact note — never let a note failure undo the move."""
         if not body:
             return
         try:
             await client.add_contact_note(contact_id, body=body)
+            if log_sync is not None:
+                await log_sync(
+                    "note.added", "note", None,
+                    payload={"contact_id": contact_id, "body_len": len(body)},
+                )
         except Exception as e:
             logger.warning("move_pipeline.note_failed", error=str(e), contact_id=contact_id)
+            if log_sync is not None:
+                await log_sync(
+                    "note.added", "note", None,
+                    status="error", error_detail=str(e),
+                    payload={"contact_id": contact_id},
+                )
 
     async def _execute(
         self,
@@ -241,7 +264,43 @@ class MovePipelineHandler:
         custom_fields: list[dict[str, Any]] | None = None,
         tags: list[str] | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
+        ghl_sync: GhlSyncRepository | None = None,
+        tenant_id: Any | None = None,
+        merchant_id: Any | None = None,
+        lead_id: Any | None = None,
+        conversation_id: Any | None = None,
     ) -> MoveOutcome:
+        _sync_kwargs: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "merchant_id": merchant_id,
+            "lead_id": lead_id,
+            "conversation_id": conversation_id,
+        }
+
+        async def _log_sync(
+            operation: str,
+            ghl_entity_type: str,
+            ghl_entity_id: str | None,
+            status: str = "success",
+            payload: dict[str, Any] | None = None,
+            result: dict[str, Any] | None = None,
+            error_detail: str | None = None,
+        ) -> None:
+            if ghl_sync is not None:
+                try:
+                    await ghl_sync.emit(
+                        operation=operation,
+                        ghl_entity_type=ghl_entity_type,
+                        ghl_entity_id=ghl_entity_id,
+                        status=status,
+                        payload=payload,
+                        result=result,
+                        error_detail=error_detail,
+                        **_sync_kwargs,
+                    )
+                except Exception as _e:
+                    logger.warning("ghl_sync.emit_failed", error=str(_e), operation=operation)
+
         client = GHLClient(
             token_bundle=GHLTokenBundle(
                 access_token=ghl.access_token,
@@ -254,19 +313,30 @@ class MovePipelineHandler:
             on_token_refresh=on_token_refresh,
         )
         try:
+            contact_payload: dict[str, Any] = {
+                "phone": contact_phone,
+                "email": contact_fields.get("email"),
+                "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
+                "lastName": contact_fields.get("last_name"),
+            }
             contact = await client.upsert_contact(
-                {
-                    "phone": contact_phone,
-                    "email": contact_fields.get("email"),
-                    "firstName": contact_fields.get("first_name") or contact_fields.get("name"),
-                    "lastName": contact_fields.get("last_name"),
-                },
+                contact_payload,
                 custom_fields=custom_fields,
                 tags=tags,
             )
             contact_id = contact.get("contact", {}).get("id") or contact.get("id")
             if not contact_id:
+                await _log_sync(
+                    "contact.upserted", "contact", None,
+                    status="error", error_detail="no contact_id in response",
+                    payload=contact_payload,
+                )
                 return MoveOutcome(False, None, None, "contact_upsert_failed")
+            await _log_sync(
+                "contact.upserted", "contact", contact_id,
+                payload={k: v for k, v in contact_payload.items() if v},
+                result={"id": contact_id},
+            )
 
             if opportunity_id is None:
                 # No opportunity yet — the lead never went through book_slot (which
@@ -280,6 +350,13 @@ class MovePipelineHandler:
                     or contact_fields.get("first_name")
                     or "Lead WhatsApp"
                 )
+                opp_payload: dict[str, Any] = {
+                    "pipeline_id": pipeline_id,
+                    "stage_id": stage_id,
+                    "contact_id": contact_id,
+                    "name": str(name),
+                    "monetary_value": value,
+                }
                 try:
                     created = await client.create_opportunity(
                         pipeline_id=pipeline_id,
@@ -291,18 +368,39 @@ class MovePipelineHandler:
                     )
                 except IntegrationError as e:
                     logger.warning("move_pipeline.create_failed", error=str(e))
+                    await _log_sync(
+                        "opportunity.created", "opportunity", None,
+                        status="error", error_detail=str(e), payload=opp_payload,
+                    )
                     return MoveOutcome(False, stage_id, None, "opportunity_create_failed")
                 created_id = created.get("id") or created.get("opportunity", {}).get("id")
                 if not isinstance(created_id, str):
+                    await _log_sync(
+                        "opportunity.created", "opportunity", None,
+                        status="error", error_detail="no id in response", payload=opp_payload,
+                    )
                     return MoveOutcome(False, stage_id, None, "opportunity_create_failed")
-                await self._maybe_note(client, contact_id, note_body)
+                await _log_sync(
+                    "opportunity.created", "opportunity", created_id,
+                    payload=opp_payload, result={"id": created_id},
+                )
+                await self._maybe_note(client, contact_id, note_body, log_sync=_log_sync)
                 return MoveOutcome(True, stage_id, created_id, "created_in_stage")
 
             try:
+                move_payload: dict[str, Any] = {
+                    "opportunity_id": opportunity_id,
+                    "stage_id": stage_id,
+                    "pipeline_id": pipeline_id or "",
+                }
                 await client.move_opportunity(
                     opportunity_id, stage_id=stage_id, pipeline_id=pipeline_id or ""
                 )
-                await self._maybe_note(client, contact_id, note_body)
+                await _log_sync(
+                    "opportunity.moved", "opportunity", opportunity_id,
+                    payload=move_payload, result={"stage_id": stage_id},
+                )
+                await self._maybe_note(client, contact_id, note_body, log_sync=_log_sync)
                 return MoveOutcome(True, stage_id, opportunity_id, "moved")
             except IntegrationError as e:
                 logger.warning(
@@ -310,6 +408,10 @@ class MovePipelineHandler:
                     error=str(e),
                     opportunity_id=opportunity_id,
                     stage_id=stage_id,
+                )
+                await _log_sync(
+                    "opportunity.moved", "opportunity", opportunity_id,
+                    status="error", error_detail=str(e),
                 )
                 return MoveOutcome(False, stage_id, opportunity_id, "ghl_move_failed")
         finally:

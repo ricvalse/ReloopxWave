@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 from api.dependencies.session import CurrentContext, DBSession
 from db import (
     GHLMarketplaceRepository,
+    GhlSyncRepository,
     IntegrationRepository,
     MerchantRepository,
     session_scope,
@@ -506,6 +507,63 @@ async def integration_status(
         )
 
     return StatusOut(merchant_id=target, connections=connections)
+
+
+# ---- GHL sync log ----------------------------------------------------------
+
+
+class GhlSyncEntryOut(BaseModel):
+    id: UUID
+    lead_id: UUID | None
+    conversation_id: UUID | None
+    operation: str
+    ghl_entity_type: str | None
+    ghl_entity_id: str | None
+    status: str
+    error_detail: str | None
+    payload: dict[str, Any] | None
+    result: dict[str, Any] | None
+    occurred_at: Any
+
+
+class GhlSyncLogOut(BaseModel):
+    entries: list[GhlSyncEntryOut]
+
+
+@router.get("/ghl/sync-log", response_model=GhlSyncLogOut)
+async def ghl_sync_log(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+    lead_id: UUID | None = Query(default=None, description="Filter by lead"),  # noqa: B008
+    since_days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> GhlSyncLogOut:
+    """Storico di ogni operazione GHL — per merchant o per singolo lead."""
+    target = _resolve_status_merchant(ctx, merchant_id)
+    repo = GhlSyncRepository(session)
+    if lead_id is not None:
+        entries = await repo.list_for_lead(lead_id, limit=limit)
+    else:
+        entries = await repo.list_for_merchant(target, since_days=since_days, limit=limit)
+    return GhlSyncLogOut(
+        entries=[
+            GhlSyncEntryOut(
+                id=e.id,
+                lead_id=e.lead_id,
+                conversation_id=e.conversation_id,
+                operation=e.operation,
+                ghl_entity_type=e.ghl_entity_type,
+                ghl_entity_id=e.ghl_entity_id,
+                status=e.status,
+                error_detail=e.error_detail,
+                payload=e.payload,
+                result=e.result,
+                occurred_at=e.occurred_at,
+            )
+            for e in entries
+        ]
+    )
 
 
 # ---- helpers ---------------------------------------------------------------

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import ConfigKey, ConfigResolver
 from db import AnalyticsRepository, MerchantRepository
+from db.models import AnalyticsEvent
 from integrations import SupabaseStorage
 from shared import (
     IntegrationError,
@@ -215,3 +218,58 @@ async def download_export(export_id: UUID, ctx: CurrentContext) -> ExportDownloa
             export_id=str(export_id),
         ) from None
     return ExportDownload(export_id=export_id, signed_url=signed, expires_in_seconds=expires)
+
+
+# ---- Activity feed (timeline per lead) ------------------------------------
+
+
+class AnalyticsEventOut(BaseModel):
+    id: UUID
+    event_type: str
+    subject_type: str | None
+    subject_id: UUID | None
+    properties: dict[str, Any]
+    occurred_at: Any
+
+
+class AnalyticsEventsOut(BaseModel):
+    events: list[AnalyticsEventOut]
+
+
+@router.get("/events", response_model=AnalyticsEventsOut)
+async def list_events(
+    ctx: CurrentContext,
+    session: DBSession,
+    lead_id: UUID | None = Query(default=None, description="Filter by lead"),  # noqa: B008
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+    since_days: int = Query(default=90, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> AnalyticsEventsOut:
+    """Timeline degli analytics_events per lead o per merchant (uso interno + UI)."""
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+    since = datetime.now(tz=UTC) - timedelta(days=since_days)
+
+    stmt = (
+        select(AnalyticsEvent)
+        .where(AnalyticsEvent.merchant_id == target)
+        .where(AnalyticsEvent.occurred_at >= since)
+    )
+    if lead_id is not None:
+        stmt = stmt.where(AnalyticsEvent.subject_id == lead_id)
+
+    stmt = stmt.order_by(AnalyticsEvent.occurred_at.desc()).limit(limit)
+    rows = (await session.scalars(stmt)).all()
+
+    return AnalyticsEventsOut(
+        events=[
+            AnalyticsEventOut(
+                id=r.id,
+                event_type=r.event_type,
+                subject_type=r.subject_type,
+                subject_id=r.subject_id,
+                properties=r.properties or {},
+                occurred_at=r.occurred_at,
+            )
+            for r in rows
+        ]
+    )

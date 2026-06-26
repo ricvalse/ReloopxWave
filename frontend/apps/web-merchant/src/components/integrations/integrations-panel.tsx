@@ -7,6 +7,7 @@ import type { components } from '@reloop/api-client';
 import { Card, CardContent, CardHeader, CardTitle, SkeletonCard } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { ConnectWhatsAppButton } from './connect-whatsapp-button';
+import { GhlSyncLog } from './ghl-sync-log';
 
 type Status = components['schemas']['StatusOut'];
 type Connection = components['schemas']['ConnectionOut'];
@@ -81,6 +82,8 @@ export function IntegrationsPanel() {
           queryClient.invalidateQueries({ queryKey: ['integrations', 'status'] })
         }
       />
+
+      {ghl?.connected ? <GhlSyncLog /> : null}
     </div>
   );
 }

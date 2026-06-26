@@ -11,10 +11,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import GHLMarketplaceRepository, IntegrationRepository, session_scope
+from db import (
+    AnalyticsRepository,
+    GHLMarketplaceRepository,
+    GhlSyncRepository,
+    IntegrationRepository,
+    session_scope,
+)
 from db.models import Appointment
 from integrations.ghl.client import GHLClient, GHLTokenBundle
 from shared import IntegrationError, get_logger
@@ -75,6 +83,8 @@ async def reschedule_appointment(
     kek: str,
     client_id: str,
     client_secret: str,
+    tenant_id: UUID | None = None,
+    conversation_id: UUID | None = None,
 ) -> AppointmentOpResult:
     """Move `appointment` to a new slot in GHL, then mirror it locally."""
     if not appointment.ghl_appointment_id:
@@ -88,6 +98,12 @@ async def reschedule_appointment(
     )
     if client is None:
         return AppointmentOpResult(False, "no_ghl_integration")
+
+    payload: dict[str, Any] = {
+        "ghl_appointment_id": appointment.ghl_appointment_id,
+        "new_start": new_start.isoformat(),
+        "new_end": new_end.isoformat(),
+    }
     try:
         await client.reschedule_appointment(
             appointment.ghl_appointment_id,
@@ -96,6 +112,12 @@ async def reschedule_appointment(
         )
     except IntegrationError as e:
         logger.warning("appointment.reschedule_failed", error=str(e))
+        await _emit_sync(
+            session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+            lead_id=appointment.lead_id, conversation_id=conversation_id,
+            operation="booking.rescheduled", ghl_entity_id=appointment.ghl_appointment_id,
+            status="error", error_detail=str(e), payload=payload,
+        )
         return AppointmentOpResult(False, "ghl_error")
     finally:
         await client.close()
@@ -103,6 +125,23 @@ async def reschedule_appointment(
     appointment.start_at = new_start
     appointment.end_at = new_end
     appointment.status = "booked"
+
+    await _emit_sync(
+        session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+        lead_id=appointment.lead_id, conversation_id=conversation_id,
+        operation="booking.rescheduled", ghl_entity_id=appointment.ghl_appointment_id,
+        payload=payload, result={"new_start": new_start.isoformat()},
+    )
+    if tenant_id is not None:
+        await _emit_analytics(
+            session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+            lead_id=appointment.lead_id, conversation_id=conversation_id,
+            event_type="booking.rescheduled",
+            properties={
+                "ghl_appointment_id": appointment.ghl_appointment_id,
+                "new_start": new_start.isoformat(),
+            },
+        )
     return AppointmentOpResult(True)
 
 
@@ -113,6 +152,8 @@ async def cancel_appointment(
     kek: str,
     client_id: str,
     client_secret: str,
+    tenant_id: UUID | None = None,
+    conversation_id: UUID | None = None,
 ) -> AppointmentOpResult:
     """Cancel `appointment` in GHL, then mark the mirror row cancelled."""
     if not appointment.ghl_appointment_id:
@@ -126,13 +167,95 @@ async def cancel_appointment(
     )
     if client is None:
         return AppointmentOpResult(False, "no_ghl_integration")
+
+    payload: dict[str, Any] = {"ghl_appointment_id": appointment.ghl_appointment_id}
     try:
         await client.cancel_appointment(appointment.ghl_appointment_id)
     except IntegrationError as e:
         logger.warning("appointment.cancel_failed", error=str(e))
+        await _emit_sync(
+            session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+            lead_id=appointment.lead_id, conversation_id=conversation_id,
+            operation="booking.cancelled", ghl_entity_id=appointment.ghl_appointment_id,
+            status="error", error_detail=str(e), payload=payload,
+        )
         return AppointmentOpResult(False, "ghl_error")
     finally:
         await client.close()
 
     appointment.status = "cancelled"
+
+    await _emit_sync(
+        session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+        lead_id=appointment.lead_id, conversation_id=conversation_id,
+        operation="booking.cancelled", ghl_entity_id=appointment.ghl_appointment_id,
+        payload=payload,
+    )
+    if tenant_id is not None:
+        await _emit_analytics(
+            session, tenant_id=tenant_id, merchant_id=appointment.merchant_id,
+            lead_id=appointment.lead_id, conversation_id=conversation_id,
+            event_type="booking.cancelled",
+            properties={"ghl_appointment_id": appointment.ghl_appointment_id},
+        )
     return AppointmentOpResult(True)
+
+
+async def _emit_sync(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID | None,
+    merchant_id: Any,
+    lead_id: Any,
+    conversation_id: Any,
+    operation: str,
+    ghl_entity_id: str | None = None,
+    status: str = "success",
+    error_detail: str | None = None,
+    payload: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    if tenant_id is None:
+        return
+    try:
+        await GhlSyncRepository(session).emit(
+            tenant_id=tenant_id,
+            merchant_id=merchant_id,
+            lead_id=lead_id,
+            conversation_id=conversation_id,
+            operation=operation,
+            ghl_entity_type="appointment",
+            ghl_entity_id=ghl_entity_id,
+            status=status,
+            error_detail=error_detail,
+            payload=payload,
+            result=result,
+        )
+    except Exception as e:
+        logger.warning("ghl_sync.emit_failed", error=str(e), operation=operation)
+
+
+async def _emit_analytics(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    merchant_id: Any,
+    lead_id: Any,
+    conversation_id: Any,
+    event_type: str,
+    properties: dict[str, Any] | None = None,
+) -> None:
+    try:
+        await AnalyticsRepository(session).emit(
+            tenant_id=tenant_id,
+            merchant_id=merchant_id,
+            event_type=event_type,
+            subject_type="lead" if lead_id else "appointment",
+            subject_id=lead_id,
+            properties={
+                **(properties or {}),
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            },
+        )
+    except Exception as e:
+        logger.warning("analytics.emit_failed", error=str(e), event_type=event_type)
