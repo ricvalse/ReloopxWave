@@ -2,19 +2,20 @@
 
 Sends a WhatsApp reminder ahead of a booked appointment. The local
 `appointments` mirror (write-through at booking + reconcile poll) is the source
-of truth for upcoming slots, so this job just scans it for appointments starting
-within the reminder lead time and sends one reminder each.
+of truth for upcoming slots, so this job just scans it for appointments whose
+`reminder_due_at <= now` (multi-reminder support: ogni merchant può configurare
+più orari di anticipo tramite ConfigKey.BOOKING_REMINDER_SCHEDULE).
 
 A reminder for an appointment booked days ago is almost always OUTSIDE the 24h
 window, so — like reactivation — it goes through `decide_outbound` and is sent
 only when an approved `booking_reminder` template (or the within-window free
 text) is available; otherwise it is skipped and retried on the next tick until
-the slot passes. Idempotency is the `appointments.meta.reminder_sent_at` marker.
+the slot passes. Idempotency is gestita da `reminder_schedule[].sent_at` nel DB.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -41,14 +42,11 @@ from workers.outbound import (
 
 logger = get_logger(__name__)
 
-# How far ahead of the slot we send the reminder.
-REMINDER_LEAD = timedelta(hours=24)
-
 
 async def send_appointment_reminders(ctx: dict[str, Any]) -> dict[str, Any]:
     settings = ctx["settings"]
     now = datetime.now(tz=UTC)
-    candidates = await _scan(now=now, horizon_end=now + REMINDER_LEAD)
+    candidates = await _scan(now=now)
     logger.info("uc02.reminder.scan", count=len(candidates))
 
     sent = 0
@@ -58,11 +56,9 @@ async def send_appointment_reminders(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"candidates": len(candidates), "sent": sent}
 
 
-async def _scan(*, now: datetime, horizon_end: datetime) -> list[AppointmentReminderCandidate]:
+async def _scan(*, now: datetime) -> list[AppointmentReminderCandidate]:
     async with session_scope() as session:
-        return await AppointmentRepository(session).list_due_for_reminder(
-            now=now, horizon_end=horizon_end
-        )
+        return await AppointmentRepository(session).list_due_for_reminder(now=now)
 
 
 def _format_slot(start_at: datetime, tz_name: str | None) -> str:

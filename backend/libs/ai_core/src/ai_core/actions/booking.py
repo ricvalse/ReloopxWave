@@ -31,6 +31,8 @@ from db import (
     IntegrationRepository,
     LeadRepository,
     TenantContext,
+    build_reminder_schedule,
+    next_reminder_due,
     session_scope,
     tenant_session,
 )
@@ -98,6 +100,10 @@ class BookSlotHandler:
             ghl_sync = GhlSyncRepository(session)
             config = ConfigResolver(session)
 
+            # Default reminder schedule (ore di anticipo); aggiornato sotto
+            # se il merchant ha una configurazione personalizzata.
+            reminder_lead_hours: list[int] = [24]
+
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
             if ghl is None:
                 logger.warning("book_slot.no_ghl", merchant_id=str(turn_ctx.merchant_id))
@@ -132,6 +138,13 @@ class BookSlotHandler:
                         ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=turn_ctx.merchant_id
                     )
                     lookahead_days = int(lookahead_raw) if lookahead_raw else 14
+
+                    # Risolvi la configurazione multi-reminder del merchant.
+                    reminder_raw = await config.resolve(
+                        ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                    )
+                    if reminder_raw:
+                        reminder_lead_hours = list(reminder_raw)
 
                     # CRM sync extras (capitolato sez.5): map collected lead data
                     # to GHL custom fields + apply default tags. Merge the action
@@ -207,6 +220,8 @@ class BookSlotHandler:
                     start_dt = _parse_iso(outcome.slot_start_iso, tz)
                     end_dt = _parse_iso(outcome.slot_end_iso, tz)
                     if start_dt is not None:
+                        r_schedule = build_reminder_schedule(start_dt, reminder_lead_hours)
+                        r_due_at = next_reminder_due(r_schedule)
                         await AppointmentRepository(session).record_booking(
                             merchant_id=turn_ctx.merchant_id,
                             lead_id=turn_ctx.lead_id,
@@ -217,6 +232,8 @@ class BookSlotHandler:
                             end_at=end_dt,
                             tz_name=outcome.tz_name,
                             source="bot",
+                            reminder_schedule=r_schedule,
+                            reminder_due_at=r_due_at,
                         )
                 except Exception as e:  # pragma: no cover — mirror write is best-effort
                     logger.warning("book_slot.mirror_failed", error=str(e))

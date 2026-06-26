@@ -23,6 +23,8 @@ from db import (
     AppointmentRepository,
     GHLMarketplaceRepository,
     LeadRepository,
+    build_reminder_schedule,
+    next_reminder_due,
     session_scope,
 )
 from db.repositories.ghl_marketplace import ResolvedLocationToken
@@ -67,6 +69,14 @@ async def sync_appointments(ctx: dict[str, object]) -> dict[str, int]:
             if not calendar_id:
                 continue
 
+            # Risolvi la configurazione multi-reminder del merchant (lista di ore).
+            reminder_lead_hours_raw = await config.resolve(
+                ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=loc.merchant_id
+            )
+            reminder_lead_hours: list[int] = (
+                list(reminder_lead_hours_raw) if reminder_lead_hours_raw else [24]
+            )
+
             try:
                 events = await _fetch_events(
                     loc=loc,
@@ -98,6 +108,17 @@ async def sync_appointments(ctx: dict[str, object]) -> dict[str, int]:
                         merchant_id=loc.merchant_id, ghl_contact_id=str(contact_id)
                     )
                     lead_id = lead.id if lead else None
+
+                # Costruisci lo schedule e il prossimo reminder_due_at.
+                ev_status = _map_status(ev.get("status"))
+                if ev_status == "booked":
+                    schedule = build_reminder_schedule(start_dt, reminder_lead_hours)
+                    r_due_at = next_reminder_due(schedule)
+                else:
+                    # Appuntamento cancellato/noshow: nessun promemoria.
+                    schedule = []
+                    r_due_at = None
+
                 await appts.upsert_by_ghl_id(
                     merchant_id=loc.merchant_id,
                     ghl_appointment_id=str(ev["id"]),
@@ -107,8 +128,10 @@ async def sync_appointments(ctx: dict[str, object]) -> dict[str, int]:
                     ghl_contact_id=str(contact_id) if contact_id else None,
                     calendar_id=ev.get("calendar_id") or str(calendar_id),
                     title=ev.get("title"),
-                    status=_map_status(ev.get("status")),
+                    status=ev_status,
                     source="ghl",
+                    reminder_schedule=schedule,
+                    reminder_due_at=r_due_at,
                 )
                 upserted += 1
 

@@ -1,6 +1,11 @@
 from db.repositories.ab import ABRepository, VariantMetric
 from db.repositories.analytics import AnalyticsRepository
-from db.repositories.appointment import AppointmentReminderCandidate, AppointmentRepository
+from db.repositories.appointment import (
+    AppointmentReminderCandidate,
+    AppointmentRepository,
+    build_reminder_schedule,
+    next_reminder_due,
+)
 from db.repositories.automation import AutomationRepository
 from db.repositories.catalog import (
     BotCorrectionRepository,
@@ -50,6 +55,8 @@ __all__ = [
     "AnalyticsRepository",
     "AppointmentReminderCandidate",
     "AppointmentRepository",
+    "build_reminder_schedule",
+    "next_reminder_due",
     "AutomationRepository",
     "BotCorrectionRepository",
     "BotTemplateRepository",

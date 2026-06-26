@@ -52,3 +52,5 @@ supabase/.temp/
 
 # ---- Railway / Vercel local ----
 .railway/
+
+.claude

@@ -61,3 +61,15 @@ class Appointment(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="booked")
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="bot")
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # UC-02 multi-reminder support.
+    # `reminder_due_at` — denormalized: il prossimo due_at non ancora inviato.
+    # NULL significa nessun promemoria in sospeso (tutti inviati o appt. passato).
+    reminder_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # `reminder_schedule` — lista ordinata {due_at: ISO, sent_at: ISO|null}.
+    # Costruita a booking/sync time dalla configurazione del merchant;
+    # aggiornata da mark_reminded() a ogni invio.
+    reminder_schedule: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
