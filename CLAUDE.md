@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This is an **implemented two-toolchain monorepo**, not a design doc anymore. Frontend (`frontend/`, Turborepo + pnpm) and backend (`backend/`, uv workspace) are both built out and deployed (Vercel + Railway + Supabase Cloud EU). `reloop-ai-architettura.md` (Italian) remains the **spec / source of truth** for intent — quote it as `reloop-ai-architettura.md:<line>` when confirming design decisions, but the code is now ahead of it in places (see "Deviations from the spec" below).
+This is an **implemented two-toolchain monorepo**, not a design doc anymore. Frontend (`frontend/`, Turborepo + pnpm) and backend (`backend/`, uv workspace) are both built out and deployed (**tutto su Railway** — servizi: `web-admin`, `web-merchant`, `API`, `worker` — + Supabase Cloud EU). `reloop-ai-architettura.md` (Italian) remains the **spec / source of truth** for intent — quote it as `reloop-ai-architettura.md:<line>` when confirming design decisions, but the code is now ahead of it in places (see "Deviations from the spec" below).
 
 `cd frontend` or `cd backend` to enter the right world — each has its own package manager, lockfile, and lint/test commands. A cross-cutting change (new FastAPI endpoint + UI that consumes it) ships as a single PR.
 
