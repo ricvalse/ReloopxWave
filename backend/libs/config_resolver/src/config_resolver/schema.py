@@ -47,6 +47,7 @@ class ConfigKey(StrEnum):
     # UC-09 A/B
     AB_DEFAULT_SPLIT = "ab_test.default_split"
     AB_MIN_SAMPLE = "ab_test.min_sample"
+    AB_THOMPSON_SAMPLING_ENABLED = "ab_test.thompson_sampling_enabled"
 
     # Schedule
     SCHEDULE_ACTIVE_HOURS = "schedule.active_hours"
@@ -148,8 +149,6 @@ class ConfigKey(StrEnum):
     AGENT_MAX_TOOL_ITERATIONS = "agent.max_tool_iterations"
     AGENT_COHERENCE_GUARD_ENABLED = "agent.coherence_guard_enabled"
     AGENT_CONTEXT_COMPRESS_THRESHOLD = "agent.context_compress_threshold"
-    # S-06: Thompson Sampling replaces uniform hash-pick for A/B variant assignment.
-    AB_THOMPSON_SAMPLING_ENABLED = "ab.thompson_sampling_enabled"
 
     # GHL CRM sync (contratto capitolato sez.5) — map our collected lead fields
     # to the merchant's GHL custom-field ids, and tag every synced contact.
@@ -319,6 +318,7 @@ class ScoringConfig(_StrictModel):
 class ABTestConfig(_StrictModel):
     default_split: list[int] = Field(default_factory=lambda: [50, 50])
     min_sample: int = Field(100, ge=50, le=1000)
+    thompson_sampling_enabled: bool = True
 
 
 class ScheduleConfig(_StrictModel):
@@ -334,6 +334,10 @@ class ScheduleConfig(_StrictModel):
 class RagConfig(_StrictModel):
     top_k: int = Field(5, ge=3, le=10)
     min_score: float = Field(0.7, ge=0.5, le=0.9)
+    hyde_enabled: bool = True
+    rerank_enabled: bool = True
+    rerank_top_k: int = Field(5, ge=1, le=20)
+    freshness_decay: float = Field(0.01, ge=0.0, le=0.5)
 
 
 class BotExample(BaseModel):
@@ -456,3 +460,5 @@ class AgentConfig(_StrictModel):
     # Total LLM calls allowed per turn. 1 = single-shot (no tool grounding);
     # 3 allows up to two tool round-trips.
     max_tool_iterations: int = Field(3, ge=1, le=5)
+    coherence_guard_enabled: bool = True
+    context_compress_threshold: int = Field(30, ge=1, le=200)
