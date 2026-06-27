@@ -58,6 +58,13 @@ class Appointment(Base, TimestampMixin):
     # wall-clock the lead actually agreed to (the booking flow bakes tz into the
     # stored offset, but keeping the name avoids re-deriving it).
     tz_name: Mapped[str | None] = mapped_column(String(64))
+    # Quale servizio è stato prenotato (NULL per appuntamenti legacy / da GHL).
+    service_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("services.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="booked")
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="bot")
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

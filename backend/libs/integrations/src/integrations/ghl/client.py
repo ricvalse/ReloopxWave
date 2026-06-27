@@ -136,13 +136,40 @@ class GHLClient:
         resp = await self._request("GET", f"/opportunities/pipelines?locationId={location_id}")
         return cast(list[dict[str, Any]], resp.get("pipelines", []))
 
-    # ---- Calendars (UC-02 — calendar picker) ----
+    # ---- Calendars (UC-02 — calendar picker + hours sync) ----
 
     async def list_calendars(self, location_id: str) -> list[dict[str, Any]]:
         """Calendars configured for a location — powers the booking calendar
         picker so the merchant selects which calendar the bot books into."""
         resp = await self._request("GET", f"/calendars/?locationId={location_id}")
         return cast(list[dict[str, Any]], resp.get("calendars", []))
+
+    async def get_calendar(self, calendar_id: str) -> dict[str, Any]:
+        """Fetch full calendar metadata including openHours and dateOverrides.
+
+        Used by the two-way hours sync to pull availability settings from GHL.
+        `calendars.readonly` scope is already declared in oauth.py.
+        """
+        return await self._request("GET", f"/calendars/{calendar_id}")
+
+    async def update_calendar_hours(
+        self,
+        calendar_id: str,
+        *,
+        open_hours: list[dict[str, Any]],
+        date_overrides: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Push openHours + dateOverrides to a GHL calendar.
+
+        Sends only the fields we manage; GHL preserves all other calendar
+        settings (name, description, team members, etc.) untouched.
+        `calendars.write` scope is already declared in oauth.py.
+        """
+        return await self._request(
+            "PUT",
+            f"/calendars/{calendar_id}",
+            json={"openHours": open_hours, "dateOverrides": date_overrides},
+        )
 
     async def move_opportunity(
         self, opportunity_id: str, *, stage_id: str, pipeline_id: str

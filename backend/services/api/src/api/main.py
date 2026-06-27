@@ -39,6 +39,7 @@ from api.routers import (
     merchants,
     playground,
     reports,
+    services,
     tenants,
     users,
     webhooks,
@@ -153,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(bot_config.router, prefix="/bot-config", tags=["bot-config"])
     app.include_router(knowledge_base.router, prefix="/knowledge-base", tags=["knowledge-base"])
     app.include_router(catalog.router, prefix="/catalog", tags=["catalog"])
+    app.include_router(services.router, prefix="/services", tags=["services"])
     app.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
     app.include_router(appointments.router, prefix="/appointments", tags=["appointments"])
     app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])

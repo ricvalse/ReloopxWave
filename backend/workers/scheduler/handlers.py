@@ -11,6 +11,7 @@ from typing import Any
 
 from shared import get_logger
 from workers.scheduler.analytics_export import build_analytics_export  # re-export
+from workers.scheduler.ghl_hours_sync import sync_ghl_calendar_hours  # re-export
 from workers.scheduler.appointment_reminder import send_appointment_reminders  # re-export
 from workers.scheduler.appointment_sync import sync_appointments  # re-export
 from workers.scheduler.close_conversations import close_idle_conversations  # re-export

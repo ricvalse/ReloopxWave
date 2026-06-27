@@ -1,7 +1,9 @@
 import {
   BarChart3,
   Bot,
+  CalendarClock,
   CalendarDays,
+  CalendarOff,
   Database,
   FileWarning,
   FlaskConical,
@@ -24,6 +26,13 @@ export const merchantNav: NavSection[] = [
       { href: '/dashboard', label: 'Dashboard', icon: BarChart3, exact: true },
       { href: '/conversations', label: 'Conversazioni', icon: MessageSquare },
       { href: '/agenda', label: 'Agenda', icon: CalendarDays },
+    ],
+  },
+  {
+    title: 'Prenotazioni',
+    items: [
+      { href: '/prenotazioni/servizi', label: 'Servizi', icon: CalendarClock },
+      { href: '/prenotazioni/orari', label: 'Orari e chiusure', icon: CalendarOff },
     ],
   },
   {

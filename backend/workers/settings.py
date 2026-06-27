@@ -49,6 +49,7 @@ from workers.scheduler.handlers import (
     reactivate_dormant_leads,
     send_appointment_reminders,
     sync_appointments,
+    sync_ghl_calendar_hours,
     template_status_sync,
 )
 
@@ -111,6 +112,7 @@ class WorkerSettings:
         # queue: scheduler:jobs — UC-02 appointment reconcile poll + reminders
         sync_appointments,
         send_appointment_reminders,
+        sync_ghl_calendar_hours,
         # WhatsApp template approval-status sync (webhook-driven + cron fallback)
         apply_template_status_event,
         template_status_sync,
@@ -158,6 +160,9 @@ class WorkerSettings:
         # WhatsApp template approval sync — hourly fallback for any
         # message_template_status_update webhook we missed. Webhook is primary.
         cron(template_status_sync, minute=40, timeout=300, max_tries=1),
+        # Sync GHL calendar openHours → business_hours nightly (pull direction).
+        # Il push (nostra UI → GHL) è sincrono al salvataggio degli orari.
+        cron(sync_ghl_calendar_hours, hour=2, minute=30, timeout=600, max_tries=1),
         # UC-02: reconcile the local appointment mirror with GHL every 30 min.
         # GHL sends no appointment webhooks, so this poll is the only way manual
         # GHL-side reschedules/cancels/new bookings reach the mirror.

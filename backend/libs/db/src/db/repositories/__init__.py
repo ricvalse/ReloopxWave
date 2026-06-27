@@ -37,6 +37,11 @@ from db.repositories.integration import (
     ResolvedWhatsAppIntegration,
 )
 from db.repositories.kb import KnowledgeBaseRepository
+from db.repositories.services import (
+    BusinessClosureRepository,
+    BusinessHourRepository,
+    ServiceRepository,
+)
 from db.repositories.lead import LeadRepository, ReactivationCandidate
 from db.repositories.message import MessageRepository
 from db.repositories.objection import CategoryCount, ObjectionRepository
@@ -70,7 +75,10 @@ __all__ = [
     "GhlSyncRepository",
     "IntegrationRepository",
     "IntegrationStatus",
+    "BusinessClosureRepository",
+    "BusinessHourRepository",
     "KnowledgeBaseRepository",
+    "ServiceRepository",
     "LeadRepository",
     "MerchantRepository",
     "MessageRepository",
