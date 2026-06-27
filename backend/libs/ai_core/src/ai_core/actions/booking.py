@@ -152,6 +152,7 @@ class BookSlotHandler:
                             start_at=start_dt_local,
                             end_at=end_dt_local,
                             tz_name=tz_name_local,
+                            status="confirmed",
                             source="bot_local",
                             reminder_schedule=r_schedule_local,
                             reminder_due_at=r_due_at_local,
@@ -210,6 +211,7 @@ class BookSlotHandler:
                                 start_at=_start,
                                 end_at=_end,
                                 tz_name=_tz_name,
+                                status="confirmed",
                                 source="bot_local",
                                 reminder_schedule=_rs,
                                 reminder_due_at=_rd,
@@ -336,6 +338,7 @@ class BookSlotHandler:
                                 start_at=_start,
                                 end_at=_end,
                                 tz_name=outcome.tz_name,
+                                status="confirmed",
                                 source="bot_local",
                                 reminder_schedule=_rs,
                                 reminder_due_at=_rd,
@@ -881,11 +884,6 @@ def format_booking_confirmation(
     Reused by the live handler's `_send_confirmation` and by the UC-08 playground
     simulator, so the dry-run shows the exact message a real booking would send.
     """
-    if booked and slot_start_iso and local_only:
-        return (
-            f"Ho registrato il tuo appuntamento per il {_format_human(slot_start_iso)}. "
-            "Sarà confermato da un operatore a breve. Ti invieremo il promemoria."
-        )
     if booked and slot_start_iso:
         return (
             f"Perfetto, ho prenotato per te l'appuntamento del "

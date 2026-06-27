@@ -320,9 +320,9 @@ async def test_book_slot_transient_error_falls_back_to_internal_calendar(
 
     client.get_free_slots.assert_not_awaited()  # no misleading alternatives
     assert len(sender.calls) == 1
-    # Internal calendar fallback → local_only confirmation, not "ricontatteremo"
-    assert "registrato" in sender.calls[0]["text"].lower()
-    assert "operatore" in sender.calls[0]["text"].lower()
+    # Internal calendar fallback → conferma immediata, senza "operatore"
+    assert "prenotato" in sender.calls[0]["text"].lower()
+    assert "operatore" not in sender.calls[0]["text"].lower()
     assert "•" not in sender.calls[0]["text"]
     # Must have written to the internal calendar
     assert len(appt_calls) == 1
@@ -363,8 +363,7 @@ async def test_book_slot_naive_time_interpreted_in_merchant_tz(
 async def test_book_slot_no_ghl_saves_local_appointment(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext
 ) -> None:
-    """Senza GHL: l'appuntamento viene salvato localmente e la conferma WhatsApp
-    informa il cliente che sarà confermato da un operatore."""
+    """Senza GHL: l'appuntamento viene salvato localmente e confermato immediatamente."""
     appt_calls = _patch_session(monkeypatch, ghl=None)
     sender = FakeSender()
 
@@ -377,12 +376,14 @@ async def test_book_slot_no_ghl_saves_local_appointment(
 
     await handler(OrchestratorAction(kind="book_slot", payload={}), turn_ctx)
 
-    # Il messaggio deve confermare la prenotazione locale, non dare un errore.
+    # Il messaggio deve confermare la prenotazione direttamente, senza "operatore".
     assert len(sender.calls) == 1
-    assert "operatore" in sender.calls[0]["text"]
+    assert "prenotato" in sender.calls[0]["text"].lower()
+    assert "operatore" not in sender.calls[0]["text"]
     assert "non riesco" not in sender.calls[0]["text"]
 
-    # Il record locale deve essere stato scritto con ghl_appointment_id=None.
+    # Il record locale deve essere confirmed e senza ghl_appointment_id.
     assert len(appt_calls) == 1
     assert appt_calls[0]["ghl_appointment_id"] is None
     assert appt_calls[0]["source"] == "bot_local"
+    assert appt_calls[0]["status"] == "confirmed"
