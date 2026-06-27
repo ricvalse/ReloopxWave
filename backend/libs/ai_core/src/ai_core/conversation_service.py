@@ -926,35 +926,36 @@ class ConversationService:
             kb_chunks = []
             if self._embedder is not None:
                 try:
-                    top_k = await self._resolve_int(
-                        session, resolved.merchant_id, ConfigKey.RAG_TOP_K, default=5
-                    )
-                    min_score = await self._resolve_float(
-                        session, resolved.merchant_id, ConfigKey.RAG_MIN_SCORE, default=0.7
-                    )
-                    hyde_enabled = await self._resolve_bool(
-                        session, resolved.merchant_id, ConfigKey.RAG_HYDE_ENABLED, default=True
-                    )
-                    rerank_enabled = await self._resolve_bool(
-                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_ENABLED, default=True
-                    )
-                    rerank_top_k = await self._resolve_int(
-                        session, resolved.merchant_id, ConfigKey.RAG_RERANK_TOP_K, default=5
-                    )
-                    freshness_decay = await self._resolve_float(
-                        session, resolved.merchant_id, ConfigKey.RAG_FRESHNESS_DECAY, default=0.01
-                    )
-                    rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
-                    kb_chunks = await rag.retrieve(
-                        rc.text,
-                        merchant_id=resolved.merchant_id,
-                        top_k=top_k,
-                        min_score=min_score,
-                        hyde_enabled=hyde_enabled,
-                        rerank_enabled=rerank_enabled,
-                        rerank_top_k=rerank_top_k,
-                        freshness_decay=freshness_decay,
-                    )
+                    async with session.begin_nested():
+                        top_k = await self._resolve_int(
+                            session, resolved.merchant_id, ConfigKey.RAG_TOP_K, default=5
+                        )
+                        min_score = await self._resolve_float(
+                            session, resolved.merchant_id, ConfigKey.RAG_MIN_SCORE, default=0.7
+                        )
+                        hyde_enabled = await self._resolve_bool(
+                            session, resolved.merchant_id, ConfigKey.RAG_HYDE_ENABLED, default=True
+                        )
+                        rerank_enabled = await self._resolve_bool(
+                            session, resolved.merchant_id, ConfigKey.RAG_RERANK_ENABLED, default=True
+                        )
+                        rerank_top_k = await self._resolve_int(
+                            session, resolved.merchant_id, ConfigKey.RAG_RERANK_TOP_K, default=5
+                        )
+                        freshness_decay = await self._resolve_float(
+                            session, resolved.merchant_id, ConfigKey.RAG_FRESHNESS_DECAY, default=0.01
+                        )
+                        rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
+                        kb_chunks = await rag.retrieve(
+                            rc.text,
+                            merchant_id=resolved.merchant_id,
+                            top_k=top_k,
+                            min_score=min_score,
+                            hyde_enabled=hyde_enabled,
+                            rerank_enabled=rerank_enabled,
+                            rerank_top_k=rerank_top_k,
+                            freshness_decay=freshness_decay,
+                        )
                 except Exception as e:
                     logger.warning("uc01.rag_failed", error=str(e))
 
@@ -983,12 +984,13 @@ class ConversationService:
             from db.models import Objection as ObjModel
 
             try:
-                obj_count_row = await session.execute(
-                    sa_select(func.count()).select_from(ObjModel).where(
-                        ObjModel.conversation_id == rc.conv_id
+                async with session.begin_nested():
+                    obj_count_row = await session.execute(
+                        sa_select(func.count()).select_from(ObjModel).where(
+                            ObjModel.conversation_id == rc.conv_id
+                        )
                     )
-                )
-                obj_count = obj_count_row.scalar() or 0
+                    obj_count = obj_count_row.scalar() or 0
             except Exception:
                 obj_count = 0
 

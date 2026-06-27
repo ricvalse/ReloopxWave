@@ -144,7 +144,7 @@ class RAGEngine:
                 """
                 SELECT id, doc_id, content, meta,
                        (1 - (embedding <=> CAST(:q AS vector)))
-                       * EXP(-:decay * EXTRACT(EPOCH FROM (NOW() - COALESCE(last_updated_at, created_at))) / 86400.0)
+                       * EXP(-CAST(:decay AS float8) * EXTRACT(EPOCH FROM (NOW() - COALESCE(last_updated_at, created_at))) / 86400.0)
                        AS score
                 FROM kb_chunks
                 WHERE merchant_id = :merchant_id
