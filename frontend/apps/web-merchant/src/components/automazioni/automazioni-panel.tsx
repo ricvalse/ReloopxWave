@@ -20,6 +20,12 @@ import { AutomationEditor } from './automation-editor';
 
 type Automation = components['schemas']['AutomationOut'];
 
+type ConfigOverrides = {
+  no_answer?: { first_reminder_min?: number; second_reminder_min?: number; max_followups?: number };
+  reactivation?: { dormant_days?: number; interval_days?: number; max_attempts?: number };
+  booking?: { reminder_schedule?: number[] };
+};
+
 const TRIGGER_LABEL: Record<string, string> = {
   message_received: 'Messaggio ricevuto',
   no_answer: 'Nessuna risposta',
@@ -50,7 +56,7 @@ function NoAnswerSettings() {
     },
   });
 
-  const overrides = (configQuery.data?.overrides as any)?.no_answer ?? {};
+  const overrides = (configQuery.data?.overrides as ConfigOverrides)?.no_answer ?? {};
   const firstMin: number = overrides.first_reminder_min ?? 60;
   const secondMin: number = overrides.second_reminder_min ?? 1440;
   const maxFollowups: number = overrides.max_followups ?? 2;
@@ -61,6 +67,7 @@ function NoAnswerSettings() {
       const api = getApiClient();
       const { error } = await api.PUT('/bot-config/{merchant_id}/overrides', {
         params: { path: { merchant_id: merchantId } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         body: { overrides: { no_answer: values } } as any,
       });
       if (error) throw new Error(apiErrorMessage(error));
@@ -173,7 +180,7 @@ function ReactivationSettings() {
     },
   });
 
-  const overrides = (configQuery.data?.overrides as any)?.reactivation ?? {};
+  const overrides = (configQuery.data?.overrides as ConfigOverrides)?.reactivation ?? {};
   const dormantDays: number = overrides.dormant_days ?? 30;
   const intervalDays: number = overrides.interval_days ?? 7;
   const maxAttempts: number = overrides.max_attempts ?? 3;
@@ -184,6 +191,7 @@ function ReactivationSettings() {
       const api = getApiClient();
       const { error } = await api.PUT('/bot-config/{merchant_id}/overrides', {
         params: { path: { merchant_id: merchantId } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         body: { overrides: { reactivation: values } } as any,
       });
       if (error) throw new Error(apiErrorMessage(error));
@@ -299,9 +307,7 @@ function BookingReminderSettings() {
   });
 
   const currentSchedule: number[] =
-    ((configQuery.data?.overrides as any)?.booking?.reminder_schedule as
-      | number[]
-      | undefined) ?? [24];
+    ((configQuery.data?.overrides as ConfigOverrides)?.booking?.reminder_schedule) ?? [24];
 
   const save = useMutation({
     mutationFn: async (schedule: number[]) => {
@@ -309,6 +315,7 @@ function BookingReminderSettings() {
       const api = getApiClient();
       const { error } = await api.PUT('/bot-config/{merchant_id}/overrides', {
         params: { path: { merchant_id: merchantId } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         body: { overrides: { booking: { reminder_schedule: schedule } } } as any,
       });
       if (error) throw new Error(apiErrorMessage(error));
