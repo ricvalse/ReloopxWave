@@ -285,12 +285,12 @@ async def test_propose_slots_offers_availability(
     assert "disponibilità" in sender.calls[0]["text"].lower()
 
 
-async def test_book_slot_transient_error_falls_back_gracefully(
+async def test_book_slot_transient_error_falls_back_to_internal_calendar(
     monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
 ) -> None:
     # A 5xx from create_booking is transient — we must NOT propose alternatives
-    # (which would be misleading and likely fail too); send the graceful fallback.
-    _patch_session(monkeypatch, ghl=ghl_bundle)
+    # and must save the appointment in the internal calendar as fallback.
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
     from ai_core.actions import booking as mod
 
     client = AsyncMock()
@@ -315,8 +315,13 @@ async def test_book_slot_transient_error_falls_back_gracefully(
 
     client.get_free_slots.assert_not_awaited()  # no misleading alternatives
     assert len(sender.calls) == 1
-    assert "ricontatteremo" in sender.calls[0]["text"].lower()
+    # Internal calendar fallback → local_only confirmation, not "ricontatteremo"
+    assert "registrato" in sender.calls[0]["text"].lower()
+    assert "operatore" in sender.calls[0]["text"].lower()
     assert "•" not in sender.calls[0]["text"]
+    # Must have written to the internal calendar
+    assert len(appt_calls) == 1
+    assert appt_calls[0]["ghl_appointment_id"] is None  # local-only row
 
 
 async def test_book_slot_naive_time_interpreted_in_merchant_tz(

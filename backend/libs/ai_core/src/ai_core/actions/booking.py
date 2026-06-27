@@ -170,7 +170,57 @@ class BookSlotHandler:
                     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
                 )
                 if not calendar_id:
-                    outcome = BookingOutcome(False, None, None, [], "no_calendar_configured")
+                    # GHL connesso ma nessun calendario configurato — salva nell'agenda interna.
+                    logger.info("book_slot.no_calendar_ghl", merchant_id=str(turn_ctx.merchant_id))
+                    _tz_name = str(
+                        await config.resolve(
+                            ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
+                        ) or "Europe/Rome"
+                    )
+                    _dur = int(
+                        action.payload.get("duration_min")
+                        or await config.resolve(
+                            ConfigKey.BOOKING_DEFAULT_DURATION_MIN,
+                            merchant_id=turn_ctx.merchant_id,
+                        )
+                        or 30
+                    )
+                    _reminder_raw = await config.resolve(
+                        ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                    )
+                    if _reminder_raw:
+                        reminder_lead_hours = list(_reminder_raw)
+                    _tz = _resolve_tz(_tz_name)
+                    _start = (
+                        _parse_iso(action.payload.get("preferred_start_iso"), _tz)
+                        or _next_business_hour(_tz)
+                    )
+                    _end = _start + timedelta(minutes=_dur)
+                    try:
+                        _rs = build_reminder_schedule(_start, reminder_lead_hours)
+                        _rd = next_reminder_due(_rs)
+                        await AppointmentRepository(session).record_booking(
+                            merchant_id=turn_ctx.merchant_id,
+                            lead_id=turn_ctx.lead_id,
+                            ghl_appointment_id=None,
+                            ghl_contact_id=None,
+                            calendar_id=None,
+                            start_at=_start,
+                            end_at=_end,
+                            tz_name=_tz_name,
+                            source="bot_local",
+                            reminder_schedule=_rs,
+                            reminder_due_at=_rd,
+                        )
+                        await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
+                    except Exception as e:
+                        logger.warning("book_slot.local_write_failed", error=str(e))
+                    outcome = BookingOutcome(
+                        True, None, _start.isoformat(), [], "local_only",
+                        slot_end_iso=_end.isoformat(),
+                        tz_name=_tz_name,
+                        local_only=True,
+                    )
                 else:
                     duration = int(
                         action.payload.get("duration_min")
@@ -262,6 +312,43 @@ class BookSlotHandler:
                         lead_id=turn_ctx.lead_id,
                         conversation_id=turn_ctx.conversation_id,
                     )
+
+            # GHL ha fallito per errore transitorio ma lo slot era confermato — salva internamente.
+            if outcome and outcome.reason == "booking_error" and outcome.slot_start_iso:
+                try:
+                    _tz = _resolve_tz(outcome.tz_name or "Europe/Rome")
+                    _start = _parse_iso(outcome.slot_start_iso, _tz)
+                    _end = (
+                        _parse_iso(outcome.slot_end_iso, _tz) if outcome.slot_end_iso else None
+                    ) or (_start + timedelta(minutes=30) if _start else None)
+                    if _start is not None:
+                        _rs = build_reminder_schedule(_start, reminder_lead_hours)
+                        _rd = next_reminder_due(_rs)
+                        await AppointmentRepository(session).record_booking(
+                            merchant_id=turn_ctx.merchant_id,
+                            lead_id=turn_ctx.lead_id,
+                            ghl_appointment_id=None,
+                            ghl_contact_id=outcome.contact_id,
+                            calendar_id=None,
+                            start_at=_start,
+                            end_at=_end,
+                            tz_name=outcome.tz_name,
+                            source="bot_local",
+                            reminder_schedule=_rs,
+                            reminder_due_at=_rd,
+                        )
+                        await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
+                        outcome = BookingOutcome(
+                            True, None, outcome.slot_start_iso, [], "local_only",
+                            opportunity_id=outcome.opportunity_id,
+                            pipeline_id=outcome.pipeline_id,
+                            slot_end_iso=outcome.slot_end_iso,
+                            contact_id=outcome.contact_id,
+                            tz_name=outcome.tz_name,
+                            local_only=True,
+                        )
+                except Exception as e:
+                    logger.warning("book_slot.local_write_failed", error=str(e))
 
             if outcome and outcome.booked and outcome.booking_id:
                 await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
@@ -489,11 +576,14 @@ class BookSlotHandler:
                     return BookingOutcome(
                         False,
                         None,
-                        None,
+                        slot_start.isoformat(),
                         [],
                         "booking_error",
                         opportunity_id=opportunity_id,
                         pipeline_id=pipeline_id if opportunity_id else None,
+                        slot_end_iso=slot_end.isoformat(),
+                        contact_id=contact_id,
+                        tz_name=tz_name,
                     )
                 # Slot taken / unavailable (4xx) → propose alternatives within the
                 # merchant's configured booking lookahead window.
