@@ -66,9 +66,14 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[d
     """
     from ai_core.actions import booking as mod
 
+    class _FakeSession:
+        @asynccontextmanager
+        async def begin_nested(self):
+            yield
+
     @asynccontextmanager
     async def fake_session(ctx):
-        yield object()
+        yield _FakeSession()
 
     appt_calls: list[dict] = []
 

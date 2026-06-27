@@ -142,19 +142,20 @@ class BookSlotHandler:
                 try:
                     r_schedule_local = build_reminder_schedule(start_dt_local, reminder_lead_hours)
                     r_due_at_local = next_reminder_due(r_schedule_local)
-                    await AppointmentRepository(session).record_booking(
-                        merchant_id=turn_ctx.merchant_id,
-                        lead_id=turn_ctx.lead_id,
-                        ghl_appointment_id=None,
-                        ghl_contact_id=None,
-                        calendar_id=None,
-                        start_at=start_dt_local,
-                        end_at=end_dt_local,
-                        tz_name=tz_name_local,
-                        source="bot_local",
-                        reminder_schedule=r_schedule_local,
-                        reminder_due_at=r_due_at_local,
-                    )
+                    async with session.begin_nested():
+                        await AppointmentRepository(session).record_booking(
+                            merchant_id=turn_ctx.merchant_id,
+                            lead_id=turn_ctx.lead_id,
+                            ghl_appointment_id=None,
+                            ghl_contact_id=None,
+                            calendar_id=None,
+                            start_at=start_dt_local,
+                            end_at=end_dt_local,
+                            tz_name=tz_name_local,
+                            source="bot_local",
+                            reminder_schedule=r_schedule_local,
+                            reminder_due_at=r_due_at_local,
+                        )
                     await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
                 except Exception as e:
                     logger.warning("book_slot.local_write_failed", error=str(e))
@@ -199,19 +200,20 @@ class BookSlotHandler:
                     try:
                         _rs = build_reminder_schedule(_start, reminder_lead_hours)
                         _rd = next_reminder_due(_rs)
-                        await AppointmentRepository(session).record_booking(
-                            merchant_id=turn_ctx.merchant_id,
-                            lead_id=turn_ctx.lead_id,
-                            ghl_appointment_id=None,
-                            ghl_contact_id=None,
-                            calendar_id=None,
-                            start_at=_start,
-                            end_at=_end,
-                            tz_name=_tz_name,
-                            source="bot_local",
-                            reminder_schedule=_rs,
-                            reminder_due_at=_rd,
-                        )
+                        async with session.begin_nested():
+                            await AppointmentRepository(session).record_booking(
+                                merchant_id=turn_ctx.merchant_id,
+                                lead_id=turn_ctx.lead_id,
+                                ghl_appointment_id=None,
+                                ghl_contact_id=None,
+                                calendar_id=None,
+                                start_at=_start,
+                                end_at=_end,
+                                tz_name=_tz_name,
+                                source="bot_local",
+                                reminder_schedule=_rs,
+                                reminder_due_at=_rd,
+                            )
                         await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
                     except Exception as e:
                         logger.warning("book_slot.local_write_failed", error=str(e))
@@ -324,19 +326,20 @@ class BookSlotHandler:
                     if _start is not None:
                         _rs = build_reminder_schedule(_start, reminder_lead_hours)
                         _rd = next_reminder_due(_rs)
-                        await AppointmentRepository(session).record_booking(
-                            merchant_id=turn_ctx.merchant_id,
-                            lead_id=turn_ctx.lead_id,
-                            ghl_appointment_id=None,
-                            ghl_contact_id=outcome.contact_id,
-                            calendar_id=None,
-                            start_at=_start,
-                            end_at=_end,
-                            tz_name=outcome.tz_name,
-                            source="bot_local",
-                            reminder_schedule=_rs,
-                            reminder_due_at=_rd,
-                        )
+                        async with session.begin_nested():
+                            await AppointmentRepository(session).record_booking(
+                                merchant_id=turn_ctx.merchant_id,
+                                lead_id=turn_ctx.lead_id,
+                                ghl_appointment_id=None,
+                                ghl_contact_id=outcome.contact_id,
+                                calendar_id=None,
+                                start_at=_start,
+                                end_at=_end,
+                                tz_name=outcome.tz_name,
+                                source="bot_local",
+                                reminder_schedule=_rs,
+                                reminder_due_at=_rd,
+                            )
                         await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
                         outcome = BookingOutcome(
                             True, None, outcome.slot_start_iso, [], "local_only",
