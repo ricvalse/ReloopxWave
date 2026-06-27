@@ -227,16 +227,17 @@ class RAGEngine:
     async def _log_gap(self, merchant_id: UUID, question: str) -> None:
         """Upsert a kb_gap row: increment frequency if same question seen before."""
         try:
-            await self._session.execute(
-                text(
-                    """
-                    INSERT INTO kb_gaps (merchant_id, question_text, frequency, last_seen_at)
-                    VALUES (:merchant_id, :question, 1, now())
-                    ON CONFLICT DO NOTHING
-                    """
-                ),
-                {"merchant_id": str(merchant_id), "question": question[:1000]},
-            )
+            async with self._session.begin_nested():
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO kb_gaps (merchant_id, question_text, frequency, last_seen_at)
+                        VALUES (:merchant_id, :question, 1, now())
+                        ON CONFLICT DO NOTHING
+                        """
+                    ),
+                    {"merchant_id": str(merchant_id), "question": question[:1000]},
+                )
         except Exception as e:
             logger.debug("rag.gap_log_failed", error=str(e))
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -47,6 +48,10 @@ class FakeSession:
     def __init__(self, chunks: list[RetrievedChunk] | None = None) -> None:
         self._chunks = chunks or []
         self.gap_inserts: list[dict] = []
+
+    @asynccontextmanager
+    async def begin_nested(self):
+        yield
 
     async def execute(self, stmt: Any, params: dict | None = None) -> Any:
         params = params or {}
