@@ -32,19 +32,37 @@ const MESSAGES = {
   showMore: (count: number) => `+${count} altri`,
 };
 
+const SCROLL_TO_8AM = new Date(1970, 1, 1, 8, 0, 0);
+
 type CalEvent = Event & { resource: Appointment };
 
-function EventContent({ event }: { event: CalEvent }) {
+function MonthEventContent({ event }: { event: CalEvent }) {
   const isLocal = !event.resource.ghl_appointment_id;
   return (
     <span className="flex items-center gap-1 overflow-hidden">
-      <span className="truncate">{event.title ?? 'Appuntamento'}</span>
+      <span className="truncate text-[11px]">{event.title ?? 'Appuntamento'}</span>
       {isLocal ? (
-        <span className="shrink-0 rounded bg-black/20 px-1 text-[10px] font-semibold leading-4">
+        <span className="shrink-0 rounded bg-black/20 px-1 text-[9px] font-semibold leading-4">L</span>
+      ) : null}
+    </span>
+  );
+}
+
+function TimeEventContent({ event }: { event: CalEvent }) {
+  const isLocal = !event.resource.ghl_appointment_id;
+  const startTime = event.start instanceof Date ? format(event.start, 'HH:mm') : null;
+  return (
+    <div className="overflow-hidden leading-tight">
+      {startTime ? (
+        <p className="text-[10px] font-medium opacity-75">{startTime}</p>
+      ) : null}
+      <p className="truncate text-[11px] font-semibold">{event.title ?? 'Appuntamento'}</p>
+      {isLocal ? (
+        <span className="mt-0.5 inline-block rounded bg-black/20 px-1 text-[9px] font-semibold uppercase tracking-wide leading-4">
           locale
         </span>
       ) : null}
-    </span>
+    </div>
   );
 }
 
@@ -70,22 +88,34 @@ export function AgendaCalendar({ appointments, onSelectEvent }: Props) {
 
   function eventPropGetter(event: CalEvent) {
     const isLocal = !event.resource.ghl_appointment_id;
-    return { className: isLocal ? 'rbc-event--local-only' : '' };
+    const isNoshow = event.resource.status === 'noshow';
+    return {
+      className: isNoshow
+        ? 'rbc-event--noshow'
+        : isLocal
+          ? 'rbc-event--local-only'
+          : '',
+    };
   }
 
   return (
-    <div className="agenda-calendar-wrapper h-[620px]">
+    <div className="agenda-calendar-wrapper h-[680px]">
       <Calendar
         localizer={localizer}
         events={events}
         culture="it"
         messages={MESSAGES}
-        defaultView="month"
-        views={['month', 'week', 'day']}
+        defaultView="week"
+        views={['month', 'week', 'day', 'agenda']}
         eventPropGetter={eventPropGetter}
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        components={{ event: EventContent as any }}
+        components={{
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          event: TimeEventContent as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          month: { event: MonthEventContent as any },
+        }}
         onSelectEvent={(e) => onSelectEvent((e as CalEvent).resource)}
+        scrollToTime={SCROLL_TO_8AM}
         popup
       />
     </div>
