@@ -50,6 +50,7 @@ class FakeConversation:
     handoff_resolved_at: Any = None
     last_message_at: Any = None
     current_state: str | None = None
+    context_summary: dict | None = None
 
 
 class FakeSession:

@@ -52,7 +52,7 @@ from db import (
     TenantContext,
     tenant_session,
 )
-from db.repositories.services import ServiceRepository
+from db.repositories.services import BusinessClosureRepository, BusinessHourRepository, ServiceRepository
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -212,6 +212,7 @@ class _ReplyContext:
     phone_number_id: str
     text: str
     conv_current_state: str | None = None
+    conv_context_summary: dict[str, Any] | None = None
     latest_wa_message_id: str | None = None
     # UC-05 — True when the lead replied within 10min of the previous turn
     # (derived from the conversation's prior last_message_at at inbound time).
@@ -378,6 +379,23 @@ async def build_cascade_system_prompt(
     except Exception:
         pass
 
+    # Orari di apertura strutturati (tabella business_hours). Best-effort.
+    structured_hours: list[Any] = []
+    try:
+        structured_hours = await BusinessHourRepository(session).list(merchant_id)
+    except Exception:
+        pass
+
+    # Chiusure eccezionali future (festivi, ferie, ponti). Best-effort.
+    import datetime as _dt
+    upcoming_closures: list[Any] = []
+    try:
+        upcoming_closures = await BusinessClosureRepository(session).list(
+            merchant_id, from_date=_dt.date.today()
+        )
+    except Exception:
+        pass
+
     # Playground-trained corrections that match THIS turn's message (UC-08).
     # Empty when no message is given or nothing scores above the relevance floor.
     correction_lines = await build_correction_lines(session, merchant_id, customer_message)
@@ -406,6 +424,8 @@ async def build_cascade_system_prompt(
             policy_lines,
             correction_lines,
             bookable_services,
+            structured_hours,
+            upcoming_closures,
         ]
     )
     if not has_profile:
@@ -443,6 +463,25 @@ async def build_cascade_system_prompt(
                 f"- {svc.name} (id: {svc.id}, durata: {svc.duration_min} min, {price_str}{desc_str})"
             )
         lines.append("\n".join(svc_lines))
+    if structured_hours:
+        _DAY_NAMES = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"]
+        h_lines = ["Orario di apertura:"]
+        for row in structured_hours:
+            day = _DAY_NAMES[row.day_of_week]
+            if not row.is_open or row.open_time is None or row.close_time is None:
+                h_lines.append(f"- {day}: Chiuso")
+            else:
+                slot = f"{row.open_time.strftime('%H:%M')}-{row.close_time.strftime('%H:%M')}"
+                if row.break_start and row.break_end:
+                    slot += f" (pausa {row.break_start.strftime('%H:%M')}-{row.break_end.strftime('%H:%M')})"
+                h_lines.append(f"- {day}: {slot}")
+        lines.append("\n".join(h_lines))
+    if upcoming_closures:
+        cl_lines = ["Chiusure eccezionali in programma:"]
+        for c in upcoming_closures[:10]:
+            label = f" — {c.label}" if c.label else ""
+            cl_lines.append(f"- {c.closed_on.strftime('%d/%m/%Y')}{label}")
+        lines.append("\n".join(cl_lines))
     if location:
         lines.append(f"Sede / area di copertura: {location}")
     if website:
@@ -796,6 +835,7 @@ class ConversationService:
             # the ORM objects detach after the commit below.
             conv_id = conv.id
             conv_variant_id = conv.variant_id
+            conv_context_summary = conv.context_summary
             lead_id = lead.id
             lead_score = lead.score
             lead_name = lead.name
@@ -831,6 +871,7 @@ class ConversationService:
                 resolved=resolved,
                 conv_id=conv_id,
                 conv_variant_id=conv_variant_id,
+                conv_context_summary=conv_context_summary,
                 lead_id=lead_id,
                 lead_score=lead_score,
                 lead_name=lead_name,
@@ -902,6 +943,7 @@ class ConversationService:
                 resolved=resolved,
                 conv_id=conv.id,
                 conv_variant_id=conv.variant_id,
+                conv_context_summary=conv.context_summary,
                 lead_id=lead.id,
                 lead_score=lead.score,
                 lead_name=lead.name,
@@ -944,6 +986,20 @@ class ConversationService:
                 prior_sentiment=rc.lead_sentiment,
                 customer_message=rc.text,
             )
+
+            # Inject already-known lead data so the bot personalizes without re-asking.
+            if rc.lead_name or rc.lead_email:
+                known_parts = []
+                if rc.lead_name:
+                    known_parts.append(f"nome: {rc.lead_name}")
+                if rc.lead_email:
+                    known_parts.append(f"email: {rc.lead_email}")
+                system_prompt += (
+                    f"\n\nDati già noti su questo cliente: {', '.join(known_parts)}. "
+                    "Usali per personalizzare la risposta (es. chiama il cliente per nome) "
+                    "senza chiedere di nuovo informazioni già raccolte."
+                )
+
             kb_chunks = []
             if self._embedder is not None:
                 try:
@@ -1048,6 +1104,21 @@ class ConversationService:
             compress_threshold = await self._resolve_int(
                 session, resolved.merchant_id, ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD, default=30
             )
+
+            # Reload a previously saved memory block so subsequent turns benefit
+            # from compression done in earlier sessions (it's saved to DB but was
+            # never reinjected on the next turn).
+            if rc.conv_context_summary and len(effective_history) <= compress_threshold:
+                _saved = rc.conv_context_summary
+                if _saved.get("text") and _saved.get("compressed_turns"):
+                    from ai_core.quality.compressor import MemoryBlock
+                    _block = MemoryBlock(
+                        text=_saved["text"],
+                        compressed_turns=int(_saved["compressed_turns"]),
+                        compressed_at=_saved.get("compressed_at", ""),
+                    )
+                    effective_history = [memory_block_as_message(_block)] + effective_history
+
             if len(effective_history) > compress_threshold:
                 nano_client = self._rag_llm_client()
                 if nano_client is not None:
