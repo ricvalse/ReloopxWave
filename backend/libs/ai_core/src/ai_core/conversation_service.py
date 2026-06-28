@@ -52,6 +52,7 @@ from db import (
     TenantContext,
     tenant_session,
 )
+from db.repositories.services import ServiceRepository
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -369,6 +370,14 @@ async def build_cascade_system_prompt(
     # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
     policy_lines = await build_store_policy_lines(session, merchant_id)
 
+    # Servizi prenotabili — iniettati nel prompt affinché l'agente sappia cosa
+    # offrire, la durata e il prezzo. Best-effort: ignora errori DB.
+    bookable_services: list[Any] = []
+    try:
+        bookable_services = await ServiceRepository(session).list(merchant_id)
+    except Exception:
+        pass
+
     # Playground-trained corrections that match THIS turn's message (UC-08).
     # Empty when no message is given or nothing scores above the relevance floor.
     correction_lines = await build_correction_lines(session, merchant_id, customer_message)
@@ -396,6 +405,7 @@ async def build_cascade_system_prompt(
             examples,
             policy_lines,
             correction_lines,
+            bookable_services,
         ]
     )
     if not has_profile:
@@ -422,6 +432,17 @@ async def build_cascade_system_prompt(
         lines.append(f"Note sui prezzi: {pricing_notes}")
     if hours:
         lines.append(f"Orari: {hours}")
+    if bookable_services:
+        svc_lines = ["Servizi prenotabili (usa il campo service_id nell'azione book_slot):"]
+        for svc in bookable_services:
+            price_str = (
+                f"€{svc.price}" if svc.price is not None else "prezzo su richiesta"
+            )
+            desc_str = f" — {svc.description}" if svc.description else ""
+            svc_lines.append(
+                f"- {svc.name} (id: {svc.id}, durata: {svc.duration_min} min, {price_str}{desc_str})"
+            )
+        lines.append("\n".join(svc_lines))
     if location:
         lines.append(f"Sede / area di copertura: {location}")
     if website:

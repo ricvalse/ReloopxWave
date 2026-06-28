@@ -36,6 +36,7 @@ from db import (
     session_scope,
     tenant_session,
 )
+from db.repositories.services import BusinessHourRepository, ServiceRepository
 from integrations.ghl.client import GHLClient, GHLTokenBundle, build_contact_custom_fields
 from shared import IntegrationError, get_logger
 
@@ -108,6 +109,32 @@ class BookSlotHandler:
             reminder_lead_hours: list[int] = [24]
 
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
+
+            # Resolve service metadata (duration, dedicated calendar) when the
+            # LLM specifies a service_id. Best-effort: ignore any error.
+            service_id_raw = action.payload.get("service_id")
+            _svc_duration: int | None = None
+            _svc_calendar_id: str | None = None
+            if service_id_raw:
+                try:
+                    from uuid import UUID as _UUID
+                    _svc = await ServiceRepository(session).get(
+                        turn_ctx.merchant_id, _UUID(str(service_id_raw))
+                    )
+                    if _svc is not None and _svc.is_active:
+                        _svc_duration = _svc.duration_min
+                        if _svc.ghl_calendar_id:
+                            _svc_calendar_id = _svc.ghl_calendar_id
+                except Exception:
+                    pass
+
+            # Load business hours for smart fallback slot selection.
+            _business_hours: list[Any] = []
+            try:
+                _business_hours = await BusinessHourRepository(session).list(turn_ctx.merchant_id)
+            except Exception:
+                pass
+
             if ghl is None:
                 # GHL non connesso: salva l'appuntamento nell'agenda locale.
                 logger.info("book_slot.local_only", merchant_id=str(turn_ctx.merchant_id))
@@ -117,7 +144,8 @@ class BookSlotHandler:
                     ) or "Europe/Rome"
                 )
                 duration_local = int(
-                    action.payload.get("duration_min")
+                    _svc_duration
+                    or action.payload.get("duration_min")
                     or await config.resolve(
                         ConfigKey.BOOKING_DEFAULT_DURATION_MIN,
                         merchant_id=turn_ctx.merchant_id,
@@ -133,7 +161,7 @@ class BookSlotHandler:
                 tz_local = _resolve_tz(tz_name_local)
                 preferred_iso_local = action.payload.get("preferred_start_iso")
                 start_dt_local = _parse_iso(preferred_iso_local, tz_local) or _next_business_hour(
-                    tz_local
+                    tz_local, business_hours=_business_hours
                 )
                 end_dt_local = start_dt_local + timedelta(minutes=duration_local)
                 slot_start_iso_local = start_dt_local.isoformat()
@@ -168,8 +196,12 @@ class BookSlotHandler:
                     local_only=True,
                 )
             else:
-                calendar_id = action.payload.get("calendar_id") or await config.resolve(
-                    ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
+                calendar_id = (
+                    _svc_calendar_id
+                    or action.payload.get("calendar_id")
+                    or await config.resolve(
+                        ConfigKey.BOOKING_DEFAULT_CALENDAR_ID, merchant_id=turn_ctx.merchant_id
+                    )
                 )
                 if not calendar_id:
                     # GHL connesso ma nessun calendario configurato — salva nell'agenda interna.
@@ -180,7 +212,8 @@ class BookSlotHandler:
                         ) or "Europe/Rome"
                     )
                     _dur = int(
-                        action.payload.get("duration_min")
+                        _svc_duration
+                        or action.payload.get("duration_min")
                         or await config.resolve(
                             ConfigKey.BOOKING_DEFAULT_DURATION_MIN,
                             merchant_id=turn_ctx.merchant_id,
@@ -195,7 +228,7 @@ class BookSlotHandler:
                     _tz = _resolve_tz(_tz_name)
                     _start = (
                         _parse_iso(action.payload.get("preferred_start_iso"), _tz)
-                        or _next_business_hour(_tz)
+                        or _next_business_hour(_tz, business_hours=_business_hours)
                     )
                     _end = _start + timedelta(minutes=_dur)
                     try:
@@ -227,7 +260,8 @@ class BookSlotHandler:
                     )
                 else:
                     duration = int(
-                        action.payload.get("duration_min")
+                        _svc_duration
+                        or action.payload.get("duration_min")
                         or await config.resolve(
                             ConfigKey.BOOKING_DEFAULT_DURATION_MIN,
                             merchant_id=turn_ctx.merchant_id,
@@ -856,16 +890,65 @@ def _parse_iso(s: str | None, tz: tzinfo = UTC) -> datetime | None:
     return dt
 
 
-def _next_business_hour(tz: tzinfo = UTC) -> datetime:
-    """Fallback: same-day next full hour during business hours, or 9:00 tomorrow,
-    all in the merchant's local timezone."""
+def _next_business_hour(
+    tz: tzinfo = UTC,
+    *,
+    business_hours: list[Any] | None = None,
+) -> datetime:
+    """Fallback: next full hour within the merchant's business hours.
+
+    When `business_hours` (list of BusinessHour ORM rows) is provided, the
+    function walks forward day-by-day until it finds an open slot respecting
+    open_time / close_time / break windows. Falls back to hardcoded 09:00-18:00
+    when no rows are configured.
+    """
     now = datetime.now(tz=tz)
     candidate = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    if candidate.hour < 9:
-        candidate = candidate.replace(hour=9)
-    elif candidate.hour >= 18:
-        candidate = (candidate + timedelta(days=1)).replace(hour=9)
-    return candidate
+
+    if not business_hours:
+        # Legacy fallback: 09:00-18:00 any day
+        if candidate.hour < 9:
+            candidate = candidate.replace(hour=9)
+        elif candidate.hour >= 18:
+            candidate = (candidate + timedelta(days=1)).replace(hour=9)
+        return candidate
+
+    # Build day-of-week → row map (0=Mon … 6=Sun, same as Python weekday())
+    bh_map: dict[int, Any] = {row.day_of_week: row for row in business_hours}
+
+    for _ in range(14):  # max 2-week lookahead
+        our_day = candidate.weekday()  # Python weekday: 0=Mon…6=Sun matches our convention
+        row = bh_map.get(our_day)
+        if row is None or not row.is_open or row.open_time is None or row.close_time is None:
+            candidate = (candidate + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            continue
+
+        open_h = row.open_time.hour
+        close_h = row.close_time.hour
+
+        # Snap to opening time if we're too early
+        if candidate.hour < open_h:
+            candidate = candidate.replace(hour=open_h, minute=0, second=0, microsecond=0)
+
+        # Skip break window
+        if row.break_start and row.break_end:
+            bs_h = row.break_start.hour
+            be_h = row.break_end.hour
+            if bs_h <= candidate.hour < be_h:
+                candidate = candidate.replace(hour=be_h, minute=0, second=0, microsecond=0)
+
+        if candidate.hour >= close_h:
+            candidate = (candidate + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            continue
+
+        return candidate
+
+    # Absolute fallback after 14 days
+    return (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
 
 
 def _format_human(iso: str) -> str:

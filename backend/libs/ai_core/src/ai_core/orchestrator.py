@@ -362,6 +362,7 @@ _RESPONSE_SCHEMA_HINT = (
     '- "book_slot": quando l\'utente vuole prenotare/fissare un appuntamento o '
     "accetta uno slot proposto. payload: {\n"
     '    "preferred_start_iso": "<ISO8601, es. 2026-06-03T15:00:00, se l\'utente indica data/ora>",\n'
+    '    "service_id": "<UUID del servizio scelto, presente nel prompt se il merchant ha servizi configurati>",\n'
     '    "contact_fields": {"name": "<se noto>", "email": "<se noto>"}\n'
     "  }\n"
     '- "reschedule_slot": quando l\'utente vuole SPOSTARE/cambiare un appuntamento '
