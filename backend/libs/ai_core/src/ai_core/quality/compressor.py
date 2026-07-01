@@ -43,16 +43,30 @@ class ContextCompressor:
     def __init__(self, llm_client: Any) -> None:
         self._llm = llm_client
 
-    async def compress(self, messages: list[Any]) -> MemoryBlock | None:
-        """Summarise messages[:-KEEP_RECENT] into a MemoryBlock. Returns None on error."""
+    async def compress(
+        self, messages: list[Any], *, prior_summary: str | None = None
+    ) -> MemoryBlock | None:
+        """Summarise messages[:-KEEP_RECENT] into a MemoryBlock. Returns None on error.
+
+        When ``prior_summary`` is given (an already-accumulated summary of even
+        older turns that have scrolled out of the fetch window) it is folded into
+        the input, so facts established earlier in a long conversation are carried
+        forward and never lost.
+        """
         older = messages[:-_KEEP_RECENT]
-        if not older:
+        if not older and not prior_summary:
             return None
         try:
             from ai_core.llm import ChatMessage
 
             history_text = "\n".join(
                 f"[{m.role}]: {m.content[:300]}" for m in older
+            )
+            prior_block = (
+                "Riepilogo dei turni più vecchi (già sintetizzati), da preservare:\n"
+                f"{prior_summary}\n\n"
+                if prior_summary
+                else ""
             )
             prompt = (
                 "Riassumi questa conversazione estraendo SOLO i fatti chiave:\n"
@@ -61,8 +75,11 @@ class ContextCompressor:
                 "- Budget o tempistiche menzionati\n"
                 "- Obiezioni sollevate\n"
                 "- Accordi o impegni già presi\n\n"
+                f"{prior_block}"
                 f"Conversazione:\n{history_text}\n\n"
-                "Rispondi in italiano, max 200 parole, senza lista puntata."
+                "Integra il riepilogo precedente (se presente) con i nuovi turni "
+                "senza perdere fatti già noti. Rispondi in italiano, max 200 parole, "
+                "senza lista puntata."
             )
             resp = await self._llm.complete(
                 messages=[ChatMessage(role="user", content=prompt)],

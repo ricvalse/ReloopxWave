@@ -82,3 +82,26 @@ class TestContextCompressor:
         block = await compressor.compress(messages)
         # Only 1 message, _KEEP_RECENT=10 → no "older" turns → None
         assert block is None
+
+    async def test_compress_folds_prior_summary(self):
+        # The running summary must ACCUMULATE: a previously-saved summary of even
+        # older turns is fed back into the prompt so early facts (e.g. budget
+        # stated 100 messages ago) survive past the fetch window.
+        llm = _make_llm("Lead: Luca, budget 1000€, interessato a X")
+        compressor = ContextCompressor(llm)
+        messages = [FakeMessage("user", f"msg {i}") for i in range(40)]
+        prior = "Riepilogo storico: il lead si chiama Luca e ha un budget di 1000€."
+        block = await compressor.compress(messages, prior_summary=prior)
+        assert block is not None
+        # The prior summary was injected into the LLM input.
+        sent_prompt = llm.complete.call_args.kwargs["messages"][0].content
+        assert prior in sent_prompt
+
+    async def test_compress_prior_summary_only(self):
+        # Even with no fresh "older" turns, a prior summary alone is enough to
+        # produce a block (it must not be silently dropped).
+        llm = _make_llm("Sommario aggiornato")
+        compressor = ContextCompressor(llm)
+        messages = [FakeMessage("user", "msg")]  # < _KEEP_RECENT → no older turns
+        block = await compressor.compress(messages, prior_summary="fatti pregressi")
+        assert block is not None

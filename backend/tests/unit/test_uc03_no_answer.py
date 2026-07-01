@@ -124,6 +124,10 @@ def _patch_session(
         # No system flow configured → scheduler uses built-in free-text fallback.
         return None
 
+    async def fake_resolve_lifecycle_plan(session, *, merchant_id, system_key, context):
+        # No enabled system flow → scheduler sources timing from ConfigKeys.
+        return None
+
     class FakeAnalyticsRepo:
         def __init__(self, session): ...
         async def emit(self, **kw):
@@ -147,6 +151,7 @@ def _patch_session(
     monkeypatch.setattr(no_answer, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(no_answer, "AnalyticsRepository", FakeAnalyticsRepo)
     monkeypatch.setattr(no_answer, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
+    monkeypatch.setattr(no_answer, "resolve_lifecycle_plan", fake_resolve_lifecycle_plan)
     monkeypatch.setattr(no_answer, "build_whatsapp_sender", fake_factory)
 
 
@@ -208,6 +213,45 @@ async def test_skips_when_at_max_followups(
 
     assert await no_answer._maybe_send_reminder(capped, redis=FakeRedis(), kek="unused") is False
     assert record_calls == []
+
+
+async def test_graph_drives_threshold_and_max(
+    monkeypatch: pytest.MonkeyPatch, candidate, integration
+) -> None:
+    """ADR 0011: an enabled system flow sources cadence/count from the graph.
+
+    A 1-send plan with a 600-min initial delay must (a) override the config
+    first-reminder threshold (120) and (b) cap max_followups at 1 (< config's 2).
+    """
+    from ai_core.automations import PlannedSend, SendPlan
+
+    record_calls: list = []
+    _patch_session(monkeypatch, integration=integration, record_reminder_calls=record_calls)
+
+    async def one_send_plan(session, *, merchant_id, system_key, context):
+        return SendPlan(
+            sends=[
+                PlannedSend(attempt_index=0, delay_minutes=600, anchor_hours_before=None, config={})
+            ]
+        )
+
+    monkeypatch.setattr(no_answer, "resolve_lifecycle_plan", one_send_plan)
+
+    # Idle 3h (180 min) < 600-min graph threshold → not yet due.
+    assert await no_answer._maybe_send_reminder(candidate, redis=FakeRedis(), kek="unused") is False
+    assert record_calls == []
+
+    # Idle 11h (660 min) > 600 → due (still inside the 24h window → free text).
+    aged = replace(
+        candidate,
+        last_message_at=datetime.now(tz=UTC) - timedelta(minutes=660),
+        last_inbound_at=datetime.now(tz=UTC) - timedelta(minutes=660),
+    )
+    assert await no_answer._maybe_send_reminder(aged, redis=FakeRedis(), kek="unused") is True
+
+    # Graph has a single send → attempt #2 is capped out (config max of 2 would allow it).
+    capped = replace(candidate, reminders_sent=1)
+    assert await no_answer._maybe_send_reminder(capped, redis=FakeRedis(), kek="unused") is False
 
 
 async def test_redis_dedup_prevents_double_send(

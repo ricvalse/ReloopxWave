@@ -32,7 +32,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
-from workers.automation.lifecycle import resolve_lifecycle_step
+from workers.automation.lifecycle import resolve_lifecycle_plan, resolve_lifecycle_step
 from workers.outbound import (
     MODE_SKIP,
     decide_outbound,
@@ -86,15 +86,34 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         fallback_text = f"Promemoria: hai un appuntamento {when}. A presto!"
 
         within_window = is_within_24h(cand.last_inbound_at, now)
+        plan_context = {
+            "within_24h_window": within_window,
+            "minutes_of_day": now.hour * 60 + now.minute,
+        }
+        # Multi-reminder: pick the `send` node whose «attendi fino a X ore prima»
+        # matches the offset firing now, so each reminder carries its own copy.
+        # Falls back to the first send (attempt 0) when there is no enabled graph
+        # or no matching offset (e.g. a config-driven schedule).
+        attempt_index = 0
+        if cand.reminder_due_at is not None:
+            hours_before = round((cand.start_at - cand.reminder_due_at).total_seconds() / 3600)
+            plan = await resolve_lifecycle_plan(
+                session,
+                merchant_id=cand.merchant_id,
+                system_key=FLOW_BOOKING_REMINDER,
+                context=plan_context,
+            )
+            if plan is not None:
+                attempt_index = next(
+                    (i for i, s in enumerate(plan.sends) if s.anchor_hours_before == hours_before),
+                    0,
+                )
         step = await resolve_lifecycle_step(
             session,
             merchant_id=cand.merchant_id,
             system_key=FLOW_BOOKING_REMINDER,
-            attempt_index=0,
-            context={
-                "within_24h_window": within_window,
-                "minutes_of_day": now.hour * 60 + now.minute,
-            },
+            attempt_index=attempt_index,
+            context=plan_context,
         )
         decision = decide_outbound(
             within_window=within_window,

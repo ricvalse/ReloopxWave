@@ -10,7 +10,6 @@ from db.repositories.automation import AutomationRepository
 from db.repositories.catalog import (
     BotCorrectionRepository,
     FaqRepository,
-    ProductRepository,
     StorePolicyRepository,
 )
 from db.repositories.conversation import ConversationRepository, ReminderCandidate
@@ -83,7 +82,6 @@ __all__ = [
     "MerchantRepository",
     "MessageRepository",
     "ObjectionRepository",
-    "ProductRepository",
     "PromptRepository",
     "ReactivationCandidate",
     "ReminderCandidate",

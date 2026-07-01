@@ -71,6 +71,7 @@ class WhatsAppTemplateRepository:
         body_examples: list[str] | None = None,
         header_type: str = "NONE",
         header_text: str | None = None,
+        header_image_path: str | None = None,
         header_image_url: str | None = None,
         footer: str | None = None,
         buttons: list[dict[str, Any]] | None = None,
@@ -89,6 +90,7 @@ class WhatsAppTemplateRepository:
             body_examples=body_examples or [],
             header_type=header_type,
             header_text=header_text,
+            header_image_path=header_image_path,
             header_image_url=header_image_url,
             footer=footer,
             buttons=buttons,
@@ -113,6 +115,7 @@ class WhatsAppTemplateRepository:
         body_examples: list[str] | None = None,
         header_type: str = "NONE",
         header_text: str | None = None,
+        header_image_path: str | None = None,
         header_image_url: str | None = None,
         footer: str | None = None,
         buttons: list[dict[str, Any]] | None = None,
@@ -131,6 +134,7 @@ class WhatsAppTemplateRepository:
         template.body_examples = body_examples or []
         template.header_type = header_type
         template.header_text = header_text
+        template.header_image_path = header_image_path
         template.header_image_url = header_image_url
         template.footer = footer
         template.buttons = buttons

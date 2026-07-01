@@ -4,7 +4,11 @@ import { useMemo } from 'react';
 import { Calendar, dateFnsLocalizer, type Event } from 'react-big-calendar';
 import { format, getDay, parse, startOfWeek } from 'date-fns';
 import { it } from 'date-fns/locale';
-import { type Appointment } from './use-appointments';
+import {
+  type Appointment,
+  appointmentPersonName,
+  appointmentServiceName,
+} from './use-appointments';
 import './agenda-calendar.css';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 
@@ -51,12 +55,17 @@ function MonthEventContent({ event }: { event: CalEvent }) {
 function TimeEventContent({ event }: { event: CalEvent }) {
   const isLocal = !event.resource.ghl_appointment_id;
   const startTime = event.start instanceof Date ? format(event.start, 'HH:mm') : null;
+  const endTime = event.end instanceof Date ? format(event.end, 'HH:mm') : null;
+  const service = appointmentServiceName(event.resource);
   return (
     <div className="overflow-hidden leading-tight">
       {startTime ? (
-        <p className="text-[10px] font-medium opacity-75">{startTime}</p>
+        <p className="text-[10px] font-medium opacity-75">
+          {endTime && endTime !== startTime ? `${startTime}–${endTime}` : startTime}
+        </p>
       ) : null}
       <p className="truncate text-[11px] font-semibold">{event.title ?? 'Appuntamento'}</p>
+      {service ? <p className="truncate text-[10px] opacity-75">{service}</p> : null}
       {isLocal ? (
         <span className="mt-0.5 inline-block rounded bg-black/20 px-1 text-[9px] font-semibold uppercase tracking-wide leading-4">
           locale
@@ -78,7 +87,7 @@ export function AgendaCalendar({ appointments, onSelectEvent }: Props) {
         .filter((a) => a.status !== 'cancelled')
         .map((a) => ({
           id: a.id,
-          title: a.title ?? 'Appuntamento',
+          title: appointmentPersonName(a) ?? appointmentServiceName(a) ?? 'Appuntamento',
           start: new Date(a.start_at),
           end: new Date(a.end_at ?? a.start_at),
           resource: a,

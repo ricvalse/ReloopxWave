@@ -110,11 +110,18 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[d
                 "booking.default_duration_min": 30,
             }.get(getattr(key, "value", str(key)))
 
+    class FakeAutomationRepo:
+        # No enabled booking_reminder system flow → reminder hours come from config.
+        def __init__(self, session): ...
+        async def get_by_system_key(self, merchant_id, system_key):
+            return None
+
     monkeypatch.setattr(mod, "tenant_session", fake_session)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
     monkeypatch.setattr(mod, "AppointmentRepository", FakeAppointmentRepo)
+    monkeypatch.setattr(mod, "AutomationRepository", FakeAutomationRepo)
     monkeypatch.setattr(mod, "ConfigResolver", FakeConfig)
     return appt_calls
 
@@ -382,8 +389,175 @@ async def test_book_slot_no_ghl_saves_local_appointment(
     assert "operatore" not in sender.calls[0]["text"]
     assert "non riesco" not in sender.calls[0]["text"]
 
-    # Il record locale deve essere confirmed e senza ghl_appointment_id.
+    # Il record locale deve essere booked (status canonico del mirror) e senza
+    # ghl_appointment_id. "booked" è l'unico stato attivo riconosciuto dai
+    # contatori agenda e dalla normalizzazione del reconcile poll.
     assert len(appt_calls) == 1
     assert appt_calls[0]["ghl_appointment_id"] is None
     assert appt_calls[0]["source"] == "bot_local"
-    assert appt_calls[0]["status"] == "confirmed"
+    assert appt_calls[0]["status"] == "booked"
+
+
+def _patch_services(monkeypatch, *, services: list, resolve: dict):
+    """Patch ServiceRepository so the booking gate sees a real service catalog.
+
+    `services` is the list returned by `.list()` (the configured menu); `resolve`
+    maps service_id (str) → service object returned by `.get()`."""
+    from ai_core.actions import booking as mod
+
+    class FakeServiceRepo:
+        def __init__(self, session): ...
+
+        async def list(self, merchant_id, *, include_inactive: bool = False):
+            return list(services)
+
+        async def get(self, merchant_id, service_id):
+            return resolve.get(str(service_id))
+
+    monkeypatch.setattr(mod, "ServiceRepository", FakeServiceRepo)
+
+
+@dataclass
+class _FakeService:
+    id: uuid.UUID
+    name: str
+    duration_min: int = 30
+    is_active: bool = True
+    ghl_calendar_id: str | None = None
+
+
+async def test_book_slot_requires_valid_service_when_catalog_configured(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Gate UC-02: il merchant ha un catalogo servizi ma l'agente non indica un
+    service_id valido → NESSUNA prenotazione, si chiede al lead quale servizio."""
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=True)
+    _patch_services(
+        monkeypatch,
+        services=[
+            _FakeService(id=uuid.uuid4(), name="Taglio"),
+            _FakeService(id=uuid.uuid4(), name="Colore"),
+        ],
+        resolve={},  # qualunque service_id non risolve
+    )
+    sender = FakeSender()
+    handler = BookSlotHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    # Nessuna scrittura su GHL né mirror locale: l'appuntamento non esiste.
+    ghl_client.create_booking.assert_not_awaited()
+    assert appt_calls == []
+    # Il lead riceve l'elenco dei servizi da scegliere.
+    assert len(sender.calls) == 1
+    text = sender.calls[0]["text"]
+    assert "servizio" in text.lower()
+    assert "Taglio" in text and "Colore" in text
+
+
+async def test_book_slot_with_valid_service_uses_its_duration(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Con un service_id valido la prenotazione procede usando la durata del
+    servizio (45 min), che sovrascrive il default di 30 min."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=True)
+    svc = _FakeService(id=uuid.uuid4(), name="Consulenza", duration_min=45)
+    _patch_services(monkeypatch, services=[svc], resolve={str(svc.id): svc})
+    sender = FakeSender()
+    handler = BookSlotHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={
+                "preferred_start_iso": "2026-04-25T10:00:00+02:00",
+                "service_id": str(svc.id),
+            },
+        ),
+        turn_ctx,
+    )
+
+    ghl_client.create_booking.assert_awaited_once()
+    kwargs = ghl_client.create_booking.await_args.kwargs
+    assert kwargs["slot_start_iso"] == "2026-04-25T10:00:00+02:00"
+    assert kwargs["slot_end_iso"] == "2026-04-25T10:45:00+02:00"
+
+
+# ---- ADR 0011: reminder hours-before sourced from the canvas ----------------
+
+
+async def test_booking_reminder_hours_from_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An enabled booking_reminder system flow drives the reminder anticipi from
+    its `wait_until_before` nodes (largest-first), overriding the config schedule."""
+    from types import SimpleNamespace
+
+    from ai_core.actions import booking as mod
+
+    def _node(node_key, kind, ntype, **cfg):
+        return SimpleNamespace(node_key=node_key, kind=kind, type=ntype, config=cfg)
+
+    def _edge(s, t):
+        return SimpleNamespace(source_key=s, target_key=t, branch="default")
+
+    flow = SimpleNamespace(
+        enabled=True,
+        nodes=[
+            _node("t", "trigger", "booking_created"),
+            _node("wb1", "action", "wait_until_before", hours=48),
+            _node("s1", "action", "send"),
+            _node("wb2", "action", "wait_until_before", hours=2),
+            _node("s2", "action", "send"),
+        ],
+        edges=[_edge("t", "wb1"), _edge("wb1", "s1"), _edge("s1", "wb2"), _edge("wb2", "s2")],
+    )
+
+    class FakeAutoRepo:
+        def __init__(self, session): ...
+        async def get_by_system_key(self, merchant_id, system_key):
+            return flow
+
+    class FakeConfig:
+        async def resolve(self, key, *, merchant_id):
+            return [24]  # config fallback — must be ignored when the graph provides hours
+
+    monkeypatch.setattr(mod, "AutomationRepository", FakeAutoRepo)
+
+    hours = await mod._resolve_reminder_lead_hours(
+        object(), merchant_id=uuid.uuid4(), config=FakeConfig(), fallback=[24]
+    )
+    assert hours == [48, 2]
+
+
+async def test_booking_reminder_hours_fallback_when_flow_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No enabled flow → the reminder anticipi come from the ConfigKey (compat)."""
+    from ai_core.actions import booking as mod
+
+    class FakeAutoRepo:
+        def __init__(self, session): ...
+        async def get_by_system_key(self, merchant_id, system_key):
+            return None
+
+    class FakeConfig:
+        async def resolve(self, key, *, merchant_id):
+            return [72, 24]
+
+    monkeypatch.setattr(mod, "AutomationRepository", FakeAutoRepo)
+
+    hours = await mod._resolve_reminder_lead_hours(
+        object(), merchant_id=uuid.uuid4(), config=FakeConfig(), fallback=[24]
+    )
+    assert hours == [72, 24]

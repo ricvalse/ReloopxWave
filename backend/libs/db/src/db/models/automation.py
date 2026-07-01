@@ -59,7 +59,15 @@ ACTION_TYPES = (
     "send",
     "send_template",  # cfg: {"template_id": uuid, "variable_mapping": {...}}
     "send_message",  # cfg: {"text": "..."} — free-text, only inside 24h window
-    "wait",  # cfg: {"minutes": int}
+    # Relative wait. cfg: {"minutes": int, "unit": "minutes|hours|days"} — `unit`
+    # is optional (default "minutes"); the effective delay is normalised to minutes
+    # by `ai_core.automations.wait_minutes`. Legacy nodes carry only {"minutes": N}.
+    "wait",
+    # Absolute wait anchored to a future appointment: "send N hours BEFORE the
+    # appointment". cfg: {"anchor": "appointment.start_at", "hours": int 1-168}.
+    # Used by the `booking_reminder` system flow to express the reminder schedule
+    # on the canvas (the scheduler reads the hours-before list from the graph).
+    "wait_until_before",
     # AI-generated proactive reply (one-shot): the AI agent writes a contextual
     # message and the engine sends it (honouring the 24h window) + dispatches the
     # CRM actions the AI emits (filtered by allowed_actions).

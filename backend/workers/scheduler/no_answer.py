@@ -19,6 +19,7 @@ from typing import Any
 
 from redis.asyncio import Redis
 
+from ai_core.automations import NO_ANSWER_MAX_SENDS
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     FLOW_NO_ANSWER,
@@ -32,7 +33,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
-from workers.automation.lifecycle import resolve_lifecycle_step
+from workers.automation.lifecycle import resolve_lifecycle_plan, resolve_lifecycle_step
 from workers.outbound import (
     MODE_SKIP,
     decide_outbound,
@@ -98,10 +99,24 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             ),
             1440,
         )
-        max_attempts = _as_int(
+        config_max = _as_int(
             await config.resolve(ConfigKey.NO_ANSWER_MAX_FOLLOWUPS, merchant_id=cand.merchant_id),
             2,
         )
+
+        # ADR 0011: an ENABLED system flow sources the timing from the canvas;
+        # otherwise fall back to the ConfigKeys above (compat). The plan's per-send
+        # delay wins when set (> 0), else the config threshold fills the gap.
+        within_window = is_within_24h(cand.last_inbound_at, now)
+        minutes_of_day = now.hour * 60 + now.minute
+        plan = await resolve_lifecycle_plan(
+            session,
+            merchant_id=cand.merchant_id,
+            system_key=FLOW_NO_ANSWER,
+            context={"within_24h_window": within_window, "minutes_of_day": minutes_of_day},
+        )
+        graph_sends = plan.sends if plan else []
+        max_attempts = min(len(graph_sends), NO_ANSWER_MAX_SENDS) if graph_sends else config_max
 
         next_attempt = cand.reminders_sent + 1
         if next_attempt > max_attempts:
@@ -124,6 +139,10 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
                 return False
 
         threshold_min = first_min if next_attempt == 1 else second_min
+        if graph_sends and len(graph_sends) >= next_attempt:
+            graph_delay = graph_sends[next_attempt - 1].delay_minutes
+            if graph_delay > 0:
+                threshold_min = graph_delay
         reference = cand.last_reminder_at or cand.last_message_at
         if now - reference < timedelta(minutes=threshold_min):
             return False
@@ -131,7 +150,6 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
         # Decide free-text vs template based on the 24h window + optional system
         # flow graph. Decide BEFORE consuming the dedup key so a skip (e.g. no
         # approved template yet) can be retried once a template lands.
-        within_window = is_within_24h(cand.last_inbound_at, now)
         step = await resolve_lifecycle_step(
             session,
             merchant_id=cand.merchant_id,
@@ -139,7 +157,7 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             attempt_index=next_attempt - 1,
             context={
                 "within_24h_window": within_window,
-                "minutes_of_day": now.hour * 60 + now.minute,
+                "minutes_of_day": minutes_of_day,
             },
         )
 
@@ -160,7 +178,12 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             within_window=within_window,
             fallback_text=fallback_text,
             step=step,
-            context={"contact.phone": cand.wa_contact_phone},
+            context={
+                "contact.phone": cand.wa_contact_phone,
+                "contact.name": cand.lead_name or "",
+                "lead.name": cand.lead_name or "",
+                "lead.first_name": (cand.lead_name or "").split(" ")[0],
+            },
         )
         if decision.mode == MODE_SKIP:
             logger.info(

@@ -190,6 +190,7 @@ def lint_template(
     language: str = "it",
     header_type: str = "NONE",
     header_text: str | None = None,
+    header_image_url: str | None = None,
     footer: str | None = None,
     buttons: list[dict[str, Any]] | None = None,
     body_examples: list[str] | None = None,
@@ -226,13 +227,14 @@ def lint_template(
                 "HEADER_TYPE_INVALID", f"header_type must be {VALID_HEADER_TYPES}", field="header"
             )
         )
-    if header_type == "IMAGE":
-        # The send path (build_send_components) cannot supply an image handle at
-        # send time, so an IMAGE-header template would be registered but rejected
-        # by Meta on send. Disallow until media-header send support lands (V2).
+    if header_type == "IMAGE" and not (header_image_url and header_image_url.strip()):
+        # An IMAGE header needs a hosted image: it becomes Meta's `header_handle`
+        # at submit and `image.link` at send. Without it the submit/send is invalid.
         issues.append(
             LintIssue(
-                "HEADER_IMAGE_UNSUPPORTED", "IMAGE headers are not supported in V1", field="header"
+                "HEADER_IMAGE_REQUIRED",
+                "carica un'immagine per l'intestazione",
+                field="header",
             )
         )
     if header_type == "TEXT":
@@ -587,14 +589,25 @@ def build_send_components(
     body_params: list[str] | None = None,
     button_url_param: str | None = None,
     button_index: int = 0,
+    header_image_url: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build the `components` array for a template SEND (`/messages`).
 
     `body_params` are the resolved values for `{{1}}..{{n}}` in order.
     `button_url_param` fills a single URL-button variable when present.
+    `header_image_url` supplies the runtime IMAGE-header parameter (a publicly
+    fetchable URL) for templates approved with an IMAGE header — Meta requires
+    the header media to be re-supplied on every send.
     Returns `[]` when there's nothing to parameterise (a static template).
     """
     components: list[dict[str, Any]] = []
+    if header_image_url:
+        components.append(
+            {
+                "type": "header",
+                "parameters": [{"type": "image", "image": {"link": header_image_url}}],
+            }
+        )
     if body_params:
         components.append(
             {

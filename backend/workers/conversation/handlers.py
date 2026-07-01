@@ -782,7 +782,8 @@ async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[s
         try:
             if template_payload:
                 components = build_send_components(
-                    body_params=[str(v) for v in (template_payload.get("variables") or [])]
+                    body_params=[str(v) for v in (template_payload.get("variables") or [])],
+                    header_image_url=template_payload.get("header_image_url"),
                 )
                 resp = await sender.send_template(
                     to_phone=to_phone,

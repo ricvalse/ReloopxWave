@@ -22,11 +22,30 @@ export type Appointment = {
   meta: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  // Relazioni embedded (PostgREST) — leggibili sotto la stessa RLS merchant.
+  // `null` quando lead_id / service_id sono NULL (es. appuntamenti legacy o da GHL).
+  lead: { name: string | null } | null;
+  service: { name: string | null } | null;
 };
+
+/** Nome della persona dell'appuntamento, dal lead collegato (può mancare se il
+ *  bot non ha ancora raccolto il nome). */
+export function appointmentPersonName(a: Appointment): string | null {
+  const n = a.lead?.name?.trim();
+  return n ? n : null;
+}
+
+/** Servizio prenotato: dalla relazione `service`, con fallback al `title`
+ *  denormalizzato (impostato al nome del servizio in fase di booking, e usato
+ *  anche dagli appuntamenti GHL il cui titolo arriva dal calendario). */
+export function appointmentServiceName(a: Appointment): string | null {
+  const s = a.service?.name?.trim() || a.title?.trim();
+  return s ? s : null;
+}
 
 const LIST_KEY = ['appointments', 'list'] as const;
 const COLUMNS =
-  'id, merchant_id, lead_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, start_at, end_at, tz_name, status, source, meta, created_at, updated_at';
+  'id, merchant_id, lead_id, ghl_appointment_id, ghl_contact_id, calendar_id, title, start_at, end_at, tz_name, status, source, meta, created_at, updated_at, lead:leads(name), service:services(name)';
 const REALTIME_FALLBACK_MS = 30_000;
 
 /** Agenda list — read straight from Supabase under RLS (the mirror table is

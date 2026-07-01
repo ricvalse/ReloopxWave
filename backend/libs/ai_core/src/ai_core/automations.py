@@ -70,6 +70,37 @@ def _is_int(value: Any) -> bool:
         return False
 
 
+def _in_range(value: Any, lo: int, hi: int) -> bool:
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return False
+    return lo <= v <= hi
+
+
+def _opt_int(value: Any) -> int | None:
+    """int(value) or None when it isn't int-convertible (no raise)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# A `wait` node's delay unit → minutes multiplier. `unit` is optional on the node
+# (default "minutes"); legacy nodes carry only {"minutes": N}.
+_WAIT_UNIT_FACTORS: dict[str, int] = {"minutes": 1, "hours": 60, "days": 1440}
+
+
+def wait_minutes(config: dict[str, Any]) -> int:
+    """Normalise a `wait` node's delay to minutes (0 on a non-numeric value)."""
+    try:
+        value = int(config.get("minutes", 0))
+    except (TypeError, ValueError):
+        return 0
+    unit = str(config.get("unit", "minutes"))
+    return max(0, value) * _WAIT_UNIT_FACTORS.get(unit, 1)
+
+
 def validate_graph(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> GraphValidation:
     """Validate an automation graph; return errors + the derived trigger.
 
@@ -137,8 +168,19 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
         return [f"node {key!r}: send_template needs a template"]
     if atype == "send_message" and not str(cfg.get("text", "")).strip():
         return [f"node {key!r}: send_message needs text"]
-    if atype == "wait" and not _positive_int(cfg.get("minutes")):
-        return [f"node {key!r}: wait needs minutes > 0"]
+    if atype == "wait":
+        if not _positive_int(cfg.get("minutes")):
+            return [f"node {key!r}: wait needs minutes > 0"]
+        if str(cfg.get("unit", "minutes")) not in _WAIT_UNIT_FACTORS:
+            return [f"node {key!r}: wait has an invalid unit"]
+        return []
+    if atype == "wait_until_before":
+        hours = _opt_int(cfg.get("hours"))
+        if hours is None or not (1 <= hours <= 168):
+            return [f"node {key!r}: wait_until_before needs hours between 1 and 168"]
+        if str(cfg.get("anchor", "appointment.start_at")) != "appointment.start_at":
+            return [f"node {key!r}: wait_until_before supports only anchor 'appointment.start_at'"]
+        return []
     if atype == "ai_reply":
         if not str(cfg.get("objective", "")).strip():
             return [f"node {key!r}: ai_reply needs an objective"]
@@ -378,3 +420,157 @@ def resolve_send_node_at(
             # wait / non-send actions / stray trigger: traverse, don't count.
             frontier.extend(outgoing_targets(edges, key))
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Send plan — timing sourced from the graph (ADR 0011 / audit A2)
+# --------------------------------------------------------------------------- #
+
+# Max number of `send` nodes a system flow may chain — mirrors the config_resolver
+# schema ranges (max_followups 1-4, max_attempts 1-5, reminder_schedule max 5) and
+# the schedulers' hardcoded scan ceilings.
+NO_ANSWER_MAX_SENDS = 4
+REACTIVATION_MAX_SENDS = 5
+BOOKING_MAX_REMINDERS = 5
+
+
+@dataclass(slots=True)
+class PlannedSend:
+    """One `send` in a resolved plan, with the timing accumulated before it."""
+
+    attempt_index: int
+    # Relative delay (minutes) before this send, measured from the PREVIOUS send
+    # (or from the trigger for the first) — the sum of the `wait` nodes in between.
+    delay_minutes: int
+    # Hours-before-the-appointment for a send preceded by `wait_until_before`
+    # (booking reminders); None for relative-timed sends.
+    anchor_hours_before: int | None
+    config: dict[str, Any]
+
+
+@dataclass(slots=True)
+class SendPlan:
+    sends: list[PlannedSend] = field(default_factory=list)
+
+    @property
+    def max_attempts(self) -> int:
+        return len(self.sends)
+
+
+def resolve_send_plan(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    context: dict[str, Any] | None = None,
+) -> SendPlan:
+    """Walk from the trigger and return the ordered plan of `send` nodes with the
+    timing accumulated from `wait` / `wait_until_before` nodes between them.
+
+    Unlike `resolve_send_node_at` (which *skips* waits and resolves a single
+    attempt's content), this **accumulates** the relative `wait` minutes since the
+    previous send into `delay_minutes`, and carries a preceding `wait_until_before`
+    node's hours into `anchor_hours_before`. The gap is per-step incremental (not
+    cumulative), matching the schedulers' `last_*_at` arithmetic.
+
+    Side-effect free; condition nodes are evaluated against `context` exactly like
+    `resolve_send_node_at`. The graph is validated acyclic, so the visited-set
+    guarantees termination.
+    """
+    ctx = context or {}
+    by_key = {str(n.get("node_key")): n for n in nodes}
+    trigger = next((n for n in nodes if n.get("kind") == "trigger"), None)
+    plan = SendPlan()
+    if trigger is None:
+        return plan
+
+    pending_minutes = 0
+    pending_anchor: int | None = None
+    visited: set[str] = set()
+    frontier: list[str] = outgoing_targets(edges, str(trigger.get("node_key")))
+    while frontier:
+        key = frontier.pop(0)
+        if key in visited:
+            continue
+        visited.add(key)
+        node = by_key.get(key)
+        if node is None:
+            continue
+        kind = node.get("kind")
+        ntype = str(node.get("type"))
+        if kind == "condition":
+            passed = evaluate_condition(ntype, node.get("config") or {}, ctx)
+            frontier.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
+        elif kind == "action" and ntype == "send":
+            plan.sends.append(
+                PlannedSend(
+                    attempt_index=len(plan.sends),
+                    delay_minutes=pending_minutes,
+                    anchor_hours_before=pending_anchor,
+                    config=dict(node.get("config") or {}),
+                )
+            )
+            pending_minutes = 0
+            pending_anchor = None
+            frontier.extend(outgoing_targets(edges, key))
+        elif kind == "action" and ntype == "wait":
+            pending_minutes += wait_minutes(node.get("config") or {})
+            frontier.extend(outgoing_targets(edges, key))
+        elif kind == "action" and ntype == "wait_until_before":
+            pending_anchor = _opt_int((node.get("config") or {}).get("hours"))
+            frontier.extend(outgoing_targets(edges, key))
+        else:
+            frontier.extend(outgoing_targets(edges, key))
+    return plan
+
+
+def system_flow_timing_errors(
+    system_key: str, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+) -> list[str]:
+    """Compliance/anti-spam bounds for a *system* flow whose timing now lives in
+    the graph (ADR 0011). Mirrors the config_resolver schema ranges; enforced by
+    the router only when **enabling** a system flow. Custom flows are unaffected.
+    """
+    errors: list[str] = []
+    sends = [n for n in nodes if n.get("kind") == "action" and n.get("type") == "send"]
+    waits = [n for n in nodes if n.get("kind") == "action" and n.get("type") == "wait"]
+    anchors = [
+        n for n in nodes if n.get("kind") == "action" and n.get("type") == "wait_until_before"
+    ]
+    trigger = next((n for n in nodes if n.get("kind") == "trigger"), None)
+    trig_cfg = (trigger.get("config") or {}) if trigger else {}
+
+    if system_key == "no_answer":
+        if len(sends) > NO_ANSWER_MAX_SENDS:
+            errors.append(
+                f"no_answer: al massimo {NO_ANSWER_MAX_SENDS} invii (trovati {len(sends)})"
+            )
+        delay = trig_cfg.get("delay_minutes")
+        if delay is not None and not _in_range(delay, 30, 480):
+            errors.append("no_answer: il ritardo iniziale (delay_minutes) deve essere tra 30 e 480")
+        if any(not (30 <= wait_minutes(w.get("config") or {}) <= 2880) for w in waits):
+            errors.append("no_answer: ogni attesa tra invii deve essere tra 30 minuti e 48 ore")
+    elif system_key == "reactivation":
+        if len(sends) > REACTIVATION_MAX_SENDS:
+            errors.append(
+                f"reactivation: al massimo {REACTIVATION_MAX_SENDS} invii (trovati {len(sends)})"
+            )
+        days = trig_cfg.get("days")
+        if days is not None and not _in_range(days, 30, 180):
+            errors.append("reactivation: i giorni di dormienza (days) devono essere tra 30 e 180")
+        if any(not (3 * 1440 <= wait_minutes(w.get("config") or {}) <= 30 * 1440) for w in waits):
+            errors.append(
+                "reactivation: ogni intervallo tra tentativi deve essere tra 3 e 30 giorni"
+            )
+    elif system_key == "booking_reminder":
+        if len(sends) > BOOKING_MAX_REMINDERS:
+            errors.append(f"booking_reminder: al massimo {BOOKING_MAX_REMINDERS} promemoria")
+        if waits:
+            errors.append(
+                "booking_reminder: usa «attendi fino a X ore prima» invece di attese relative"
+            )
+        for a in anchors:
+            hours = _opt_int((a.get("config") or {}).get("hours"))
+            if hours is None or not (1 <= hours <= 168):
+                errors.append("booking_reminder: le ore di anticipo devono essere tra 1 e 168")
+                break
+    return errors

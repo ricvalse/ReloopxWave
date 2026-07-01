@@ -64,6 +64,12 @@ class ServiceRepository:
         for k, v in fields.items():
             setattr(svc, k, v)
         await self._session.flush()
+        # `updated_at` ha onupdate=now() lato server (TimestampMixin): dopo il
+        # flush l'attributo resta *expired*, e una lazy-load sincrona in fase di
+        # serializzazione (ServiceOut.model_validate) esploderebbe con
+        # MissingGreenlet sull'AsyncSession. Ricarichiamo qui, nel contesto
+        # async, così il chiamante riceve un oggetto completamente popolato.
+        await self._session.refresh(svc)
         return svc
 
     async def delete(self, merchant_id: UUID, service_id: UUID) -> bool:

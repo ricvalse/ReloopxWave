@@ -33,6 +33,45 @@ SYSTEM_FLOW_NAMES: dict[str, str] = {
     "first_contact": "Primo contatto",
 }
 
+# Default send node config — free_text=None so the scheduler's built-in per-attempt
+# copy (or the merchant's config text) is used until the merchant edits it.
+_DEFAULT_SEND: dict[str, Any] = {
+    "window_policy": "auto",
+    "free_text": None,
+    "template_id": None,
+    "variable_mapping": {},
+}
+
+# Default graph (linear chain trigger → …) seeded per system_key. Mirrors the
+# config defaults (NoAnswerConfig 120/1440/max 2, ReactivationConfig 90/7/max 3,
+# booking.reminder_schedule [24]) so ENABLING a freshly-seeded flow preserves the
+# out-of-the-box behaviour instead of silently collapsing to a single send (ADR 0011).
+_DEFAULT_SYSTEM_GRAPH: dict[str, list[tuple[str, str, dict[str, Any]]]] = {
+    "no_answer": [
+        ("trigger", "no_answer", {"delay_minutes": 120}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+        ("action", "wait", {"minutes": 1440, "unit": "minutes"}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+    ],
+    "reactivation": [
+        ("trigger", "lead_dormant", {"days": 90}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+        ("action", "wait", {"minutes": 7, "unit": "days"}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+        ("action", "wait", {"minutes": 7, "unit": "days"}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+    ],
+    "booking_reminder": [
+        ("trigger", "booking_created", {}),
+        ("action", "wait_until_before", {"anchor": "appointment.start_at", "hours": 24}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+    ],
+    "first_contact": [
+        ("trigger", "message_received", {}),
+        ("action", "send", dict(_DEFAULT_SEND)),
+    ],
+}
+
 
 class AutomationRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -86,9 +125,10 @@ class AutomationRepository:
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def ensure_system_automations(self, merchant_id: UUID) -> None:
-        """Lazily seed the 4 system lifecycle flows so they always appear on the
-        canvas. Idempotent: each missing `system_key` gets a minimal valid graph
-        (locked trigger → one `send` node), disabled by default."""
+        """Lazily seed the system lifecycle flows so they always appear on the
+        canvas. Idempotent: each missing `system_key` gets its default graph
+        (`_DEFAULT_SYSTEM_GRAPH`, a linear trigger → send/wait chain mirroring the
+        config defaults), disabled by default."""
         existing = set(
             (
                 await self._session.execute(
@@ -102,55 +142,50 @@ class AutomationRepository:
         for key in SYSTEM_AUTOMATION_KEYS:
             if key in existing:
                 continue
+            spec = _DEFAULT_SYSTEM_GRAPH[key]
+            trigger_cfg = next((cfg for kind, _t, cfg in spec if kind == "trigger"), {})
+            # ADR 0011: system flows are ON by default (their default graph mirrors
+            # the config defaults, so this matches the historical "no flow → send
+            # with defaults" behaviour). The merchant toggles a flow off on the canvas.
+            # first_contact stays off — it has no scheduler consumer yet (hidden in UI).
             flow = AutomationFlow(
                 merchant_id=merchant_id,
                 name=SYSTEM_FLOW_NAMES[key],
-                enabled=False,
+                enabled=key != "first_contact",
                 system_key=key,
                 trigger_type=SYSTEM_TRIGGER_TYPE[key],
-                trigger_config={},
+                trigger_config=dict(trigger_cfg),
                 canvas={},
             )
             self._session.add(flow)
             await self._session.flush()
-            self._session.add(
-                AutomationNode(
-                    automation_id=flow.id,
-                    merchant_id=merchant_id,
-                    node_key="t",
-                    kind="trigger",
-                    type=SYSTEM_TRIGGER_TYPE[key],
-                    config={},
-                    position_x=160.0,
-                    position_y=60.0,
+
+            prev_key: str | None = None
+            for i, (kind, ntype, config) in enumerate(spec):
+                node_key = "t" if kind == "trigger" else f"n{i}"
+                self._session.add(
+                    AutomationNode(
+                        automation_id=flow.id,
+                        merchant_id=merchant_id,
+                        node_key=node_key,
+                        kind=kind,
+                        type=ntype,
+                        config=dict(config),
+                        position_x=160.0,
+                        position_y=60.0 + i * 90.0,
+                    )
                 )
-            )
-            self._session.add(
-                AutomationNode(
-                    automation_id=flow.id,
-                    merchant_id=merchant_id,
-                    node_key="s0",
-                    kind="action",
-                    type="send",
-                    config={
-                        "window_policy": "auto",
-                        "free_text": None,
-                        "template_id": None,
-                        "variable_mapping": {},
-                    },
-                    position_x=160.0,
-                    position_y=220.0,
-                )
-            )
-            self._session.add(
-                AutomationEdge(
-                    automation_id=flow.id,
-                    merchant_id=merchant_id,
-                    source_key="t",
-                    target_key="s0",
-                    branch="default",
-                )
-            )
+                if prev_key is not None:
+                    self._session.add(
+                        AutomationEdge(
+                            automation_id=flow.id,
+                            merchant_id=merchant_id,
+                            source_key=prev_key,
+                            target_key=node_key,
+                            branch="default",
+                        )
+                    )
+                prev_key = node_key
         await self._session.flush()
 
     async def create(

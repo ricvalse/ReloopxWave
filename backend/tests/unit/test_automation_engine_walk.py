@@ -206,7 +206,14 @@ async def test_send_message_sent_inside_window_interpolates_name() -> None:
 
 
 async def test_send_template_skipped_when_not_approved() -> None:
-    tpl = SimpleNamespace(name="promo", status="pending", language="it", variables=[])
+    tpl = SimpleNamespace(
+        name="promo",
+        status="pending",
+        language="it",
+        variables=[],
+        header_type="NONE",
+        header_image_url=None,
+    )
     sender = _FakeSender()
     ok = await _do_action(
         _node("a", "action", "send_template", {"template_id": str(uuid4())}),
@@ -231,7 +238,14 @@ async def test_send_template_skipped_when_missing() -> None:
 
 
 async def test_send_template_sent_when_approved() -> None:
-    tpl = SimpleNamespace(name="promo", status="approved", language="it", variables=[])
+    tpl = SimpleNamespace(
+        name="promo",
+        status="approved",
+        language="it",
+        variables=[],
+        header_type="NONE",
+        header_image_url=None,
+    )
     sender = _FakeSender()
     ok = await _do_action(
         _node("a", "action", "send_template", {"template_id": str(uuid4())}),

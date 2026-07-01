@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from api.dependencies.session import CurrentContext, DBSession
+from db import WhatsAppTemplateRepository
 from db.models.conversation import Conversation, Message
 from shared import PermissionDeniedError, get_logger
 
@@ -186,11 +187,19 @@ async def send_message(
     meta: dict[str, Any] = {"sender_type": "human"}
     if body.template is not None:
         meta["kind"] = "template"
-        meta["template"] = {
+        template_meta: dict[str, Any] = {
             "name": body.template.name,
             "language": body.template.language,
             "variables": list(body.template.variables),
         }
+        # An IMAGE-header template must re-supply its header media on every send;
+        # carry the public URL so the sender can build the header parameter.
+        tpl_row = await WhatsAppTemplateRepository(session).get_by_name(
+            conv.merchant_id, body.template.name
+        )
+        if tpl_row is not None and tpl_row.header_type == "IMAGE" and tpl_row.header_image_url:
+            template_meta["header_image_url"] = tpl_row.header_image_url
+        meta["template"] = template_meta
 
     msg = Message(
         id=uuid4(),

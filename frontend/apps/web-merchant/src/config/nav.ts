@@ -10,7 +10,6 @@ import {
   HelpCircle,
   LayoutTemplate,
   MessageSquare,
-  Package,
   Play,
   Plug,
   ScrollText,
@@ -39,7 +38,6 @@ export const merchantNav: NavSection[] = [
     title: 'Brand',
     items: [
       { href: '/brand/info', label: 'Informazioni', icon: Store },
-      { href: '/brand/catalog', label: 'Catalogo', icon: Package },
       { href: '/brand/policies', label: 'Policy', icon: ScrollText },
       { href: '/brand/faq', label: 'FAQ', icon: HelpCircle },
     ],

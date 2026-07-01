@@ -8,6 +8,7 @@ from workers.outbound import (
     MODE_TEXT,
     decide_outbound,
     is_within_24h,
+    render_free_text,
 )
 
 from db import ResolvedFlowStep
@@ -111,3 +112,29 @@ def test_step_free_text_overrides_fallback_inside_window() -> None:
     )
     assert d.mode == MODE_TEXT
     assert d.text == "custom step copy"
+
+
+def test_render_free_text_placeholders() -> None:
+    ctx = {"contact.name": "Mario Rossi", "appointment.datetime": "12/04 alle 10:00"}
+    assert render_free_text("Ciao {name}", ctx) == "Ciao Mario Rossi"
+    assert render_free_text("Ciao {first_name}", ctx) == "Ciao Mario"
+    assert (
+        render_free_text("Promemoria: {{appointment.datetime}}", ctx)
+        == "Promemoria: 12/04 alle 10:00"
+    )
+    # Unknown {{key}} → "" (never left as raw braces); stray single braces untouched.
+    assert render_free_text("x {{unknown.key}} {y}", ctx) == "x  {y}"
+    assert render_free_text("", ctx) == ""
+
+
+def test_decide_outbound_renders_free_text_placeholders() -> None:
+    # D4: free text (MODE_TEXT) now resolves placeholders from the template context,
+    # not only templates — {name} / {{appointment.datetime}} no longer go out raw.
+    d = decide_outbound(
+        within_window=True,
+        fallback_text="",
+        step=_approved_step(free_text="Ciao {name}, promemoria {{appointment.datetime}}"),
+        context={"contact.name": "Anna", "appointment.datetime": "10:00"},
+    )
+    assert d.mode == MODE_TEXT
+    assert d.text == "Ciao Anna, promemoria 10:00"

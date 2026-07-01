@@ -1,4 +1,4 @@
-"""Repositories for the merchant content layer — products, policies, FAQ.
+"""Repositories for the merchant content layer — policies, FAQ, corrections.
 
 RLS (migration 0016) makes every query tenant-safe automatically; the explicit
 `merchant_id` filters on list/upsert mirror the existing KB repo and keep the
@@ -7,82 +7,13 @@ SQL readable. All writes `flush()` so callers get generated ids back.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import BotCorrection, FaqEntry, Product, StorePolicy
-
-
-class ProductRepository:
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    async def create(
-        self,
-        *,
-        merchant_id: UUID,
-        title: str,
-        handle: str,
-        description: str | None = None,
-        vendor: str | None = None,
-        product_type: str | None = None,
-        tags: list[str] | None = None,
-        variants: list[dict[str, Any]] | None = None,
-        images: list[str] | None = None,
-        price: Decimal | None = None,
-        currency: str = "EUR",
-        is_active: bool = True,
-    ) -> Product:
-        product = Product(
-            merchant_id=merchant_id,
-            title=title,
-            handle=handle,
-            description=description,
-            vendor=vendor,
-            product_type=product_type,
-            tags=tags or [],
-            variants=variants or [],
-            images=images or [],
-            price=price,
-            currency=currency,
-            is_active=is_active,
-        )
-        self._session.add(product)
-        await self._session.flush()
-        return product
-
-    async def get(self, product_id: UUID) -> Product | None:
-        return await self._session.get(Product, product_id)
-
-    async def list_for_merchant(
-        self, merchant_id: UUID, *, active_only: bool = False
-    ) -> list[Product]:
-        stmt = select(Product).where(Product.merchant_id == merchant_id)
-        if active_only:
-            stmt = stmt.where(Product.is_active.is_(True))
-        stmt = stmt.order_by(Product.title)
-        return list((await self._session.execute(stmt)).scalars())
-
-    async def update(self, product_id: UUID, **fields: Any) -> Product | None:
-        product = await self._session.get(Product, product_id)
-        if product is None:
-            return None
-        for key, value in fields.items():
-            setattr(product, key, value)
-        await self._session.flush()
-        return product
-
-    async def delete(self, product_id: UUID) -> bool:
-        product = await self._session.get(Product, product_id)
-        if product is None:
-            return False
-        await self._session.delete(product)
-        await self._session.flush()
-        return True
+from db.models import BotCorrection, FaqEntry, StorePolicy
 
 
 class StorePolicyRepository:

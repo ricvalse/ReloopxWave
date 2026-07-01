@@ -19,11 +19,24 @@ import {
 import { CalendarClock, CalendarDays, CalendarX2, Clock, List } from 'lucide-react';
 import {
   type Appointment,
+  appointmentPersonName,
+  appointmentServiceName,
   useAppointments,
   useCancelAppointment,
   useRescheduleAppointment,
 } from './use-appointments';
 import { AgendaCalendar } from './agenda-calendar';
+
+// ---- status helpers ----------------------------------------------------------
+
+/** Un appuntamento "attivo": qualunque stato che non sia annullato o no-show.
+ *  Allinea i contatori "Prossimi"/"Questa settimana" alla vista calendario (che
+ *  mostra tutto tranne i cancellati), così lista e conteggi non possono divergere
+ *  se il backend scrive uno stato attivo diverso da 'booked' (es. il legacy
+ *  'confirmed' dei booking bot_local). */
+function isActiveStatus(status: string): boolean {
+  return status !== 'cancelled' && status !== 'noshow';
+}
 
 // ---- date helpers (no date lib — native Intl, honoring tz_name) --------------
 
@@ -203,19 +216,25 @@ function AppointmentDetailDialog({
   appt: Appointment;
   onClose: () => void;
 }) {
-  const isUpcoming = appt.status === 'booked' && new Date(appt.start_at).getTime() >= Date.now();
+  const isUpcoming = isActiveStatus(appt.status) && new Date(appt.start_at).getTime() >= Date.now();
   const isLocal = !appt.ghl_appointment_id;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{appt.title ?? 'Appuntamento'}</DialogTitle>
+          <DialogTitle>{appointmentPersonName(appt) ?? 'Appuntamento'}</DialogTitle>
           <DialogDescription>
             {fmtDateTime(appt.start_at, appt.tz_name)}
             {appt.end_at ? ` — ${fmtTime(appt.end_at, appt.tz_name)}` : ''}
           </DialogDescription>
         </DialogHeader>
+        {appointmentServiceName(appt) ? (
+          <p className="text-sm">
+            <span className="text-muted-foreground">Servizio: </span>
+            <span className="font-medium">{appointmentServiceName(appt)}</span>
+          </p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <StatusBadge status={appt.status} />
           {isLocal && appt.status === 'booked' ? (
@@ -242,6 +261,8 @@ function AppointmentRow({ appt, actionable }: { appt: Appointment; actionable: b
   const isLocal = !appt.ghl_appointment_id;
   const startTime = fmtTime(appt.start_at, appt.tz_name);
   const endTime = appt.end_at ? fmtTime(appt.end_at, appt.tz_name) : null;
+  const person = appointmentPersonName(appt);
+  const service = appointmentServiceName(appt);
 
   const accentClass =
     appt.status === 'cancelled'
@@ -265,14 +286,10 @@ function AppointmentRow({ appt, actionable }: { appt: Appointment; actionable: b
           ) : null}
         </div>
         <div className="h-7 w-px bg-border/60" />
-        {/* titolo + fonte */}
+        {/* nome persona + servizio */}
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold leading-tight">{appt.title ?? 'Appuntamento'}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {appt.source === 'bot' || appt.source === 'bot_local'
-              ? "Prenotato dall'assistente"
-              : 'Prenotazione manuale'}
-          </p>
+          <p className="truncate text-sm font-semibold leading-tight">{person ?? 'Cliente'}</p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{service ?? 'Appuntamento'}</p>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -396,11 +413,11 @@ export function AgendaPanel() {
     const weekEnd = now + 7 * 24 * 60 * 60 * 1000;
     const data = query.data ?? [];
     const up = data
-      .filter((a) => a.status === 'booked' && new Date(a.start_at).getTime() >= now)
+      .filter((a) => isActiveStatus(a.status) && new Date(a.start_at).getTime() >= now)
       .sort((a, b) => +new Date(a.start_at) - +new Date(b.start_at));
     const tw = up.filter((a) => new Date(a.start_at).getTime() <= weekEnd);
     const pa = data
-      .filter((a) => !(a.status === 'booked' && new Date(a.start_at).getTime() >= now))
+      .filter((a) => !(isActiveStatus(a.status) && new Date(a.start_at).getTime() >= now))
       .sort((a, b) => +new Date(b.start_at) - +new Date(a.start_at));
     return { upcoming: up, past: pa, thisWeek: tw, all: data };
   }, [query.data]);

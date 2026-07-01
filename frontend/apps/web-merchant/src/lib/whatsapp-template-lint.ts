@@ -72,6 +72,7 @@ export interface LintInput {
   footer?: string | null;
   headerType?: string;
   headerText?: string | null;
+  hasHeaderImage?: boolean;
   buttons?: TemplateButtonInput[];
   bodyExamples?: string[];
 }
@@ -339,6 +340,7 @@ export function lintTemplate(input: LintInput): LintIssue[] {
     footer,
     headerType = 'NONE',
     headerText,
+    hasHeaderImage = false,
     buttons = [],
     bodyExamples,
   } = input;
@@ -381,6 +383,15 @@ export function lintTemplate(input: LintInput): LintIssue[] {
         issues.push({ code: 'HEADER_HAS_VARIABLE', level: 'error', field: 'header', message: 'L’intestazione non può contenere variabili.' });
       }
     }
+  }
+
+  if (headerType === 'IMAGE' && !hasHeaderImage) {
+    issues.push({
+      code: 'HEADER_IMAGE_REQUIRED',
+      level: 'error',
+      field: 'header',
+      message: 'Carica un’immagine per l’intestazione (JPEG o PNG).',
+    });
   }
 
   if (footer != null && footer !== '') {

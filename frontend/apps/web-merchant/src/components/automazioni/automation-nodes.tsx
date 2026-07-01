@@ -39,10 +39,22 @@ const NUM_OPS = [
 
 export const TRIGGER_DEFS: TypeDef[] = [
   { type: 'message_received', label: 'Messaggio ricevuto', description: 'Il lead scrive in chat.', fields: [] },
-  { type: 'no_answer', label: 'Nessuna risposta', description: 'Il lead è rimasto in silenzio.', fields: [] },
+  {
+    type: 'no_answer',
+    label: 'Nessuna risposta',
+    description: 'Il lead è rimasto in silenzio.',
+    fields: [
+      { key: 'delay_minutes', label: 'Ritardo 1° follow-up (min)', kind: 'number', placeholder: '120' },
+    ],
+  },
   { type: 'booking_created', label: 'Prenotazione creata', description: 'Appuntamento fissato.', fields: [] },
   { type: 'booking_failed', label: 'Prenotazione fallita', description: 'Tentativo non riuscito.', fields: [] },
-  { type: 'lead_dormant', label: 'Lead dormiente', description: 'Inattivo da tempo.', fields: [] },
+  {
+    type: 'lead_dormant',
+    label: 'Lead dormiente',
+    description: 'Inattivo da tempo.',
+    fields: [{ key: 'days', label: 'Giorni di dormienza', kind: 'number', placeholder: '90' }],
+  },
 ];
 
 export const CONDITION_DEFS: TypeDef[] = [
@@ -185,7 +197,25 @@ export const ACTION_DEFS: TypeDef[] = [
   {
     type: 'wait',
     label: 'Attendi',
-    fields: [{ key: 'minutes', label: 'Minuti', kind: 'number', placeholder: '60' }],
+    fields: [
+      { key: 'minutes', label: 'Durata', kind: 'number', placeholder: '60' },
+      {
+        key: 'unit',
+        label: 'Unità',
+        kind: 'select',
+        options: [
+          { value: 'minutes', label: 'Minuti' },
+          { value: 'hours', label: 'Ore' },
+          { value: 'days', label: 'Giorni' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'wait_until_before',
+    label: 'Attendi fino a … prima dell’appuntamento',
+    description: "Programma l'invio N ore prima dell'orario dell'appuntamento (promemoria).",
+    fields: [{ key: 'hours', label: 'Ore prima', kind: 'number', placeholder: '24' }],
   },
   {
     type: 'send_template',
@@ -242,7 +272,11 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
       return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}`;
     if (type === 'human_handoff') return String(config.reason || 'operatore umano');
     if (type === 'send_message') return String(config.text ?? '');
-    if (type === 'wait') return `${config.minutes ?? 0} min`;
+    if (type === 'wait') {
+      const u = config.unit === 'hours' ? 'ore' : config.unit === 'days' ? 'giorni' : 'min';
+      return `${config.minutes ?? 0} ${u}`;
+    }
+    if (type === 'wait_until_before') return `${config.hours ?? 0}h prima dell'appuntamento`;
     if (type === 'send_template') return config.template_id ? 'template selezionato' : 'nessun template';
   }
   return '';

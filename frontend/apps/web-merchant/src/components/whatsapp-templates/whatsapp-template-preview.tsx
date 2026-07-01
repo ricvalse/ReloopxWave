@@ -7,6 +7,7 @@ export interface TemplatePreviewProps {
   body: string;
   headerType?: string;
   headerText?: string | null;
+  headerImageUrl?: string | null;
   footer?: string | null;
   buttons?: TemplateButtonInput[];
   examples?: string[];
@@ -71,6 +72,7 @@ export function WhatsAppTemplatePreview({
   body,
   headerType = 'NONE',
   headerText,
+  headerImageUrl,
   footer,
   buttons = [],
   examples = [],
@@ -89,9 +91,18 @@ export function WhatsAppTemplatePreview({
             <p className="mb-1 font-semibold">{renderMultiline(headerText)}</p>
           ) : null}
           {headerType === 'IMAGE' ? (
-            <div className="mb-2 flex h-24 items-center justify-center rounded bg-black/10 text-xs text-muted-foreground">
-              Immagine intestazione
-            </div>
+            headerImageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={headerImageUrl}
+                alt="Immagine intestazione"
+                className="mb-2 max-h-40 w-full rounded object-cover"
+              />
+            ) : (
+              <div className="mb-2 flex h-24 items-center justify-center rounded bg-black/10 text-xs text-muted-foreground">
+                Immagine intestazione
+              </div>
+            )
           ) : null}
 
           {filledBody.trim() ? (

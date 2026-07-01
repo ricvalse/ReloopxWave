@@ -15,6 +15,7 @@ from typing import Any
 
 from redis.asyncio import Redis
 
+from ai_core.automations import REACTIVATION_MAX_SENDS
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     FLOW_REACTIVATION,
@@ -29,7 +30,7 @@ from db import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
-from workers.automation.lifecycle import resolve_lifecycle_step
+from workers.automation.lifecycle import resolve_lifecycle_plan, resolve_lifecycle_step
 from workers.outbound import MODE_SKIP, decide_outbound, send_and_persist_decision
 
 logger = get_logger(__name__)
@@ -101,39 +102,65 @@ async def _maybe_send(
             ),
             7,
         )
-        max_attempts = _as_int(
+        config_max = _as_int(
             await config.resolve(ConfigKey.REACTIVATION_MAX_ATTEMPTS, merchant_id=cand.merchant_id),
             3,
         )
 
+        # ADR 0011: an ENABLED system flow sources the timing/cadence/count from
+        # the canvas; otherwise fall back to the ConfigKeys above (compat).
+        # Dormant leads are always outside the 24h window; conditions can branch on
+        # the lead's score (carried by the candidate) and the time of day.
+        temperature = "hot" if cand.score >= 80 else "warm" if cand.score >= 40 else "cold"
+        minutes_of_day = now.hour * 60 + now.minute
+        plan_context = {
+            "within_24h_window": False,
+            "minutes_of_day": minutes_of_day,
+            "score": cand.score,
+            "temperature": temperature,
+        }
+        plan = await resolve_lifecycle_plan(
+            session,
+            merchant_id=cand.merchant_id,
+            system_key=FLOW_REACTIVATION,
+            context=plan_context,
+        )
+        graph_sends = plan.sends if plan else []
+        max_attempts = min(len(graph_sends), REACTIVATION_MAX_SENDS) if graph_sends else config_max
+
         if cand.attempts_sent >= max_attempts:
-            return False
-        if now - cand.last_interaction_at < timedelta(days=dormant_days):
-            return False
-        if cand.last_reactivation_at is not None and now - cand.last_reactivation_at < timedelta(
-            days=interval_days
-        ):
             return False
 
         next_attempt = cand.attempts_sent + 1
 
-        # Dormant leads are by definition outside the 24h window, so reactivation
-        # requires an approved template. Decide before the dedup so a skip (no
-        # template yet) can be retried once one is approved.
-        # Dormant leads are always outside the 24h window; conditions can branch
-        # on the lead's score (carried by the candidate) and the time of day.
-        temperature = "hot" if cand.score >= 80 else "warm" if cand.score >= 40 else "cold"
+        # Dormant threshold (trigger → 1st attempt): the graph's first-send delay
+        # (folded from trigger.days) wins when set, else the config dormant_days.
+        dormant_delta = timedelta(days=dormant_days)
+        if graph_sends and graph_sends[0].delay_minutes > 0:
+            dormant_delta = timedelta(minutes=graph_sends[0].delay_minutes)
+        if now - cand.last_interaction_at < dormant_delta:
+            return False
+
+        # Interval between attempts (attempt ≥ 2): the graph's per-send `wait` wins.
+        interval_delta = timedelta(days=interval_days)
+        if graph_sends and len(graph_sends) >= next_attempt and next_attempt >= 2:
+            graph_gap = graph_sends[next_attempt - 1].delay_minutes
+            if graph_gap > 0:
+                interval_delta = timedelta(minutes=graph_gap)
+        if (
+            cand.last_reactivation_at is not None
+            and now - cand.last_reactivation_at < interval_delta
+        ):
+            return False
+
+        # Decide before the dedup so a skip (no template yet) can be retried once
+        # one is approved.
         step = await resolve_lifecycle_step(
             session,
             merchant_id=cand.merchant_id,
             system_key=FLOW_REACTIVATION,
             attempt_index=next_attempt - 1,
-            context={
-                "within_24h_window": False,
-                "minutes_of_day": now.hour * 60 + now.minute,
-                "score": cand.score,
-                "temperature": temperature,
-            },
+            context=plan_context,
         )
         override = await config.resolve(
             ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id

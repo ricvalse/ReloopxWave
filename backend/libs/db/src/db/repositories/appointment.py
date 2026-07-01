@@ -67,6 +67,9 @@ class AppointmentReminderCandidate:
     last_inbound_at: datetime | None
     start_at: datetime
     tz_name: str | None
+    # due_at of the reminder entry that's firing now — lets the scheduler map the
+    # offset (start_at minus due_at) to the matching `send` node for per-reminder copy.
+    reminder_due_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,7 @@ class AppointmentRepository:
         end_at: datetime | None,
         tz_name: str | None,
         title: str | None = None,
+        service_id: UUID | None = None,
         status: str = "booked",
         source: str = "bot",
         reminder_schedule: list[dict[str, str | None]] | None = None,
@@ -121,6 +125,7 @@ class AppointmentRepository:
             "end_at": end_at,
             "tz_name": tz_name,
             "title": title,
+            "service_id": service_id,
             "status": status,
             "source": source,
         }
@@ -253,6 +258,7 @@ class AppointmentRepository:
                 latest_conv.c.last_inbound_at,
                 Appointment.start_at,
                 Appointment.tz_name,
+                Appointment.reminder_due_at,
             )
             .join(Lead, Lead.id == Appointment.lead_id)
             .join(Merchant, Merchant.id == Appointment.merchant_id)
@@ -280,6 +286,7 @@ class AppointmentRepository:
                     last_inbound_at=row["last_inbound_at"],
                     start_at=row["start_at"],
                     tz_name=row["tz_name"],
+                    reminder_due_at=row["reminder_due_at"],
                 )
             )
         return candidates

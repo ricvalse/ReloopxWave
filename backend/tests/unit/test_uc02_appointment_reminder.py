@@ -143,3 +143,45 @@ async def test_skips_outside_window_without_template(monkeypatch: pytest.MonkeyP
 
     assert sent is False
     assert marked == []  # not marked → retried when a template is approved
+
+
+async def test_multi_reminder_picks_send_matching_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0011: with an enabled booking flow, the reminder firing at T-12h resolves
+    the `send` node whose «attendi fino a 12 ore prima» matches (not always attempt 0)."""
+    from dataclasses import replace
+
+    from ai_core.automations import PlannedSend, SendPlan
+
+    marked: list = []
+    events: list = []
+    _patch(monkeypatch, marked=marked, events=events)
+
+    captured: dict = {}
+
+    async def fake_step(session, *, merchant_id, system_key, attempt_index, context):
+        captured["attempt_index"] = attempt_index
+        return None
+
+    async def fake_plan(session, *, merchant_id, system_key, context):
+        return SendPlan(
+            sends=[
+                PlannedSend(0, 0, 24, {}),
+                PlannedSend(1, 0, 12, {}),
+                PlannedSend(2, 0, 2, {}),
+            ]
+        )
+
+    monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_step)
+    monkeypatch.setattr(mod, "resolve_lifecycle_plan", fake_plan)
+
+    # start_at = NOW+12h, reminder_due_at = NOW → offset firing now is 12h → index 1.
+    cand = replace(
+        _candidate(last_inbound_at=NOW - timedelta(hours=2)),
+        reminder_due_at=NOW,
+    )
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is True
+    assert captured["attempt_index"] == 1

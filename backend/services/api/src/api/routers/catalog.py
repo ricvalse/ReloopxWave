@@ -1,16 +1,16 @@
-"""Merchant content endpoints — product catalog, store policies, FAQ.
+"""Merchant content endpoints — store policies, FAQ, bot corrections.
 
 Like the KB router, these are merchant-scoped content (not agency config), so
 access is gated by `_assert_merchant_scope` rather than a role: a merchant user
-manages their own, an agency admin manages them while impersonating. Product /
-FAQ writes enqueue `catalog_reindex` so the RAG corpus stays in sync.
+manages their own, an agency admin manages them while impersonating. FAQ writes
+enqueue `catalog_reindex` so the RAG corpus stays in sync. (The product catalog
+was removed — bookable offerings live in `services`, product info in the KB.)
 """
 
 from __future__ import annotations
 
 import time
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +21,6 @@ from api.dependencies.session import CurrentContext, DBSession
 from db import (
     BotCorrectionRepository,
     FaqRepository,
-    ProductRepository,
     StorePolicyRepository,
 )
 from db.session import TenantContext
@@ -37,35 +36,6 @@ _CORRECTION_MAX_ACTIVE = 200
 
 
 # ---- Schemas -------------------------------------------------------------
-
-
-class ProductIn(BaseModel):
-    title: str = Field(max_length=300)
-    handle: str | None = Field(default=None, max_length=160)
-    description: str | None = Field(default=None, max_length=5000)
-    vendor: str | None = Field(default=None, max_length=200)
-    product_type: str | None = Field(default=None, max_length=120)
-    tags: list[str] = Field(default_factory=list, max_length=30)
-    variants: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
-    images: list[str] = Field(default_factory=list, max_length=20)
-    price: Decimal | None = Field(default=None, ge=0)
-    currency: str = Field(default="EUR", max_length=3)
-    is_active: bool = True
-
-
-class ProductOut(BaseModel):
-    id: UUID
-    title: str
-    handle: str
-    description: str | None
-    vendor: str | None
-    product_type: str | None
-    tags: list[str]
-    variants: list[dict[str, Any]]
-    images: list[str]
-    price: Decimal | None
-    currency: str
-    is_active: bool
 
 
 class FaqIn(BaseModel):
@@ -124,92 +94,6 @@ class CorrectionOut(BaseModel):
     context: str | None
     is_active: bool
     created_at: datetime
-
-
-# ---- Products ------------------------------------------------------------
-
-
-@router.get("/{merchant_id}/products", response_model=list[ProductOut])
-async def list_products(
-    merchant_id: UUID, session: DBSession, ctx: CurrentContext
-) -> list[ProductOut]:
-    _assert_merchant_scope(ctx, merchant_id)
-    products = await ProductRepository(session).list_for_merchant(merchant_id)
-    return [_product_out(p) for p in products]
-
-
-@router.post("/{merchant_id}/products", response_model=ProductOut)
-async def create_product(
-    merchant_id: UUID, payload: ProductIn, request: Request, session: DBSession, ctx: CurrentContext
-) -> ProductOut:
-    _assert_merchant_scope(ctx, merchant_id)
-    product = await ProductRepository(session).create(
-        merchant_id=merchant_id,
-        title=payload.title,
-        handle=payload.handle or _slugify(payload.title),
-        description=payload.description,
-        vendor=payload.vendor,
-        product_type=payload.product_type,
-        tags=payload.tags,
-        variants=payload.variants,
-        images=payload.images,
-        price=payload.price,
-        currency=payload.currency,
-        is_active=payload.is_active,
-    )
-    await _enqueue_reindex(request, merchant_id)
-    return _product_out(product)
-
-
-@router.put("/{merchant_id}/products/{product_id}", response_model=ProductOut)
-async def update_product(
-    merchant_id: UUID,
-    product_id: UUID,
-    payload: ProductIn,
-    request: Request,
-    session: DBSession,
-    ctx: CurrentContext,
-) -> ProductOut:
-    _assert_merchant_scope(ctx, merchant_id)
-    repo = ProductRepository(session)
-    existing = await repo.get(product_id)
-    if existing is None or existing.merchant_id != merchant_id:
-        raise NotFoundError("Product not found")
-    product = await repo.update(
-        product_id,
-        title=payload.title,
-        handle=payload.handle or _slugify(payload.title),
-        description=payload.description,
-        vendor=payload.vendor,
-        product_type=payload.product_type,
-        tags=payload.tags,
-        variants=payload.variants,
-        images=payload.images,
-        price=payload.price,
-        currency=payload.currency,
-        is_active=payload.is_active,
-    )
-    assert product is not None
-    await _enqueue_reindex(request, merchant_id)
-    return _product_out(product)
-
-
-@router.delete("/{merchant_id}/products/{product_id}")
-async def delete_product(
-    merchant_id: UUID,
-    product_id: UUID,
-    request: Request,
-    session: DBSession,
-    ctx: CurrentContext,
-) -> dict[str, Any]:
-    _assert_merchant_scope(ctx, merchant_id)
-    repo = ProductRepository(session)
-    existing = await repo.get(product_id)
-    if existing is None or existing.merchant_id != merchant_id:
-        raise NotFoundError("Product not found")
-    await repo.delete(product_id)
-    await _enqueue_reindex(request, merchant_id)
-    return {"deleted": True, "id": str(product_id)}
 
 
 # ---- FAQ -----------------------------------------------------------------
@@ -407,29 +291,6 @@ def _assert_merchant_scope(ctx: TenantContext, merchant_id: UUID) -> None:
         raise PermissionDeniedError(
             "Cannot act on another merchant", error_code="cross_merchant_access"
         )
-
-
-def _slugify(name: str) -> str:
-    keep = "".join(c if c.isalnum() else "-" for c in name.lower())
-    slug = "-".join(filter(None, keep.split("-")))
-    return slug[:160] or "prodotto"
-
-
-def _product_out(p: Any) -> ProductOut:
-    return ProductOut(
-        id=p.id,
-        title=p.title,
-        handle=p.handle,
-        description=p.description,
-        vendor=p.vendor,
-        product_type=p.product_type,
-        tags=list(p.tags or []),
-        variants=list(p.variants or []),
-        images=list(p.images or []),
-        price=p.price,
-        currency=p.currency,
-        is_active=p.is_active,
-    )
 
 
 def _faq_out(e: Any) -> FaqOut:

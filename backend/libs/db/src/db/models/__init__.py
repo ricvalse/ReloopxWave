@@ -4,7 +4,7 @@ from db.models.appointment import Appointment
 from db.models.automation import AutomationEdge, AutomationFlow, AutomationNode
 from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
-from db.models.catalog import BotCorrection, FaqEntry, Product, StorePolicy
+from db.models.catalog import BotCorrection, FaqEntry, StorePolicy
 from db.models.conversation import Conversation, Message
 from db.models.flow import Flow, FlowStep
 from db.models.ft import FTModel
@@ -46,7 +46,6 @@ __all__ = [
     "Merchant",
     "Message",
     "Objection",
-    "Product",
     "PromptTemplate",
     "Service",
     "StorePolicy",

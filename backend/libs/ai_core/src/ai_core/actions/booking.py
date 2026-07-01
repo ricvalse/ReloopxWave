@@ -15,17 +15,21 @@ text from the orchestrator. Booking confirmation is a separate WhatsApp message.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ai_core.automations import resolve_send_plan
 from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
+    FLOW_BOOKING_REMINDER,
     AnalyticsRepository,
     AppointmentRepository,
+    AutomationRepository,
     GHLMarketplaceRepository,
     GhlSyncRepository,
     IntegrationRepository,
@@ -44,6 +48,41 @@ if TYPE_CHECKING:
     from ai_core.conversation_service import ReplySender, TurnContext
 
 logger = get_logger(__name__)
+
+
+async def _resolve_reminder_lead_hours(
+    session: Any,
+    *,
+    merchant_id: Any,
+    config: ConfigResolver,
+    fallback: list[int],
+) -> list[int]:
+    """Ore-di-anticipo dei promemoria appuntamento (ADR 0011).
+
+    Precedenza: grafo del system flow `booking_reminder` se ABILITATO (ore dei
+    nodi `wait_until_before`) → ConfigKey `booking.reminder_schedule` → `fallback`.
+    Così il merchant può configurare gli anticipi dalla lavagnetta; se il flusso è
+    disabilitato/assente, vale la card numerica (compat).
+    """
+    flow = await AutomationRepository(session).get_by_system_key(merchant_id, FLOW_BOOKING_REMINDER)
+    if flow is not None and flow.enabled:
+        nodes = [
+            {"node_key": n.node_key, "kind": n.kind, "type": n.type, "config": n.config or {}}
+            for n in flow.nodes
+        ]
+        edges = [
+            {"source_key": e.source_key, "target_key": e.target_key, "branch": e.branch}
+            for e in flow.edges
+        ]
+        plan = resolve_send_plan(nodes, edges, context={})
+        hours = sorted(
+            {s.anchor_hours_before for s in plan.sends if s.anchor_hours_before},
+            reverse=True,
+        )
+        if hours:
+            return list(hours)
+    raw = await config.resolve(ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=merchant_id)
+    return list(raw) if raw else list(fallback)
 
 
 @dataclass(slots=True, frozen=True)
@@ -110,23 +149,70 @@ class BookSlotHandler:
 
             ghl = await ghl_repo.resolve_ghl(turn_ctx.merchant_id)
 
-            # Resolve service metadata (duration, dedicated calendar) when the
-            # LLM specifies a service_id. Best-effort: ignore any error.
+            # Resolve the chosen service. When the merchant has configured a
+            # bookable-services catalog, booking is GATED on a valid active
+            # service: the agent must not invent appointments for things that
+            # aren't offered (the LLM emits free-text slots, so the menu is the
+            # only real constraint). Merchants with NO services configured keep
+            # the legacy default-duration behaviour — we can't gate against an
+            # empty menu without bricking booking before services are set up.
             service_id_raw = action.payload.get("service_id")
             _svc_duration: int | None = None
             _svc_calendar_id: str | None = None
+            _svc_id: uuid.UUID | None = None
+            _svc_name: str | None = None
+            _svc_repo = ServiceRepository(session)
+
+            _active_services: list[Any] = []
+            try:
+                _active_services = await _svc_repo.list(turn_ctx.merchant_id)
+            except Exception:
+                _active_services = []
+
+            _svc = None
             if service_id_raw:
                 try:
-                    from uuid import UUID as _UUID
-                    _svc = await ServiceRepository(session).get(
-                        turn_ctx.merchant_id, _UUID(str(service_id_raw))
-                    )
-                    if _svc is not None and _svc.is_active:
-                        _svc_duration = _svc.duration_min
-                        if _svc.ghl_calendar_id:
-                            _svc_calendar_id = _svc.ghl_calendar_id
+                    _svc = await _svc_repo.get(turn_ctx.merchant_id, uuid.UUID(str(service_id_raw)))
                 except Exception:
-                    pass
+                    _svc = None
+
+            if _svc is not None and _svc.is_active:
+                _svc_id = _svc.id
+                _svc_name = _svc.name
+                _svc_duration = _svc.duration_min
+                if _svc.ghl_calendar_id:
+                    _svc_calendar_id = _svc.ghl_calendar_id
+            elif _active_services:
+                # Merchant offers services but the agent didn't pick a valid one
+                # → refuse to book. No calendar write, no false confirmation:
+                # ask the lead which service they want; the next turn re-issues
+                # book_slot with a real service_id.
+                logger.info(
+                    "book_slot.service_required",
+                    merchant_id=str(turn_ctx.merchant_id),
+                    service_id=str(service_id_raw) if service_id_raw else None,
+                )
+                await analytics.emit(
+                    tenant_id=turn_ctx.tenant_id,
+                    merchant_id=turn_ctx.merchant_id,
+                    event_type="booking.failed",
+                    subject_type="lead",
+                    subject_id=turn_ctx.lead_id,
+                    variant_id=turn_ctx.variant_id,
+                    properties={
+                        "reason": "service_required",
+                        "service_id": str(service_id_raw) if service_id_raw else None,
+                        "conversation_id": str(turn_ctx.conversation_id),
+                    },
+                )
+                await self._reply_sender.send(
+                    phone_number_id=turn_ctx.phone_number_id,
+                    api_key=turn_ctx.api_key,
+                    to_phone=turn_ctx.lead_phone,
+                    text=format_service_selection(_active_services),
+                    waba_base_url=turn_ctx.waba_base_url,
+                )
+                return
 
             # Load business hours for smart fallback slot selection.
             _business_hours: list[Any] = []
@@ -141,7 +227,8 @@ class BookSlotHandler:
                 tz_name_local = str(
                     await config.resolve(
                         ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
-                    ) or "Europe/Rome"
+                    )
+                    or "Europe/Rome"
                 )
                 duration_local = int(
                     _svc_duration
@@ -152,11 +239,12 @@ class BookSlotHandler:
                     )
                     or 30
                 )
-                reminder_raw_local = await config.resolve(
-                    ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                reminder_lead_hours = await _resolve_reminder_lead_hours(
+                    session,
+                    merchant_id=turn_ctx.merchant_id,
+                    config=config,
+                    fallback=reminder_lead_hours,
                 )
-                if reminder_raw_local:
-                    reminder_lead_hours = list(reminder_raw_local)
 
                 tz_local = _resolve_tz(tz_name_local)
                 preferred_iso_local = action.payload.get("preferred_start_iso")
@@ -180,7 +268,9 @@ class BookSlotHandler:
                             start_at=start_dt_local,
                             end_at=end_dt_local,
                             tz_name=tz_name_local,
-                            status="confirmed",
+                            title=_svc_name,
+                            service_id=_svc_id,
+                            status="booked",
                             source="bot_local",
                             reminder_schedule=r_schedule_local,
                             reminder_due_at=r_due_at_local,
@@ -190,7 +280,11 @@ class BookSlotHandler:
                     logger.warning("book_slot.local_write_failed", error=str(e))
 
                 outcome = BookingOutcome(
-                    True, None, slot_start_iso_local, [], "local_only",
+                    True,
+                    None,
+                    slot_start_iso_local,
+                    [],
+                    "local_only",
                     slot_end_iso=slot_end_iso_local,
                     tz_name=tz_name_local,
                     local_only=True,
@@ -209,7 +303,8 @@ class BookSlotHandler:
                     _tz_name = str(
                         await config.resolve(
                             ConfigKey.SCHEDULE_TIMEZONE, merchant_id=turn_ctx.merchant_id
-                        ) or "Europe/Rome"
+                        )
+                        or "Europe/Rome"
                     )
                     _dur = int(
                         _svc_duration
@@ -220,16 +315,16 @@ class BookSlotHandler:
                         )
                         or 30
                     )
-                    _reminder_raw = await config.resolve(
-                        ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                    reminder_lead_hours = await _resolve_reminder_lead_hours(
+                        session,
+                        merchant_id=turn_ctx.merchant_id,
+                        config=config,
+                        fallback=reminder_lead_hours,
                     )
-                    if _reminder_raw:
-                        reminder_lead_hours = list(_reminder_raw)
                     _tz = _resolve_tz(_tz_name)
-                    _start = (
-                        _parse_iso(action.payload.get("preferred_start_iso"), _tz)
-                        or _next_business_hour(_tz, business_hours=_business_hours)
-                    )
+                    _start = _parse_iso(
+                        action.payload.get("preferred_start_iso"), _tz
+                    ) or _next_business_hour(_tz, business_hours=_business_hours)
                     _end = _start + timedelta(minutes=_dur)
                     try:
                         _rs = build_reminder_schedule(_start, reminder_lead_hours)
@@ -244,7 +339,9 @@ class BookSlotHandler:
                                 start_at=_start,
                                 end_at=_end,
                                 tz_name=_tz_name,
-                                status="confirmed",
+                                title=_svc_name,
+                                service_id=_svc_id,
+                                status="booked",
                                 source="bot_local",
                                 reminder_schedule=_rs,
                                 reminder_due_at=_rd,
@@ -253,7 +350,11 @@ class BookSlotHandler:
                     except Exception as e:
                         logger.warning("book_slot.local_write_failed", error=str(e))
                     outcome = BookingOutcome(
-                        True, None, _start.isoformat(), [], "local_only",
+                        True,
+                        None,
+                        _start.isoformat(),
+                        [],
+                        "local_only",
                         slot_end_iso=_end.isoformat(),
                         tz_name=_tz_name,
                         local_only=True,
@@ -284,12 +385,13 @@ class BookSlotHandler:
                     )
                     lookahead_days = int(lookahead_raw) if lookahead_raw else 14
 
-                    # Risolvi la configurazione multi-reminder del merchant.
-                    reminder_raw = await config.resolve(
-                        ConfigKey.BOOKING_REMINDER_SCHEDULE, merchant_id=turn_ctx.merchant_id
+                    # Risolvi gli anticipi multi-reminder: grafo (system flow) → config.
+                    reminder_lead_hours = await _resolve_reminder_lead_hours(
+                        session,
+                        merchant_id=turn_ctx.merchant_id,
+                        config=config,
+                        fallback=reminder_lead_hours,
                     )
-                    if reminder_raw:
-                        reminder_lead_hours = list(reminder_raw)
 
                     # CRM sync extras (capitolato sez.5): map collected lead data
                     # to GHL custom fields + apply default tags. Merge the action
@@ -372,14 +474,20 @@ class BookSlotHandler:
                                 start_at=_start,
                                 end_at=_end,
                                 tz_name=outcome.tz_name,
-                                status="confirmed",
+                                title=_svc_name,
+                                service_id=_svc_id,
+                                status="booked",
                                 source="bot_local",
                                 reminder_schedule=_rs,
                                 reminder_due_at=_rd,
                             )
                         await leads.update_score(turn_ctx.lead_id, score=100, reasons=["booked"])
                         outcome = BookingOutcome(
-                            True, None, outcome.slot_start_iso, [], "local_only",
+                            True,
+                            None,
+                            outcome.slot_start_iso,
+                            [],
+                            "local_only",
                             opportunity_id=outcome.opportunity_id,
                             pipeline_id=outcome.pipeline_id,
                             slot_end_iso=outcome.slot_end_iso,
@@ -415,6 +523,8 @@ class BookSlotHandler:
                             start_at=start_dt,
                             end_at=end_dt,
                             tz_name=outcome.tz_name,
+                            title=_svc_name,
+                            service_id=_svc_id,
                             source="bot",
                             reminder_schedule=r_schedule,
                             reminder_due_at=r_due_at,
@@ -547,13 +657,18 @@ class BookSlotHandler:
             contact_id = contact.get("contact", {}).get("id") or contact.get("id")
             if not contact_id:
                 await _log_sync(
-                    "contact.upserted", "contact", None,
-                    status="error", error_detail="no contact_id in response",
+                    "contact.upserted",
+                    "contact",
+                    None,
+                    status="error",
+                    error_detail="no contact_id in response",
                     payload=contact_payload,
                 )
                 return BookingOutcome(False, None, None, [], "contact_upsert_failed")
             await _log_sync(
-                "contact.upserted", "contact", contact_id,
+                "contact.upserted",
+                "contact",
+                contact_id,
                 payload={k: v for k, v in contact_payload.items() if v},
                 result={"id": contact_id},
             )
@@ -587,7 +702,9 @@ class BookSlotHandler:
                 )
                 booking_id = booking.get("id") or booking.get("event", {}).get("id")
                 await _log_sync(
-                    "booking.created", "appointment", str(booking_id) if booking_id else None,
+                    "booking.created",
+                    "appointment",
+                    str(booking_id) if booking_id else None,
                     payload=booking_payload,
                     result={"id": booking_id},
                 )
@@ -610,8 +727,12 @@ class BookSlotHandler:
                 # would be misleading. Fall back gracefully ("ti ricontatteremo").
                 if not _is_slot_conflict(e):
                     await _log_sync(
-                        "booking.created", "appointment", None,
-                        status="error", error_detail=str(e), payload=booking_payload,
+                        "booking.created",
+                        "appointment",
+                        None,
+                        status="error",
+                        error_detail=str(e),
+                        payload=booking_payload,
                     )
                     return BookingOutcome(
                         False,
@@ -637,8 +758,11 @@ class BookSlotHandler:
                 raw_suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
                 suggestions: list[str] = [s for s in raw_suggestions if s]
                 await _log_sync(
-                    "booking.created", "appointment", None,
-                    status="error", error_detail="slot_taken",
+                    "booking.created",
+                    "appointment",
+                    None,
+                    status="error",
+                    error_detail="slot_taken",
                     payload=booking_payload,
                     result={"suggested_slots": suggestions},
                 )
@@ -701,16 +825,22 @@ class BookSlotHandler:
             opp_id = created.get("id") or created.get("opportunity", {}).get("id")
             if log_sync is not None and isinstance(opp_id, str):
                 await log_sync(
-                    "opportunity.created", "opportunity", opp_id,
-                    payload=opp_payload, result={"id": opp_id},
+                    "opportunity.created",
+                    "opportunity",
+                    opp_id,
+                    payload=opp_payload,
+                    result={"id": opp_id},
                 )
             return opp_id if isinstance(opp_id, str) else None
         except IntegrationError as e:
             logger.warning("book_slot.opportunity_failed", error=str(e))
             if log_sync is not None:
                 await log_sync(
-                    "opportunity.created", "opportunity", None,
-                    status="error", error_detail=str(e),
+                    "opportunity.created",
+                    "opportunity",
+                    None,
+                    status="error",
+                    error_detail=str(e),
                 )
             return None
 
@@ -856,6 +986,18 @@ def format_slot_proposal(suggested: list[str]) -> str:
     return f"Ecco le prime disponibilità:\n{options}\nFammi sapere quale preferisci."
 
 
+def format_service_selection(services: list[Any]) -> str:
+    """Italian WhatsApp text asking the lead to pick a bookable service.
+
+    Sent when the merchant has a service catalog but the agent tried to book
+    without naming a valid service — the booking gate refuses and we surface
+    the real menu so the lead can choose (no appointment is created)."""
+    options = "\n".join(f"• {name}" for s in services if (name := getattr(s, "name", None)))
+    if not options:
+        return "Per quale servizio vuoi prenotare?"
+    return f"Per fissare l'appuntamento, quale servizio ti interessa?\n{options}"
+
+
 def _is_slot_conflict(e: IntegrationError) -> bool:
     """True when a `create_booking` failure means the slot can't be satisfied as
     requested (4xx / unknown) → propose alternatives. A 5xx is a transient server
@@ -959,7 +1101,10 @@ def _format_human(iso: str) -> str:
 
 
 def format_booking_confirmation(
-    *, booked: bool, slot_start_iso: str | None, suggested: list[str],
+    *,
+    booked: bool,
+    slot_start_iso: str | None,
+    suggested: list[str],
     local_only: bool = False,
 ) -> str:
     """Italian WhatsApp confirmation text for a booking outcome (pure).

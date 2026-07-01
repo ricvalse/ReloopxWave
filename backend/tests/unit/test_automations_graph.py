@@ -5,7 +5,10 @@ from ai_core.automations import (
     evaluate_condition,
     outgoing_targets,
     resolve_send_node_at,
+    resolve_send_plan,
+    system_flow_timing_errors,
     validate_graph,
+    wait_minutes,
 )
 
 
@@ -375,3 +378,199 @@ def test_resolve_send_node_at_follows_condition_branch() -> None:
         resolve_send_node_at(score_nodes, score_edges, attempt_index=0, context={})["free_text"]
         == "freddo"
     )
+
+
+# --------------------------------------------------------------------------- #
+# wait normalisation + new block validation (D2/D3)
+# --------------------------------------------------------------------------- #
+
+
+def _wait(key: str, minutes: int, unit: str | None = None) -> dict:
+    cfg: dict = {"minutes": minutes}
+    if unit is not None:
+        cfg["unit"] = unit
+    return {"node_key": key, "kind": "action", "type": "wait", "config": cfg}
+
+
+def test_wait_minutes_units() -> None:
+    assert wait_minutes({"minutes": 30}) == 30  # legacy node, no unit
+    assert wait_minutes({"minutes": 30, "unit": "minutes"}) == 30
+    assert wait_minutes({"minutes": 2, "unit": "hours"}) == 120
+    assert wait_minutes({"minutes": 7, "unit": "days"}) == 7 * 1440
+    assert wait_minutes({"minutes": "x"}) == 0  # non-numeric → 0
+    assert wait_minutes({"minutes": 5, "unit": "weeks"}) == 5  # unknown unit -> x1
+
+
+def test_validate_wait_unit() -> None:
+    bad = validate_graph([_trigger(), _wait("w", 30, unit="fortnights")], [])
+    assert any("wait has an invalid unit" in e for e in bad.errors)
+    ok = validate_graph([_trigger(), _wait("w", 7, unit="days")], [])
+    assert ok.ok
+
+
+def test_validate_wait_until_before() -> None:
+    def _wub(**cfg: object) -> dict:
+        return {"node_key": "w", "kind": "action", "type": "wait_until_before", "config": cfg}
+
+    assert any(
+        "hours between 1 and 168" in e
+        for e in validate_graph([_trigger(), _wub(hours=0)], []).errors
+    )
+    assert any(
+        "hours between 1 and 168" in e
+        for e in validate_graph([_trigger(), _wub(hours=200)], []).errors
+    )
+    assert any(
+        "anchor" in e
+        for e in validate_graph([_trigger(), _wub(hours=24, anchor="lead.created")], []).errors
+    )
+    assert validate_graph([_trigger(), _wub(hours=24)], []).ok
+
+
+# --------------------------------------------------------------------------- #
+# resolve_send_plan (AR1) — timing accumulated from the graph
+# --------------------------------------------------------------------------- #
+
+
+def _chain(*pairs: tuple[str, str]) -> list[dict]:
+    return [{"source_key": s, "target_key": t, "branch": "default"} for s, t in pairs]
+
+
+def test_resolve_send_plan_accumulates_waits() -> None:
+    nodes = [
+        _trigger("t", "no_answer"),
+        _wait("w0", 35),
+        _send("s0", free_text="primo"),
+        _wait("w1", 1, unit="days"),
+        _send("s1", free_text="secondo"),
+    ]
+    edges = _chain(("t", "w0"), ("w0", "s0"), ("s0", "w1"), ("w1", "s1"))
+    plan = resolve_send_plan(nodes, edges, context={})
+    assert plan.max_attempts == 2
+    assert plan.sends[0].attempt_index == 0
+    assert plan.sends[0].delay_minutes == 35  # leading wait before first send
+    assert plan.sends[0].config["free_text"] == "primo"
+    assert plan.sends[1].delay_minutes == 1440  # 1 day between sends
+    assert plan.sends[1].anchor_hours_before is None
+
+
+def test_resolve_send_plan_anchor_hours() -> None:
+    nodes = [
+        _trigger("t", "booking_created"),
+        {"node_key": "w", "kind": "action", "type": "wait_until_before", "config": {"hours": 24}},
+        _send("s0", free_text="promemoria"),
+    ]
+    edges = _chain(("t", "w"), ("w", "s0"))
+    plan = resolve_send_plan(nodes, edges, context={})
+    assert plan.max_attempts == 1
+    assert plan.sends[0].anchor_hours_before == 24
+    assert plan.sends[0].delay_minutes == 0
+
+
+def test_resolve_send_plan_no_sends() -> None:
+    nodes = [_trigger("t", "no_answer"), _wait("w", 30)]
+    edges = _chain(("t", "w"))
+    assert resolve_send_plan(nodes, edges, context={}).max_attempts == 0
+
+
+def test_resolve_send_plan_follows_condition() -> None:
+    nodes = [
+        _trigger("t", "lead_dormant"),
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "lead_score",
+            "config": {"op": ">=", "value": 80},
+        },
+        _send("hot", free_text="caldo"),
+        _send("cold", free_text="freddo"),
+    ]
+    edges = [
+        {"source_key": "t", "target_key": "c", "branch": "default"},
+        {"source_key": "c", "target_key": "hot", "branch": "true"},
+        {"source_key": "c", "target_key": "cold", "branch": "false"},
+    ]
+    hot = resolve_send_plan(nodes, edges, context={"score": 90})
+    assert hot.sends[0].config["free_text"] == "caldo"
+    cold = resolve_send_plan(nodes, edges, context={"score": 10})
+    assert cold.sends[0].config["free_text"] == "freddo"
+
+
+# --------------------------------------------------------------------------- #
+# system_flow_timing_errors (D6) — compliance bounds on system flows
+# --------------------------------------------------------------------------- #
+
+
+def test_system_flow_timing_no_answer() -> None:
+    # delay out of range + too many sends.
+    nodes = [
+        {"node_key": "t", "kind": "trigger", "type": "no_answer", "config": {"delay_minutes": 5}},
+        _send("s0"),
+        _send("s1"),
+        _send("s2"),
+        _send("s3"),
+        _send("s4"),
+    ]
+    errors = system_flow_timing_errors("no_answer", nodes, [])
+    assert any("delay_minutes" in e for e in errors)
+    assert any("al massimo 4 invii" in e for e in errors)
+    # A valid no_answer flow: delay 35, one wait of 1440 between two sends.
+    ok = [
+        {"node_key": "t", "kind": "trigger", "type": "no_answer", "config": {"delay_minutes": 35}},
+        _send("s0"),
+        _wait("w", 1, unit="days"),
+        _send("s1"),
+    ]
+    assert system_flow_timing_errors("no_answer", ok, []) == []
+
+
+def test_system_flow_timing_reactivation() -> None:
+    nodes = [
+        {"node_key": "t", "kind": "trigger", "type": "lead_dormant", "config": {"days": 10}},
+        _send("s0"),
+        _wait("w", 1, unit="hours"),  # 1h is well below the 3-day floor
+        _send("s1"),
+    ]
+    errors = system_flow_timing_errors("reactivation", nodes, [])
+    assert any("dormienza" in e for e in errors)
+    assert any("3 e 30 giorni" in e for e in errors)
+
+
+def test_default_system_graphs_are_enableable() -> None:
+    """Fix #1 / ADR 0011: a freshly-seeded system flow must be valid, within the
+    compliance ranges (so it can be enabled), and mirror the config default count."""
+    from db.repositories.automation import _DEFAULT_SYSTEM_GRAPH  # type: ignore[attr-defined]
+
+    expected_sends = {"no_answer": 2, "reactivation": 3, "booking_reminder": 1, "first_contact": 1}
+    for key, spec in _DEFAULT_SYSTEM_GRAPH.items():
+        nodes: list[dict] = []
+        edges: list[dict] = []
+        prev: str | None = None
+        for i, (kind, ntype, config) in enumerate(spec):
+            node_key = "t" if kind == "trigger" else f"n{i}"
+            nodes.append({"node_key": node_key, "kind": kind, "type": ntype, "config": config})
+            if prev is not None:
+                edges.append({"source_key": prev, "target_key": node_key, "branch": "default"})
+            prev = node_key
+        assert validate_graph(nodes, edges).ok, f"{key} graph invalid"
+        assert system_flow_timing_errors(key, nodes, edges) == [], f"{key} out of range"
+        assert resolve_send_plan(nodes, edges, context={}).max_attempts == expected_sends[key], key
+
+
+def test_system_flow_timing_booking() -> None:
+    # relative wait not allowed for booking; hours out of range.
+    nodes = [
+        {"node_key": "t", "kind": "trigger", "type": "booking_created", "config": {}},
+        {"node_key": "wb", "kind": "action", "type": "wait_until_before", "config": {"hours": 300}},
+        _wait("w", 30),
+        _send("s0"),
+    ]
+    errors = system_flow_timing_errors("booking_reminder", nodes, [])
+    assert any("attese relative" in e for e in errors)
+    assert any("1 e 168" in e for e in errors)
+    ok = [
+        {"node_key": "t", "kind": "trigger", "type": "booking_created", "config": {}},
+        {"node_key": "wb", "kind": "action", "type": "wait_until_before", "config": {"hours": 24}},
+        _send("s0"),
+    ]
+    assert system_flow_timing_errors("booking_reminder", ok, []) == []

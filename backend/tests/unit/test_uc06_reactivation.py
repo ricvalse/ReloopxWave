@@ -57,6 +57,7 @@ class FakeStep:
     template_variables: list | None = None
     variable_mapping: dict | None = None
     template_approved: bool = False
+    template_header_image_url: str | None = None
     flow_enabled: bool = True
     step_enabled: bool = True
 
@@ -122,6 +123,10 @@ def _patch(
     ):
         return step
 
+    async def fake_resolve_lifecycle_plan(session, *, merchant_id, system_key, context):
+        # No enabled system flow → scheduler sources timing from ConfigKeys.
+        return None
+
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
         async def resolve_whatsapp(self, phone_number_id):
@@ -157,6 +162,7 @@ def _patch(
     monkeypatch.setattr(reactivation, "tenant_session", fake_tenant_session)
     monkeypatch.setattr(reactivation, "ConfigResolver", FakeConfig)
     monkeypatch.setattr(reactivation, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
+    monkeypatch.setattr(reactivation, "resolve_lifecycle_plan", fake_resolve_lifecycle_plan)
     monkeypatch.setattr(reactivation, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(reactivation, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(reactivation, "AnalyticsRepository", FakeAnalyticsRepo)

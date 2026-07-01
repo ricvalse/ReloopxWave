@@ -46,6 +46,12 @@ class WhatsAppTemplate(Base, TimestampMixin):
     # Components
     header_type: Mapped[str] = mapped_column(String(16), nullable=False, default="NONE")
     header_text: Mapped[str | None] = mapped_column(Text)
+    # Canonical merchant-prefixed Supabase Storage path of the header image
+    # (bucket `branding-assets`), e.g. "<merchant_id>/<ts>-<slug>.jpg". This is
+    # the durable artifact; `header_image_url` holds a long-lived signed URL
+    # minted from it (used as Meta's `header_handle` at submit and `image.link`
+    # at send). Keeping the path lets us re-mint the URL if it ever expires.
+    header_image_path: Mapped[str | None] = mapped_column(String(512))
     header_image_url: Mapped[str | None] = mapped_column(String(1024))
     body: Mapped[str] = mapped_column(Text, nullable=False)  # with {{1}}..{{n}}
     footer: Mapped[str | None] = mapped_column(String(120))

@@ -43,6 +43,11 @@ const PALETTE: { kind: NodeKind; label: string; defs: typeof TRIGGER_DEFS }[] = 
 ];
 
 function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
+  if (kind === 'trigger') {
+    if (type === 'no_answer') return { delay_minutes: 120 };
+    if (type === 'lead_dormant') return { days: 90 };
+    return {};
+  }
   if (kind === 'condition') {
     if (type === 'lead_temperature') return { op: '==', value: 'hot' };
     if (type === 'lead_score') return { op: '>=', value: 80 };
@@ -52,7 +57,8 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
     if (type === 'condition_group') return { operator: 'and', clauses: [] };
   }
   if (kind === 'action') {
-    if (type === 'wait') return { minutes: 60 };
+    if (type === 'wait') return { minutes: 60, unit: 'minutes' };
+    if (type === 'wait_until_before') return { anchor: 'appointment.start_at', hours: 24 };
     if (type === 'send') return { window_policy: 'auto', free_text: '', template_id: '', variable_mapping: {} };
     if (type === 'send_message') return { text: '' };
     if (type === 'send_template') return { template_id: '', variable_mapping: {} };
@@ -231,13 +237,35 @@ export function AutomationEditor({
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
   const triggerCount = nodes.filter((n) => (n.data as AutomationNodeData).kind === 'trigger').length;
-  // System flows: trigger is locked (hide the Trigger group) and use only the
-  // unified `send` action (hide the legacy send_template/send_message).
-  const palette = PALETTE.filter((g) => !(isSystem && g.kind === 'trigger')).map((g) =>
-    isSystem && g.kind === 'action'
-      ? { ...g, defs: g.defs.filter((d) => d.type !== 'send_template' && d.type !== 'send_message') }
-      : g,
-  );
+  // Palette per flow kind. System flows: the trigger is locked (hide the Trigger
+  // group) and resolved synchronously by the schedulers, so only send / wait /
+  // wait_until_before actions + synchronous conditions are offered (no ai_check,
+  // ai_reply, set_lead_field, human_handoff, or the legacy send_* variants). A
+  // booking flow uses "attendi fino a X ore prima"; the others use the relative
+  // wait. Custom (event-driven) flows hide wait_until_before (unsupported by the
+  // event engine).
+  const isBookingSystem = isSystem && editing?.trigger_type === 'booking_created';
+  const palette = PALETTE.filter((g) => !(isSystem && g.kind === 'trigger')).map((g) => {
+    if (!isSystem) {
+      if (g.kind === 'action') {
+        return { ...g, defs: g.defs.filter((d) => d.type !== 'wait_until_before') };
+      }
+      return g;
+    }
+    if (g.kind === 'condition') {
+      return { ...g, defs: g.defs.filter((d) => d.type !== 'ai_check') };
+    }
+    if (g.kind === 'action') {
+      const hidden = ['send_template', 'send_message', 'ai_reply', 'set_lead_field', 'human_handoff'];
+      const defs = g.defs.filter(
+        (d) =>
+          !hidden.includes(d.type) &&
+          (isBookingSystem ? d.type !== 'wait' : d.type !== 'wait_until_before'),
+      );
+      return { ...g, defs };
+    }
+    return g;
+  });
 
   return (
     <Card>

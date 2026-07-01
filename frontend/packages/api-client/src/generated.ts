@@ -290,6 +290,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bot-config/templates/{template_id}/bulk-apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Apply Template
+         * @description Link N merchant to a template (mode A — dynamic: overrides are preserved,
+         *     future template changes propagate automatically via the cascade).
+         */
+        post: operations["bulk_apply_template_bot_config_templates__template_id__bulk_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bot-config/templates/from-merchant/{merchant_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snapshot Template From Merchant
+         * @description Create a new template by capturing the fully-resolved config of a merchant.
+         *     Keys listed in `exclude_keys` (dotted paths) are stripped before saving.
+         */
+        post: operations["snapshot_template_from_merchant_bot_config_templates_from_merchant__merchant_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bot-config/tone-presets": {
         parameters: {
             query?: never;
@@ -358,13 +400,33 @@ export interface paths {
         /**
          * Get Overrides
          * @description Read the raw merchant overrides (what the merchant portal shows as
-         *     'Customized' values) alongside the agency default template's `locked_keys`.
+         *     'Customized' values) alongside the template's `locked_keys`.
          *     Used by the bot-config form to decide Inherited vs Customized vs Locked
          *     per field without re-implementing the cascade.
          */
         get: operations["get_overrides_bot_config__merchant_id__overrides_get"];
         /** Update Overrides */
         put: operations["update_overrides_bot_config__merchant_id__overrides_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bot-config/{merchant_id}/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Merchant Template
+         * @description Assign (or unset) a specific template for a merchant without touching overrides.
+         */
+        put: operations["set_merchant_template_bot_config__merchant_id__template_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -452,25 +514,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/catalog/{merchant_id}/products": {
+    "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Products */
-        get: operations["list_products_catalog__merchant_id__products_get"];
+        /**
+         * List Kb Gaps
+         * @description Return questions the KB could not answer, ordered by frequency.
+         */
+        get: operations["list_kb_gaps_knowledge_base_merchants__merchant_id__knowledge_base_gaps_get"];
         put?: never;
-        /** Create Product */
-        post: operations["create_product_catalog__merchant_id__products_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/catalog/{merchant_id}/products/{product_id}": {
+    "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps/{gap_id}/resolve": {
         parameters: {
             query?: never;
             header?: never;
@@ -478,14 +542,16 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update Product */
-        put: operations["update_product_catalog__merchant_id__products__product_id__put"];
+        put?: never;
         post?: never;
-        /** Delete Product */
-        delete: operations["delete_product_catalog__merchant_id__products__product_id__delete"];
+        delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Resolve Kb Gap
+         * @description Mark a KB gap as resolved (merchant has added the missing content).
+         */
+        patch: operations["resolve_kb_gap_knowledge_base_merchants__merchant_id__knowledge_base_gaps__gap_id__resolve_patch"];
         trace?: never;
     };
     "/catalog/{merchant_id}/faq": {
@@ -578,6 +644,116 @@ export interface paths {
         patch: operations["update_correction_catalog__merchant_id__corrections__correction_id__patch"];
         trace?: never;
     };
+    "/services/{merchant_id}/hours": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Hours */
+        get: operations["list_hours_services__merchant_id__hours_get"];
+        /** Upsert Hours */
+        put: operations["upsert_hours_services__merchant_id__hours_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{merchant_id}/sync-from-ghl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync From Ghl
+         * @description Pull orari e chiusure dal calendario GHL e sovrascrive il DB locale.
+         */
+        post: operations["sync_from_ghl_services__merchant_id__sync_from_ghl_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{merchant_id}/closures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Closures */
+        get: operations["list_closures_services__merchant_id__closures_get"];
+        put?: never;
+        /** Add Closure */
+        post: operations["add_closure_services__merchant_id__closures_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{merchant_id}/closures/{closure_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Closure */
+        delete: operations["delete_closure_services__merchant_id__closures__closure_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{merchant_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Services */
+        get: operations["list_services_services__merchant_id__get"];
+        put?: never;
+        /** Create Service */
+        post: operations["create_service_services__merchant_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/services/{merchant_id}/{service_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Service */
+        get: operations["get_service_services__merchant_id___service_id__get"];
+        /** Update Service */
+        put: operations["update_service_services__merchant_id___service_id__put"];
+        post?: never;
+        /** Delete Service */
+        delete: operations["delete_service_services__merchant_id___service_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/": {
         parameters: {
             query?: never;
@@ -621,7 +797,14 @@ export interface paths {
         get: operations["get_conversation_conversations__conversation_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Conversation
+         * @description Permanently delete a conversation and its messages (CASCADE).
+         *
+         *     RLS scopes the lookup to the caller's merchant. A missing row means
+         *     not-found-or-not-yours — we return 404 either way.
+         */
+        delete: operations["delete_conversation_conversations__conversation_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -852,6 +1035,72 @@ export interface paths {
          *     that's the canonical "still pending" signal.
          */
         get: operations["download_export_analytics_exports__export_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Events
+         * @description Timeline degli analytics_events per lead o per merchant (uso interno + UI).
+         */
+        get: operations["list_events_analytics_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/merchant/objection-trends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Objection Trends
+         * @description Return objection category counts for the current vs prior 7 days.
+         *
+         *     Pass `with_suggestions=true` to get LLM-generated rebuttal scripts for
+         *     trending categories (uses one LLM call per trending category).
+         */
+        get: operations["objection_trends_analytics_merchant_objection_trends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/merchant/lead-scores": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predictive Lead Scores
+         * @description Return predictive booking-probability scores for the top leads.
+         *
+         *     Scores are computed server-side from the accumulated behavioral and content
+         *     signals. Higher probability → higher chance of converting to a booking.
+         */
+        get: operations["predictive_lead_scores_analytics_merchant_lead_scores_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1268,6 +1517,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/ghl/sync-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ghl Sync Log
+         * @description Storico di ogni operazione GHL — per merchant o per singolo lead.
+         */
+        get: operations["ghl_sync_log_integrations_ghl_sync_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/whatsapp-templates": {
         parameters: {
             query?: never;
@@ -1280,6 +1549,32 @@ export interface paths {
         put?: never;
         /** Create Template */
         post: operations["create_template_whatsapp_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/whatsapp-templates/{merchant_id}/header-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Header Image
+         * @description Upload a template header image to Supabase Storage (bucket `branding-assets`).
+         *
+         *     Returns the merchant-prefixed `storage_path` (the form sends this back as
+         *     `header_image_path` on create) plus a public signed `image_url` for preview.
+         *     Goes up via the Supabase **service role**, scoped to `{merchant_id}/...`, so
+         *     it works both for a real merchant session and the agency-impersonation flow
+         *     (which has no supabase-js session for a direct RLS upload).
+         */
+        post: operations["upload_header_image_whatsapp_templates__merchant_id__header_image_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1560,6 +1855,11 @@ export interface components {
              * @default 100
              */
             min_sample: number;
+            /**
+             * Thompson Sampling Enabled
+             * @default true
+             */
+            thompson_sampling_enabled: boolean;
         };
         /** AgencyKpisOut */
         AgencyKpisOut: {
@@ -1606,6 +1906,16 @@ export interface components {
              * @default 3
              */
             max_tool_iterations: number;
+            /**
+             * Coherence Guard Enabled
+             * @default true
+             */
+            coherence_guard_enabled: boolean;
+            /**
+             * Context Compress Threshold
+             * @default 30
+             */
+            context_compress_threshold: number;
         };
         /** AiPauseIn */
         AiPauseIn: {
@@ -1614,6 +1924,31 @@ export interface components {
              * @default 168
              */
             hours: number;
+        };
+        /** AnalyticsEventOut */
+        AnalyticsEventOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Event Type */
+            event_type: string;
+            /** Subject Type */
+            subject_type: string | null;
+            /** Subject Id */
+            subject_id: string | null;
+            /** Properties */
+            properties: {
+                [key: string]: unknown;
+            };
+            /** Occurred At */
+            occurred_at: unknown;
+        };
+        /** AnalyticsEventsOut */
+        AnalyticsEventsOut: {
+            /** Events */
+            events: components["schemas"]["AnalyticsEventOut"][];
         };
         /** AppointmentOut */
         AppointmentOut: {
@@ -1771,6 +2106,11 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** Body_upload_header_image_whatsapp_templates__merchant_id__header_image_post */
+        Body_upload_header_image_whatsapp_templates__merchant_id__header_image_post: {
+            /** File */
+            file: string;
+        };
         /** BookingConfig */
         BookingConfig: {
             /** Default Calendar Id */
@@ -1785,6 +2125,8 @@ export interface components {
              * @default 14
              */
             lookahead_days: number;
+            /** Reminder Schedule */
+            reminder_schedule?: number[];
         };
         /** BootstrapOut */
         BootstrapOut: {
@@ -1897,6 +2239,52 @@ export interface components {
              */
             auto_reply_enabled: boolean;
         };
+        /** BulkApplyIn */
+        BulkApplyIn: {
+            /** Merchant Ids */
+            merchant_ids: string[];
+        };
+        /** BulkApplyOut */
+        BulkApplyOut: {
+            /** Applied */
+            applied: string[];
+            /** Skipped */
+            skipped: string[];
+            /** Errors */
+            errors: {
+                [key: string]: string;
+            }[];
+        };
+        /** BusinessClosureIn */
+        BusinessClosureIn: {
+            /**
+             * Closed On
+             * Format: date
+             */
+            closed_on: string;
+            /** Label */
+            label?: string | null;
+        };
+        /** BusinessClosureOut */
+        BusinessClosureOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Closed On
+             * Format: date
+             */
+            closed_on: string;
+            /** Label */
+            label: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /**
          * BusinessConfig
          * @description Merchant-facing profile — names, offer, hours. All optional. Fed into
@@ -1919,6 +2307,44 @@ export interface components {
             pricing_notes?: string | null;
             /** Website */
             website?: string | null;
+        };
+        /** BusinessHourIn */
+        BusinessHourIn: {
+            /** Day Of Week */
+            day_of_week: number;
+            /**
+             * Is Open
+             * @default true
+             */
+            is_open: boolean;
+            /** Open Time */
+            open_time?: string | null;
+            /** Close Time */
+            close_time?: string | null;
+            /** Break Start */
+            break_start?: string | null;
+            /** Break End */
+            break_end?: string | null;
+        };
+        /** BusinessHourOut */
+        BusinessHourOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Day Of Week */
+            day_of_week: number;
+            /** Is Open */
+            is_open: boolean;
+            /** Open Time */
+            open_time: string | null;
+            /** Close Time */
+            close_time: string | null;
+            /** Break Start */
+            break_start: string | null;
+            /** Break End */
+            break_end: string | null;
         };
         /** CalendarOut */
         CalendarOut: {
@@ -2205,10 +2631,58 @@ export interface components {
             /** Contact Default Tags */
             contact_default_tags?: string[];
         };
+        /** GhlSyncEntryOut */
+        GhlSyncEntryOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Lead Id */
+            lead_id: string | null;
+            /** Conversation Id */
+            conversation_id: string | null;
+            /** Operation */
+            operation: string;
+            /** Ghl Entity Type */
+            ghl_entity_type: string | null;
+            /** Ghl Entity Id */
+            ghl_entity_id: string | null;
+            /** Status */
+            status: string;
+            /** Error Detail */
+            error_detail: string | null;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            } | null;
+            /** Result */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** Occurred At */
+            occurred_at: unknown;
+        };
+        /** GhlSyncLogOut */
+        GhlSyncLogOut: {
+            /** Entries */
+            entries: components["schemas"]["GhlSyncEntryOut"][];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HeaderImageOut
+         * @description Result of a header-image upload: the canonical storage path + a public
+         *     signed URL the form can preview and the backend reuses at submit/send.
+         */
+        HeaderImageOut: {
+            /** Storage Path */
+            storage_path: string;
+            /** Image Url */
+            image_url: string;
         };
         /** ImpersonationOut */
         ImpersonationOut: {
@@ -2260,6 +2734,20 @@ export interface components {
             redirect_to?: string | null;
             /** Password */
             password?: string | null;
+        };
+        /** KBGapOut */
+        KBGapOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Question Text */
+            question_text: string;
+            /** Frequency */
+            frequency: number;
+            /** Resolved */
+            resolved: boolean;
         };
         /** KbDocIn */
         KbDocIn: {
@@ -2475,6 +2963,21 @@ export interface components {
             /** Authorize Url */
             authorize_url: string;
         };
+        /** ObjectionTrendOut */
+        ObjectionTrendOut: {
+            /** Category */
+            category: string;
+            /** Count Current Week */
+            count_current_week: number;
+            /** Count Prior Week */
+            count_prior_week: number;
+            /** Growth Pct */
+            growth_pct: number;
+            /** Is Trending */
+            is_trending: boolean;
+            /** Suggested Rebuttal */
+            suggested_rebuttal?: string | null;
+        };
         /** ObjectionsConfig */
         ObjectionsConfig: {
             /** Categories */
@@ -2500,6 +3003,8 @@ export interface components {
             };
             /** Locked Keys */
             locked_keys: string[];
+            /** Template Id */
+            template_id?: string | null;
             /**
              * Is Impersonation
              * @default false
@@ -2672,6 +3177,22 @@ export interface components {
             /** Custom Policies */
             custom_policies?: components["schemas"]["CustomPolicy"][];
         };
+        /** PredictiveLeadScoreOut */
+        PredictiveLeadScoreOut: {
+            /**
+             * Lead Id
+             * Format: uuid
+             */
+            lead_id: string;
+            /** Probability */
+            probability: number;
+            /** Dominant Feature */
+            dominant_feature: string;
+            /** Effective Score */
+            effective_score: number | null;
+            /** Sentiment */
+            sentiment: string | null;
+        };
         /** PrivacyConfig */
         PrivacyConfig: {
             /**
@@ -2679,71 +3200,6 @@ export interface components {
              * @default 24
              */
             retention_months: number;
-        };
-        /** ProductIn */
-        ProductIn: {
-            /** Title */
-            title: string;
-            /** Handle */
-            handle?: string | null;
-            /** Description */
-            description?: string | null;
-            /** Vendor */
-            vendor?: string | null;
-            /** Product Type */
-            product_type?: string | null;
-            /** Tags */
-            tags?: string[];
-            /** Variants */
-            variants?: {
-                [key: string]: unknown;
-            }[];
-            /** Images */
-            images?: string[];
-            /** Price */
-            price?: number | string | null;
-            /**
-             * Currency
-             * @default EUR
-             */
-            currency: string;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
-        };
-        /** ProductOut */
-        ProductOut: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Title */
-            title: string;
-            /** Handle */
-            handle: string;
-            /** Description */
-            description: string | null;
-            /** Vendor */
-            vendor: string | null;
-            /** Product Type */
-            product_type: string | null;
-            /** Tags */
-            tags: string[];
-            /** Variants */
-            variants: {
-                [key: string]: unknown;
-            }[];
-            /** Images */
-            images: string[];
-            /** Price */
-            price: string | null;
-            /** Currency */
-            currency: string;
-            /** Is Active */
-            is_active: boolean;
         };
         /** RagConfig */
         RagConfig: {
@@ -2757,6 +3213,26 @@ export interface components {
              * @default 0.7
              */
             min_score: number;
+            /**
+             * Hyde Enabled
+             * @default true
+             */
+            hyde_enabled: boolean;
+            /**
+             * Rerank Enabled
+             * @default true
+             */
+            rerank_enabled: boolean;
+            /**
+             * Rerank Top K
+             * @default 5
+             */
+            rerank_top_k: number;
+            /**
+             * Freshness Decay
+             * @default 0.01
+             */
+            freshness_decay: number;
         };
         /** ReactivationConfig */
         ReactivationConfig: {
@@ -2853,6 +3329,91 @@ export interface components {
             client_message_id: string;
             template?: components["schemas"]["TemplateSendIn"] | null;
         };
+        /** ServiceIn */
+        ServiceIn: {
+            /** Name */
+            name: string;
+            /** Handle */
+            handle?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Duration Min */
+            duration_min: number;
+            /**
+             * Buffer Min
+             * @default 0
+             */
+            buffer_min: number;
+            /** Price */
+            price?: number | string | null;
+            /**
+             * Currency
+             * @default EUR
+             */
+            currency: string;
+            /** Ghl Calendar Id */
+            ghl_calendar_id?: string | null;
+            /**
+             * Sort Order
+             * @default 0
+             */
+            sort_order: number;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+        };
+        /** ServiceOut */
+        ServiceOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Handle */
+            handle: string;
+            /** Description */
+            description: string | null;
+            /** Duration Min */
+            duration_min: number;
+            /** Buffer Min */
+            buffer_min: number;
+            /** Price */
+            price: string | null;
+            /** Currency */
+            currency: string;
+            /** Ghl Calendar Id */
+            ghl_calendar_id: string | null;
+            /** Sort Order */
+            sort_order: number;
+            /** Is Active */
+            is_active: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SnapshotIn */
+        SnapshotIn: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Exclude Keys
+             * @default []
+             */
+            exclude_keys: string[];
+        };
         /** StatusOut */
         StatusOut: {
             /**
@@ -2879,6 +3440,15 @@ export interface components {
             /** Dont */
             dont: string[];
         };
+        /** SyncResult */
+        SyncResult: {
+            /** Ghl Calendar Id */
+            ghl_calendar_id: string;
+            /** Hours Imported */
+            hours_imported: number;
+            /** Closures Imported */
+            closures_imported: number;
+        };
         /** TemplateIn */
         TemplateIn: {
             /** Name */
@@ -2899,6 +3469,11 @@ export interface components {
              * @default false
              */
             is_default: boolean;
+        };
+        /** TemplateLinkIn */
+        TemplateLinkIn: {
+            /** Template Id */
+            template_id?: string | null;
         };
         /** TemplateOut */
         TemplateOut: {
@@ -3096,6 +3671,8 @@ export interface components {
             header_type: string;
             /** Header Text */
             header_text?: string | null;
+            /** Header Image Path */
+            header_image_path?: string | null;
             /** Header Image Url */
             header_image_url?: string | null;
             /** Footer */
@@ -3143,6 +3720,8 @@ export interface components {
             header_type: string;
             /** Header Text */
             header_text: string | null;
+            /** Header Image Path */
+            header_image_path: string | null;
             /** Header Image Url */
             header_image_url: string | null;
             /** Footer */
@@ -3201,6 +3780,8 @@ export interface components {
             header_type: string;
             /** Header Text */
             header_text?: string | null;
+            /** Header Image Path */
+            header_image_path?: string | null;
             /** Header Image Url */
             header_image_url?: string | null;
             /** Footer */
@@ -3866,6 +4447,80 @@ export interface operations {
             };
         };
     };
+    bulk_apply_template_bot_config_templates__template_id__bulk_apply_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkApplyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkApplyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    snapshot_template_from_merchant_bot_config_templates_from_merchant__merchant_id__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnapshotIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_tone_presets_bot_config_tone_presets_get: {
         parameters: {
             query?: never;
@@ -4008,6 +4663,45 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OverridesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_merchant_template_bot_config__merchant_id__template_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemplateLinkIn"];
             };
         };
         responses: {
@@ -4208,9 +4902,11 @@ export interface operations {
             };
         };
     };
-    list_products_catalog__merchant_id__products_get: {
+    list_kb_gaps_knowledge_base_merchants__merchant_id__knowledge_base_gaps_get: {
         parameters: {
-            query?: never;
+            query?: {
+                resolved?: boolean;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -4227,7 +4923,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProductOut"][];
+                    "application/json": components["schemas"]["KBGapOut"][];
                 };
             };
             /** @description Validation Error */
@@ -4241,7 +4937,7 @@ export interface operations {
             };
         };
     };
-    create_product_catalog__merchant_id__products_post: {
+    resolve_kb_gap_knowledge_base_merchants__merchant_id__knowledge_base_gaps__gap_id__resolve_patch: {
         parameters: {
             query?: never;
             header?: {
@@ -4249,82 +4945,7 @@ export interface operations {
             };
             path: {
                 merchant_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProductIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProductOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_product_catalog__merchant_id__products__product_id__put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                merchant_id: string;
-                product_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ProductIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProductOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_product_catalog__merchant_id__products__product_id__delete: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                merchant_id: string;
-                product_id: string;
+                gap_id: string;
             };
             cookie?: never;
         };
@@ -4710,6 +5331,385 @@ export interface operations {
             };
         };
     };
+    list_hours_services__merchant_id__hours_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessHourOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upsert_hours_services__merchant_id__hours_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessHourIn"][];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessHourOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_from_ghl_services__merchant_id__sync_from_ghl_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_closures_services__merchant_id__closures_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessClosureOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_closure_services__merchant_id__closures_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessClosureIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BusinessClosureOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_closure_services__merchant_id__closures__closure_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                closure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_services_services__merchant_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_service_services__merchant_id__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServiceIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_service_services__merchant_id___service_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                service_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_service_services__merchant_id___service_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                service_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServiceIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_service_services__merchant_id___service_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                service_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_conversations_conversations__get: {
         parameters: {
             query?: never;
@@ -4766,6 +5766,37 @@ export interface operations {
                         [key: string]: unknown;
                     };
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_conversation_conversations__conversation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -5155,6 +6186,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExportDownload"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_events_analytics_events_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by lead */
+                lead_id?: string | null;
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+                since_days?: number;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsEventsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    objection_trends_analytics_merchant_objection_trends_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+                /** @description Generate LLM rebuttals for trending categories */
+                with_suggestions?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObjectionTrendOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    predictive_lead_scores_analytics_merchant_lead_scores_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PredictiveLeadScoreOut"][];
                 };
             };
             /** @description Validation Error */
@@ -5912,6 +7052,44 @@ export interface operations {
             };
         };
     };
+    ghl_sync_log_integrations_ghl_sync_log_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+                /** @description Filter by lead */
+                lead_id?: string | null;
+                since_days?: number;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GhlSyncLogOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_templates_whatsapp_templates_get: {
         parameters: {
             query?: {
@@ -5970,6 +7148,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WhatsAppTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_header_image_whatsapp_templates__merchant_id__header_image_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_header_image_whatsapp_templates__merchant_id__header_image_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HeaderImageOut"];
                 };
             };
             /** @description Validation Error */
@@ -6575,20 +7790,21 @@ export enum ApiPaths {
     create_template_bot_config_templates_post = "/bot-config/templates",
     update_template_bot_config_templates__template_id__put = "/bot-config/templates/{template_id}",
     delete_template_bot_config_templates__template_id__delete = "/bot-config/templates/{template_id}",
+    bulk_apply_template_bot_config_templates__template_id__bulk_apply_post = "/bot-config/templates/{template_id}/bulk-apply",
+    snapshot_template_from_merchant_bot_config_templates_from_merchant__merchant_id__post = "/bot-config/templates/from-merchant/{merchant_id}",
     list_tone_presets_bot_config_tone_presets_get = "/bot-config/tone-presets",
     list_suggested_rules_bot_config_suggested_rules_get = "/bot-config/suggested-rules",
     resolved_config_bot_config__merchant_id__resolved_get = "/bot-config/{merchant_id}/resolved",
     get_overrides_bot_config__merchant_id__overrides_get = "/bot-config/{merchant_id}/overrides",
     update_overrides_bot_config__merchant_id__overrides_put = "/bot-config/{merchant_id}/overrides",
+    set_merchant_template_bot_config__merchant_id__template_put = "/bot-config/{merchant_id}/template",
     create_doc_knowledge_base__merchant_id__docs_post = "/knowledge-base/{merchant_id}/docs",
     list_docs_knowledge_base__merchant_id__docs_get = "/knowledge-base/{merchant_id}/docs",
     upload_doc_knowledge_base__merchant_id__upload_post = "/knowledge-base/{merchant_id}/upload",
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
     delete_doc_knowledge_base__merchant_id__docs__doc_id__delete = "/knowledge-base/{merchant_id}/docs/{doc_id}",
-    list_products_catalog__merchant_id__products_get = "/catalog/{merchant_id}/products",
-    create_product_catalog__merchant_id__products_post = "/catalog/{merchant_id}/products",
-    update_product_catalog__merchant_id__products__product_id__put = "/catalog/{merchant_id}/products/{product_id}",
-    delete_product_catalog__merchant_id__products__product_id__delete = "/catalog/{merchant_id}/products/{product_id}",
+    list_kb_gaps_knowledge_base_merchants__merchant_id__knowledge_base_gaps_get = "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps",
+    resolve_kb_gap_knowledge_base_merchants__merchant_id__knowledge_base_gaps__gap_id__resolve_patch = "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps/{gap_id}/resolve",
     list_faq_catalog__merchant_id__faq_get = "/catalog/{merchant_id}/faq",
     create_faq_catalog__merchant_id__faq_post = "/catalog/{merchant_id}/faq",
     update_faq_catalog__merchant_id__faq__faq_id__put = "/catalog/{merchant_id}/faq/{faq_id}",
@@ -6599,8 +7815,20 @@ export enum ApiPaths {
     create_correction_catalog__merchant_id__corrections_post = "/catalog/{merchant_id}/corrections",
     update_correction_catalog__merchant_id__corrections__correction_id__patch = "/catalog/{merchant_id}/corrections/{correction_id}",
     delete_correction_catalog__merchant_id__corrections__correction_id__delete = "/catalog/{merchant_id}/corrections/{correction_id}",
+    list_hours_services__merchant_id__hours_get = "/services/{merchant_id}/hours",
+    upsert_hours_services__merchant_id__hours_put = "/services/{merchant_id}/hours",
+    sync_from_ghl_services__merchant_id__sync_from_ghl_post = "/services/{merchant_id}/sync-from-ghl",
+    list_closures_services__merchant_id__closures_get = "/services/{merchant_id}/closures",
+    add_closure_services__merchant_id__closures_post = "/services/{merchant_id}/closures",
+    delete_closure_services__merchant_id__closures__closure_id__delete = "/services/{merchant_id}/closures/{closure_id}",
+    list_services_services__merchant_id__get = "/services/{merchant_id}",
+    create_service_services__merchant_id__post = "/services/{merchant_id}",
+    get_service_services__merchant_id___service_id__get = "/services/{merchant_id}/{service_id}",
+    update_service_services__merchant_id___service_id__put = "/services/{merchant_id}/{service_id}",
+    delete_service_services__merchant_id___service_id__delete = "/services/{merchant_id}/{service_id}",
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
+    delete_conversation_conversations__conversation_id__delete = "/conversations/{conversation_id}",
     send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
     pause_ai_conversations__conversation_id__ai_pause_post = "/conversations/{conversation_id}/ai-pause",
@@ -6612,6 +7840,9 @@ export enum ApiPaths {
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
     download_export_analytics_exports__export_id__download_get = "/analytics/exports/{export_id}/download",
+    list_events_analytics_events_get = "/analytics/events",
+    objection_trends_analytics_merchant_objection_trends_get = "/analytics/merchant/objection-trends",
+    predictive_lead_scores_analytics_merchant_lead_scores_get = "/analytics/merchant/lead-scores",
     playground_turn_playground_turn_post = "/playground/turn",
     playground_apply_playground_apply_post = "/playground/apply",
     list_experiments_ab_test__get = "/ab-test/",
@@ -6634,8 +7865,10 @@ export enum ApiPaths {
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
+    ghl_sync_log_integrations_ghl_sync_log_get = "/integrations/ghl/sync-log",
     list_templates_whatsapp_templates_get = "/whatsapp-templates",
     create_template_whatsapp_templates_post = "/whatsapp-templates",
+    upload_header_image_whatsapp_templates__merchant_id__header_image_post = "/whatsapp-templates/{merchant_id}/header-image",
     validate_template_whatsapp_templates_validate_post = "/whatsapp-templates/validate",
     update_template_whatsapp_templates__template_id__put = "/whatsapp-templates/{template_id}",
     get_template_whatsapp_templates__template_id__get = "/whatsapp-templates/{template_id}",

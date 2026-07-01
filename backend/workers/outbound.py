@@ -13,6 +13,7 @@ performs the actual send given a built WhatsApp sender.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -37,6 +38,30 @@ def is_within_24h(last_inbound_at: datetime | None, now: datetime) -> bool:
     if last_inbound_at is None:
         return False
     return (now - last_inbound_at) < WINDOW
+
+
+_DOUBLE_BRACE = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
+
+
+def render_free_text(text: str, context: dict[str, str]) -> str:
+    """Substitute placeholders in a free-text (MODE_TEXT) message.
+
+    Templates resolve their body variables via `resolve_body_params`; free text
+    previously went out verbatim, so `{{appointment.datetime}}` / `{name}` reached
+    the customer as raw placeholders. This renders both forms from the SAME dotted
+    context used for templates:
+      * `{{dotted.key}}` → context[key] (e.g. `{{appointment.datetime}}`)
+      * legacy `{name}` / `{first_name}` → the contact/lead name
+
+    Unknown `{{…}}` keys become "" (never left as raw braces — that reads as broken
+    copy). Stray single braces in the copy are left untouched.
+    """
+    if not text:
+        return text
+    rendered = _DOUBLE_BRACE.sub(lambda m: str(context.get(m.group(1), "") or ""), text)
+    name = context.get("contact.name") or context.get("lead.name") or ""
+    first = context.get("lead.first_name") or (name.split(" ")[0] if name else "")
+    return rendered.replace("{first_name}", first).replace("{name}", name)
 
 
 @dataclass(slots=True, frozen=True)
@@ -71,7 +96,9 @@ def decide_outbound(
     if step is not None and (not step.flow_enabled or not step.step_enabled):
         return OutboundDecision(mode=MODE_SKIP, reason="flow_disabled")
 
-    text = (step.free_text if step and step.free_text else fallback_text) or ""
+    text = render_free_text(
+        (step.free_text if step and step.free_text else fallback_text) or "", ctx
+    )
 
     template_ready = bool(step and step.template_name and step.template_approved)
 
@@ -87,7 +114,10 @@ def decide_outbound(
         # placeholders — Meta rejects that. Skip rather than send a broken message.
         if step.template_variables and any(p == "" for p in body_params):
             return OutboundDecision(mode=MODE_SKIP, reason="incomplete_template_mapping")
-        components = build_send_components(body_params=body_params)
+        components = build_send_components(
+            body_params=body_params,
+            header_image_url=step.template_header_image_url,
+        )
         return OutboundDecision(
             mode=MODE_TEMPLATE,
             template_name=step.template_name,

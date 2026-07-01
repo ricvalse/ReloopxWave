@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     supabase_kb_bucket: str = "kb-documents"
     supabase_ft_bucket: str = "ft-training-data"
     supabase_exports_bucket: str = "analytics-exports"
+    # Image bucket reused for WhatsApp template header images (logos/branding).
+    supabase_branding_bucket: str = "branding-assets"
 
     redis_url: str = "redis://localhost:6379/0"
 

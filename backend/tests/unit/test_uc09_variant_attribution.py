@@ -237,6 +237,11 @@ async def test_booking_event_carries_variant_id(monkeypatch: pytest.MonkeyPatch)
                 "booking.default_duration_min": 30,
             }.get(getattr(key, "value", str(key)))
 
+    class FakeAutomationRepo:
+        def __init__(self, session): ...
+        async def get_by_system_key(self, merchant_id, system_key):
+            return None
+
     client = AsyncMock()
     client.upsert_contact = AsyncMock(return_value={"contact": {"id": "CT-1"}})
     client.create_booking = AsyncMock(return_value={"id": "BK-1"})
@@ -246,6 +251,7 @@ async def test_booking_event_carries_variant_id(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
+    monkeypatch.setattr(mod, "AutomationRepository", FakeAutomationRepo)
     monkeypatch.setattr(mod, "ConfigResolver", FakeConfig)
     monkeypatch.setattr(mod, "GHLClient", MagicMock(side_effect=lambda **kw: client))
 

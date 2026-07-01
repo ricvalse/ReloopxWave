@@ -25,6 +25,8 @@ class ReminderCandidate:
     last_inbound_at: datetime | None = None
     # S-05: preferred send hour (0-23) learned by the send-time optimizer.
     optimal_send_hour: int | None = None
+    # Lead display name — feeds `{name}` / `{{contact.name}}` in send-node free text.
+    lead_name: str | None = None
 
 
 class ConversationRepository:
@@ -147,6 +149,7 @@ class ConversationRepository:
                 reminders_sent_expr.label("reminders_sent"),
                 Conversation.meta["last_reminder_at"].astext.label("last_reminder_at"),
                 Lead.optimal_send_hour,
+                Lead.name.label("lead_name"),
             )
             .join(Merchant, Merchant.id == Conversation.merchant_id)
             .outerjoin(Lead, Lead.id == Conversation.lead_id)
@@ -182,6 +185,7 @@ class ConversationRepository:
                     last_reminder_at=last_reminder_at,
                     last_inbound_at=row["last_inbound_at"],
                     optimal_send_hour=row["optimal_send_hour"],
+                    lead_name=row["lead_name"],
                 )
             )
         return results
@@ -356,8 +360,6 @@ class ConversationRepository:
         import json
 
         await self._session.execute(
-            text(
-                "UPDATE conversations SET context_summary = :s::jsonb WHERE id = :cid"
-            ),
+            text("UPDATE conversations SET context_summary = :s::jsonb WHERE id = :cid"),
             {"s": json.dumps(summary), "cid": str(conversation_id)},
         )

@@ -1,70 +1,32 @@
-"""Merchant content the bot draws on — product catalog, store policies, FAQ.
+"""Merchant content the bot draws on — store policies, FAQ, bot corrections.
 
-All three are merchant-scoped and RLS-protected (see migration 0016). Products
-and FAQ are indexed into `kb_chunks` for RAG retrieval via a synthetic
-`KnowledgeBaseDoc` per corpus (the `kb_doc_id` back-reference); store policies
-are injected straight into the system prompt (short, always-relevant facts).
+All merchant-scoped and RLS-protected (see migration 0016). FAQ entries are
+indexed into `kb_chunks` for RAG retrieval via a synthetic `KnowledgeBaseDoc`
+(the `kb_doc_id` back-reference); store policies are injected straight into the
+system prompt (short, always-relevant facts). The product catalog that used to
+live here was removed (migration 0042) — bookable offerings are modelled as
+`services` and any product info the bot should cite goes into the Knowledge
+Base directly.
 """
 
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
-    Numeric,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.models.base import Base, TimestampMixin, uuid_pk
-
-
-class Product(Base, TimestampMixin):
-    """A catalog product the bot can propose / cite. One chunk per product is
-    pushed into `kb_chunks` so the existing RAG retriever surfaces it."""
-
-    __tablename__ = "products"
-    __table_args__ = (
-        UniqueConstraint("merchant_id", "handle", name="uq_products_merchant_handle"),
-    )
-
-    id: Mapped[uuid.UUID] = uuid_pk()
-    merchant_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("merchants.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    title: Mapped[str] = mapped_column(String(300), nullable=False)
-    handle: Mapped[str] = mapped_column(String(160), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text)
-    vendor: Mapped[str | None] = mapped_column(String(200))
-    product_type: Mapped[str | None] = mapped_column(String(120))
-    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    variants: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
-    images: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
-    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    # Last time this product was pushed into kb_chunks (None = never indexed).
-    indexed_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True))
-    # Synthetic KB doc backing this merchant's catalog chunks.
-    kb_doc_id: Mapped[uuid.UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("knowledge_base_docs.id", ondelete="SET NULL"),
-    )
 
 
 class StorePolicy(Base, TimestampMixin):

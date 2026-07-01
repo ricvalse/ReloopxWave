@@ -37,7 +37,12 @@ from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
 from ai_core.quality.coherence import CoherenceGuard
-from ai_core.quality.compressor import ContextCompressor, memory_block_as_message
+from ai_core.quality.compressor import (
+    ContextCompressor,
+    MemoryBlock,
+    _KEEP_RECENT,
+    memory_block_as_message,
+)
 from ai_core.state_machine import ConvState, next_state, state_system_hint
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -60,6 +65,14 @@ logger = get_logger(__name__)
 # How long the bot stays soft-paused after the merchant replies from their phone
 # (360dialog Coexistence). Reset on every echo; auto-resumes when it elapses.
 _PHONE_ECHO_PAUSE = timedelta(hours=2)
+
+# How many of the most-recent messages we pull as LLM context. Deliberately
+# WIDER than the default AGENT_CONTEXT_COMPRESS_THRESHOLD (30) so the context
+# compression branch is actually reachable: when a thread exceeds the threshold,
+# the older turns are folded into a running memory block instead of being
+# silently dropped. Keep this > the largest threshold you expect merchants to
+# set, or compression for those tenants degrades back to plain truncation.
+_HISTORY_FETCH_LIMIT = 80
 
 
 def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
@@ -705,7 +718,7 @@ class ConversationService:
 
             # History for the LLM = turns BEFORE this inbound. On a retry the
             # inbound is already stored, so exclude it explicitly by wa_message_id.
-            history = await msgs.list_history(conv.id, limit=30)
+            history = await msgs.list_history(conv.id, limit=_HISTORY_FETCH_LIMIT)
             history = [m for m in history if m.wa_message_id != wa_message_id]
 
             # UC-06 opt-out: a STOP/CANCELLA reply unsubscribes the lead — record
@@ -936,7 +949,37 @@ class ConversationService:
                 return InboundResult(handled=False, reason="no_conversation")
             lead = await leads.upsert_by_phone(merchant_id=resolved.merchant_id, phone=from_phone)
 
-            history = await msgs.list_history(conv.id, limit=30)
+            # Re-evaluate the auto-reply gate at SEND time. State can change
+            # during the debounce window (operator takeover flips conv.auto_reply,
+            # a STOP/CANCELLA opt-out sets opted_out_at, a soft-pause sets
+            # ai_disabled_until) and the reply must respect the latest state, not
+            # the snapshot taken when the inbound was first persisted. Without
+            # this the bot can talk over a human who just took over or reply to a
+            # lead who just unsubscribed.
+            merchant_auto_reply = await self._resolve_bool(
+                session, resolved.merchant_id, ConfigKey.BOT_AUTO_REPLY_ENABLED, default=False
+            )
+            soft_paused = (
+                conv.ai_disabled_until is not None and conv.ai_disabled_until > datetime.now(UTC)
+            )
+            if (
+                not merchant_auto_reply
+                or not conv.auto_reply
+                or lead.opted_out_at is not None
+                or soft_paused
+            ):
+                logger.info(
+                    "uc01.reply_suppressed_at_flush",
+                    conversation_id=str(conv.id),
+                    merchant_id=str(resolved.merchant_id),
+                    merchant_off=not merchant_auto_reply,
+                    thread_off=not conv.auto_reply,
+                    opted_out=lead.opted_out_at is not None,
+                    soft_paused=soft_paused,
+                )
+                return InboundResult(handled=False, reason="auto_reply_off")
+
+            history = await msgs.list_history(conv.id, limit=_HISTORY_FETCH_LIMIT)
             history = [m for m in history if m.wa_message_id not in exclude]
 
             rc = _ReplyContext(
@@ -1099,39 +1142,61 @@ class ConversationService:
                         properties={"risk_score": esc_risk.score, "factors": esc_risk.factors},
                     )
 
-            # S-04: context compression — replace old turns with a memory block
+            # S-04: context compression — keep a running summary of the turns that
+            # have scrolled out of the verbatim window so long/resumed threads
+            # don't silently lose their early context. The history fetch
+            # (_HISTORY_FETCH_LIMIT) is deliberately wider than the threshold so
+            # this branch is reachable; the summary ACCUMULATES (each
+            # recompression folds the previous summary back in) so facts older
+            # than the fetch window survive across turns.
             effective_history = rc.chat_history
             compress_threshold = await self._resolve_int(
                 session, resolved.merchant_id, ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD, default=30
             )
+            # Clamp so compression stays reachable even if a merchant configures a
+            # threshold at/above the fetch window — otherwise it silently degrades
+            # back to plain truncation for that tenant.
+            compress_threshold = min(compress_threshold, _HISTORY_FETCH_LIMIT - _KEEP_RECENT)
 
-            # Reload a previously saved memory block so subsequent turns benefit
-            # from compression done in earlier sessions (it's saved to DB but was
-            # never reinjected on the next turn).
-            if rc.conv_context_summary and len(effective_history) <= compress_threshold:
+            saved_block: MemoryBlock | None = None
+            if rc.conv_context_summary and rc.conv_context_summary.get("text"):
                 _saved = rc.conv_context_summary
-                if _saved.get("text") and _saved.get("compressed_turns"):
-                    from ai_core.quality.compressor import MemoryBlock
-                    _block = MemoryBlock(
-                        text=_saved["text"],
-                        compressed_turns=int(_saved["compressed_turns"]),
-                        compressed_at=_saved.get("compressed_at", ""),
-                    )
-                    effective_history = [memory_block_as_message(_block)] + effective_history
+                saved_block = MemoryBlock(
+                    text=_saved["text"],
+                    compressed_turns=int(_saved.get("compressed_turns", 0)),
+                    compressed_at=_saved.get("compressed_at", ""),
+                )
 
             if len(effective_history) > compress_threshold:
                 nano_client = self._rag_llm_client()
                 if nano_client is not None:
-                    from ai_core.quality.compressor import _KEEP_RECENT
-
                     compressor = ContextCompressor(nano_client)
-                    block = await compressor.compress(effective_history)
+                    block = await compressor.compress(
+                        effective_history,
+                        prior_summary=saved_block.text if saved_block else None,
+                    )
                     if block is not None:
                         await convs.save_context_summary(
                             rc.conv_id,
-                            {"text": block.text, "compressed_turns": block.compressed_turns, "compressed_at": block.compressed_at},
+                            {
+                                "text": block.text,
+                                "compressed_turns": block.compressed_turns,
+                                "compressed_at": block.compressed_at,
+                            },
                         )
-                        effective_history = [memory_block_as_message(block)] + effective_history[-_KEEP_RECENT:]
+                        saved_block = block
+                # Feed [summary] + the most recent turns verbatim. If the nano
+                # client is unavailable and no prior summary exists, fail open and
+                # keep the full fetched window (more context, never less).
+                if saved_block is not None:
+                    effective_history = [
+                        memory_block_as_message(saved_block),
+                        *effective_history[-_KEEP_RECENT:],
+                    ]
+            elif saved_block is not None:
+                # Short window (e.g. after message deletion) but an older summary
+                # exists — reinject it ahead of the verbatim turns.
+                effective_history = [memory_block_as_message(saved_block), *effective_history]
 
             ctx = ConversationContext(
                 merchant_id=resolved.merchant_id,

@@ -239,6 +239,26 @@ def test_resolve_body_params_is_positional_not_first_seen() -> None:
     assert params == ["first", "second"]
 
 
-def test_lint_rejects_image_header_in_v1() -> None:
+def test_lint_requires_image_for_image_header() -> None:
+    # IMAGE header without an uploaded image → blocking error.
     codes = {e.code for e in lint_template(body="testo valido qui", header_type="IMAGE")}
-    assert "HEADER_IMAGE_UNSUPPORTED" in codes
+    assert "HEADER_IMAGE_REQUIRED" in codes
+
+
+def test_lint_accepts_image_header_with_image() -> None:
+    # IMAGE header with an image reference → no header error.
+    issues = lint_template(
+        body="testo valido qui",
+        header_type="IMAGE",
+        header_image_url="https://x/y.jpg",
+    )
+    assert not [i for i in issues if i.field == "header" and i.severity == "error"]
+
+
+def test_build_send_components_image_header() -> None:
+    comps = build_send_components(body_params=["Mario"], header_image_url="https://x/y.jpg")
+    assert comps[0] == {
+        "type": "header",
+        "parameters": [{"type": "image", "image": {"link": "https://x/y.jpg"}}],
+    }
+    assert comps[1]["type"] == "body"

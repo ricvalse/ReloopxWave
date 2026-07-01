@@ -507,7 +507,10 @@ async def _do_action(
             to_phone=run_ctx.phone,
             template_name=tpl.name,
             language=tpl.language or "it",
-            components=build_send_components(body_params=body_params),
+            components=build_send_components(
+                body_params=body_params,
+                header_image_url=tpl.header_image_url if tpl.header_type == "IMAGE" else None,
+            ),
         )
         return True
 
@@ -666,8 +669,7 @@ async def _evaluate_ai_check(
     model_override = str(cfg.get("model") or "") or None
 
     history_text = "\n".join(
-        f"{'AI' if m.role == 'assistant' else 'Lead'}: {m.content}"
-        for m in ai_deps.history[-10:]
+        f"{'AI' if m.role == 'assistant' else 'Lead'}: {m.content}" for m in ai_deps.history[-10:]
     )
     lead_context = (
         f"Lead: {run_ctx.name or 'sconosciuto'}, "

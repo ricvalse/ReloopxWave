@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ImagePlus } from 'lucide-react';
 import type { components } from '@reloop/api-client';
 import {
   Badge,
   Button,
+  ButtonSpinner,
   Card,
   CardContent,
   CardHeader,
@@ -15,6 +17,9 @@ import {
   Textarea,
 } from '@reloop/ui';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
+import { getBrowserSupabase } from '@/lib/supabase';
+import { useMerchantId } from '@/hooks/use-merchant-id';
+import { IMP_COOKIE, isImpersonatingBrowser, readCookieBrowser } from '@/lib/impersonation';
 import {
   MAX_BODY_LEN,
   MAX_BUTTONS_TOTAL,
@@ -27,6 +32,18 @@ import {
   type TemplateButtonInput,
 } from '@/lib/whatsapp-template-lint';
 import { WhatsAppTemplatePreview } from './whatsapp-template-preview';
+
+const BRANDING_BUCKET = 'branding-assets';
+// WhatsApp image headers: JPEG/PNG, and the branding-assets bucket caps at 4MB.
+const MAX_HEADER_IMAGE_BYTES = 4 * 1024 * 1024;
+const HEADER_IMAGE_ACCEPT = 'image/jpeg,image/png';
+
+function slugifyFilename(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
 type Template = components['schemas']['WhatsAppTemplateOut'];
 
@@ -284,6 +301,17 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
   );
   const [examples, setExamples] = useState<string[]>(editing?.body_examples ?? []);
 
+  const { merchantId } = useMerchantId();
+  const [headerImagePath, setHeaderImagePath] = useState<string | null>(
+    editing?.header_image_path ?? null,
+  );
+  // Preview source: a stored signed URL (editing) or a local object URL (just uploaded).
+  const [headerPreview, setHeaderPreview] = useState<string | null>(
+    editing?.header_image_url ?? null,
+  );
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const variables = useMemo(() => extractVariables(body), [body]);
 
   const issues = useMemo(
@@ -295,11 +323,70 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
         footer: footer || null,
         headerType,
         headerText: headerText || null,
+        hasHeaderImage: Boolean(headerImagePath),
         buttons,
         bodyExamples: variables.length ? examples : undefined,
       }),
-    [body, category, language, footer, headerType, headerText, buttons, examples, variables.length],
+    [
+      body,
+      category,
+      language,
+      footer,
+      headerType,
+      headerText,
+      headerImagePath,
+      buttons,
+      examples,
+      variables.length,
+    ],
   );
+
+  async function onUploadHeader(file: File) {
+    setUploadError(null);
+    if (!merchantId) {
+      setUploadError('Nessun merchant attivo.');
+      return;
+    }
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setUploadError('Formato non supportato: usa JPEG o PNG.');
+      return;
+    }
+    if (file.size > MAX_HEADER_IMAGE_BYTES) {
+      setUploadError('Immagine troppo grande (max 4 MB).');
+      return;
+    }
+    setUploading(true);
+    try {
+      let storagePath: string;
+      // Under agency impersonation there's no supabase-js session, so upload via
+      // the FastAPI proxy (service role) instead of direct-to-Storage (RLS).
+      if (isImpersonatingBrowser()) {
+        const form = new FormData();
+        form.append('file', file);
+        const token = readCookieBrowser(IMP_COOKIE);
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_BASE_URL}/whatsapp-templates/${merchantId}/header-image`,
+          { method: 'POST', body: form, headers: token ? { Authorization: `Bearer ${token}` } : {} },
+        );
+        if (!res.ok) throw new Error('Caricamento immagine fallito');
+        const data = (await res.json()) as { storage_path: string };
+        storagePath = data.storage_path;
+      } else {
+        const supabase = getBrowserSupabase();
+        storagePath = `${merchantId}/${Date.now()}-${slugifyFilename(file.name)}`;
+        const up = await supabase.storage
+          .from(BRANDING_BUCKET)
+          .upload(storagePath, file, { contentType: file.type, upsert: false });
+        if (up.error) throw up.error;
+      }
+      setHeaderImagePath(storagePath);
+      setHeaderPreview(URL.createObjectURL(file));
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : 'Caricamento immagine fallito');
+    } finally {
+      setUploading(false);
+    }
+  }
   const hasBlockingErrors = issues.some((i) => i.level === 'error');
   const warnings = issues.filter((i) => i.level === 'warning');
 
@@ -319,6 +406,7 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
       body,
       header_type: headerType,
       header_text: headerType === 'TEXT' ? headerText || null : null,
+      header_image_path: headerType === 'IMAGE' ? headerImagePath : null,
       footer: footer || null,
       buttons: cleanButtons.length ? cleanButtons : null,
       body_examples: variables.length ? variables.map((_, i) => examples[i] ?? '') : null,
@@ -414,6 +502,7 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
               >
                 <option value="NONE">Nessuna</option>
                 <option value="TEXT">Testo</option>
+                <option value="IMAGE">Immagine</option>
               </select>
               {headerType === 'TEXT' ? (
                 <Input
@@ -424,6 +513,44 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
                 />
               ) : null}
             </div>
+
+            {headerType === 'IMAGE' ? (
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-center gap-3 rounded-md border-2 border-dashed border-input p-4 text-sm text-muted-foreground hover:bg-accent">
+                  {uploading ? <ButtonSpinner /> : <ImagePlus className="h-5 w-5" />}
+                  <span>
+                    {uploading
+                      ? 'Caricamento…'
+                      : headerImagePath
+                        ? 'Cambia immagine (JPEG/PNG, max 4 MB)'
+                        : 'Carica un’immagine (JPEG/PNG, max 4 MB)'}
+                  </span>
+                  <input
+                    type="file"
+                    accept={HEADER_IMAGE_ACCEPT}
+                    className="hidden"
+                    disabled={uploading}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void onUploadHeader(f);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {headerPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={headerPreview}
+                    alt="Anteprima intestazione"
+                    className="max-h-40 w-full rounded-md border border-input object-cover"
+                  />
+                ) : null}
+                {uploadError ? <p className="text-xs text-destructive">{uploadError}</p> : null}
+                <p className="text-xs text-muted-foreground">
+                  L’immagine vale per tutti i destinatari (non supporta variabili).
+                </p>
+              </div>
+            ) : null}
             <FieldIssues issues={issues} field="header" />
           </div>
 
@@ -544,6 +671,7 @@ function TemplateForm({ editing, onDone }: { editing: Template | null; onDone: (
             body={body}
             headerType={headerType}
             headerText={headerText}
+            headerImageUrl={headerPreview}
             footer={footer}
             buttons={buttons}
             examples={examples}
