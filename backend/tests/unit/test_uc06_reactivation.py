@@ -201,8 +201,8 @@ async def test_reactivation_sends_template_when_configured(
 async def test_reactivation_skips_outside_window_without_template(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # No flow step → dormant lead is outside the 24h window with no approved
-    # template → decide_outbound returns SKIP, nothing sent.
+    # ADR 0014: no enabled reactivation flow on the canvas (step is None) →
+    # decide_outbound returns SKIP ("no_flow"), nothing sent.
     records: list = []
     sends: list = []
     _patch(monkeypatch, step=None, records=records, sends=sends)

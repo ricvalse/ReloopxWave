@@ -17,7 +17,22 @@ import pytest
 from workers import outbound
 from workers.scheduler import appointment_reminder as mod
 
-from db import AppointmentReminderCandidate, ResolvedWhatsAppIntegration
+from db import AppointmentReminderCandidate, ResolvedFlowStep, ResolvedWhatsAppIntegration
+
+
+def _enabled_step() -> ResolvedFlowStep:
+    """An enabled booking flow whose send node carries the merchant's configured
+    copy from the lavagnetta (ADR 0014: content comes only from the canvas)."""
+    return ResolvedFlowStep(
+        flow_enabled=True,
+        step_enabled=True,
+        window_policy="auto",
+        free_text="Promemoria appuntamento {{appointment.datetime}}",
+        variable_mapping={},
+        template_name=None,
+        template_language=None,
+    )
+
 
 NOW = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
 
@@ -76,7 +91,7 @@ def _patch(
     async def fake_resolve_lifecycle_step(
         session, *, merchant_id, system_key, attempt_index, context
     ):
-        return None  # no system flow → built-in free-text fallback
+        return _enabled_step()  # enabled flow, blank copy → built-in free-text fallback
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -145,6 +160,26 @@ async def test_skips_outside_window_without_template(monkeypatch: pytest.MonkeyP
     assert marked == []  # not marked → retried when a template is approved
 
 
+async def test_no_flow_skips_and_not_marked(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ADR 0014: no enabled booking flow on the canvas → no reminder is sent and the
+    # appointment is NOT marked (so it still fires if the merchant enables the flow).
+    marked: list = []
+    events: list = []
+    _patch(monkeypatch, marked=marked, events=events)
+
+    async def no_flow(session, *, merchant_id, system_key, attempt_index, context):
+        return None
+
+    monkeypatch.setattr(mod, "resolve_lifecycle_step", no_flow)
+
+    cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))  # inside window
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is False
+    assert marked == []
+    assert events == []
+
+
 async def test_multi_reminder_picks_send_matching_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -162,7 +197,7 @@ async def test_multi_reminder_picks_send_matching_offset(
 
     async def fake_step(session, *, merchant_id, system_key, attempt_index, context):
         captured["attempt_index"] = attempt_index
-        return None
+        return _enabled_step()
 
     async def fake_plan(session, *, merchant_id, system_key, context):
         return SendPlan(

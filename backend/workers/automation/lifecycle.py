@@ -32,14 +32,18 @@ async def resolve_lifecycle_step(
 ) -> ResolvedFlowStep | None:
     """Return the ResolvedFlowStep for the attempt_index-th send of a system flow.
 
+    An automation fires ONLY from an enabled lavagnetta flow (ADR 0014), so every
+    "not configured / not enabled" case funnels into a `decide_outbound` SKIP.
+
     Returns:
-      * None — no system flow configured (scheduler uses its built-in fallback
-        copy, identical to the legacy "no flow" path), OR the resolved path has
-        fewer sends than `attempt_index` (scheduler's max-attempts guard makes
-        this effectively unreachable).
-      * ResolvedFlowStep(flow_enabled=False, …) — flow exists but is DISABLED.
-        Must NOT be None here, or `decide_outbound` would fall back to free text
-        instead of skipping (mirrors FlowRepository.resolve_step semantics).
+      * None — no system flow configured for this merchant, OR the resolved path
+        has fewer sends than `attempt_index`. `decide_outbound` treats None as
+        SKIP (reason "no_flow"); the scheduler never sends a built-in default.
+      * ResolvedFlowStep(flow_enabled=False, …) — flow exists but is DISABLED →
+        `decide_outbound` SKIPs (reason "flow_disabled").
+      * ResolvedFlowStep(flow_enabled=True, …) — the merchant enabled this flow on
+        the canvas → the resolved copy/template is sent. A send node left blank
+        (no free_text, no approved template) SKIPs — there is NO hardcoded fallback.
     """
     repo = AutomationRepository(session)
     flow = await repo.get_by_system_key(merchant_id, system_key)

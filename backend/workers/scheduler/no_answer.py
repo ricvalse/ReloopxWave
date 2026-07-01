@@ -43,11 +43,6 @@ from workers.outbound import (
 
 logger = get_logger(__name__)
 
-REMINDER_TEXTS = {
-    1: "Ciao! Eri ancora interessato? Se vuoi posso aiutarti a completare la richiesta.",
-    2: "Facciamo un ultimo tentativo — se vuoi riprendere la conversazione, rispondi pure.",
-}
-
 DEDUP_TTL_SECONDS = 60 * 60 * 24 * 3  # 3 days — longer than the second-reminder window
 
 
@@ -161,22 +156,11 @@ async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: st
             },
         )
 
-        text_key = (
-            ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT
-            if next_attempt == 1
-            else ConfigKey.NO_ANSWER_SECOND_REMINDER_TEXT
-        )
-        override = await config.resolve(text_key, merchant_id=cand.merchant_id)
-        fallback_text = (
-            override
-            if isinstance(override, str) and override.strip()
-            else REMINDER_TEXTS.get(next_attempt, REMINDER_TEXTS[max(REMINDER_TEXTS)])
-        )
-
+        # No hardcoded copy: the message text comes solely from the send node's
+        # `free_text` on the lavagnetta (via `step`). A blank send node → skip.
         analytics = AnalyticsRepository(session)
         decision = decide_outbound(
             within_window=within_window,
-            fallback_text=fallback_text,
             step=step,
             context={
                 "contact.phone": cand.wa_contact_phone,

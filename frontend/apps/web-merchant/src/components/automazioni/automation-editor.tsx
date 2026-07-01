@@ -23,6 +23,7 @@ import { apiErrorMessage, getApiClient } from '@/lib/api';
 import {
   ACTION_DEFS,
   ATOMIC_CONDITION_DEFS,
+  CLAUSE_CONDITION_DEFS,
   CONDITION_DEFS,
   DEFS_BY_KIND,
   TRIGGER_DEFS,
@@ -350,6 +351,7 @@ export function AutomationEditor({
             {selectedNode ? (
               <NodeConfigPanel
                 node={selectedNode}
+                isSystem={isSystem}
                 approvedTemplates={approvedTemplates}
                 allTemplates={templates.data ?? []}
                 onChange={(key, value) => updateConfig(selectedNode.id, key, value)}
@@ -370,12 +372,14 @@ export function AutomationEditor({
 
 function NodeConfigPanel({
   node,
+  isSystem,
   approvedTemplates,
   allTemplates,
   onChange,
   onDelete,
 }: {
   node: Node;
+  isSystem: boolean;
   approvedTemplates: Template[];
   allTemplates: Template[];
   onChange: (key: string, value: unknown) => void;
@@ -430,6 +434,7 @@ function NodeConfigPanel({
             key={field.key}
             field={field}
             value={config[field.key]}
+            isSystem={isSystem}
             approvedTemplates={approvedTemplates}
             onChange={(value) => onChange(field.key, value)}
           />
@@ -442,11 +447,13 @@ function NodeConfigPanel({
 function ConfigField({
   field,
   value,
+  isSystem,
   approvedTemplates,
   onChange,
 }: {
   field: FieldDef;
   value: unknown;
+  isSystem?: boolean;
   approvedTemplates: Template[];
   onChange: (value: unknown) => void;
 }) {
@@ -507,7 +514,12 @@ function ConfigField({
           {field.placeholder ?? 'Attivo'}
         </label>
       ) : field.kind === 'clauses' ? (
-        <ClausesEditor value={value} approvedTemplates={approvedTemplates} onChange={onChange} />
+        <ClausesEditor
+          value={value}
+          isSystem={isSystem}
+          approvedTemplates={approvedTemplates}
+          onChange={onChange}
+        />
       ) : field.kind === 'multiselect' ? (
         <div className="space-y-1">
           {(field.options ?? []).map((o) => {
@@ -546,24 +558,29 @@ function clauseDefaults(type: string): Clause {
 // own fields via ConfigField, writing into the clause object.
 function ClausesEditor({
   value,
+  isSystem,
   approvedTemplates,
   onChange,
 }: {
   value: unknown;
+  isSystem?: boolean;
   approvedTemplates: Template[];
   onChange: (value: unknown) => void;
 }) {
+  // Custom/event flows can use `ai_check` clauses (evaluated async by the worker);
+  // system flows are scheduler-resolved (sync) so they get the atomic set only.
+  const clauseDefs = isSystem ? ATOMIC_CONDITION_DEFS : CLAUSE_CONDITION_DEFS;
   const clauses: Clause[] = Array.isArray(value) ? (value as Clause[]) : [];
   const update = (i: number, next: Clause) =>
     onChange(clauses.map((c, idx) => (idx === i ? next : c)));
   const remove = (i: number) => onChange(clauses.filter((_, idx) => idx !== i));
-  const firstType = ATOMIC_CONDITION_DEFS[0]?.type ?? 'lead_score';
+  const firstType = clauseDefs[0]?.type ?? 'lead_score';
   const add = () => onChange([...clauses, clauseDefaults(firstType)]);
 
   return (
     <div className="space-y-2">
       {clauses.map((clause, i) => {
-        const def = ATOMIC_CONDITION_DEFS.find((d) => d.type === clause.type);
+        const def = clauseDefs.find((d) => d.type === clause.type);
         const subFields = def?.fields ?? [];
         return (
           <div key={i} className="space-y-1.5 rounded-md border border-input p-2">
@@ -573,7 +590,7 @@ function ClausesEditor({
                 value={clause.type}
                 onChange={(e) => update(i, { negate: clause.negate, ...clauseDefaults(e.target.value) })}
               >
-                {ATOMIC_CONDITION_DEFS.map((d) => (
+                {clauseDefs.map((d) => (
                   <option key={d.type} value={d.type}>
                     {d.label}
                   </option>

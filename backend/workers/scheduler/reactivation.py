@@ -35,12 +35,6 @@ from workers.outbound import MODE_SKIP, decide_outbound, send_and_persist_decisi
 
 logger = get_logger(__name__)
 
-REACTIVATION_TEXTS = {
-    1: "Ciao! È passato un po' — se l'interesse è ancora vivo, possiamo riprendere da dove eravamo?",
-    2: "Un ultimo saluto: se vuoi che ti ricontattiamo, rispondi pure a questo messaggio.",
-    3: "Ci ripassi volentieri quando ti torna utile. A presto!",
-}
-
 DEDUP_TTL_SECONDS = 60 * 60 * 24 * 14  # two weeks — covers the longest interval_days default
 
 
@@ -162,23 +156,12 @@ async def _maybe_send(
             attempt_index=next_attempt - 1,
             context=plan_context,
         )
-        override = await config.resolve(
-            ConfigKey.REACTIVATION_MESSAGE, merchant_id=cand.merchant_id
-        )
-        fallback_text = (
-            override
-            if isinstance(override, str) and override.strip()
-            else REACTIVATION_TEXTS.get(next_attempt, REACTIVATION_TEXTS[max(REACTIVATION_TEXTS)])
-        )
-        # UC-06: personalise the configured text. `{name}` is the only supported
-        # placeholder for now; a literal replace avoids str.format KeyErrors on
-        # stray braces in merchant copy.
-        fallback_text = fallback_text.replace("{name}", cand.name or "").strip()
-
+        # No hardcoded copy: the reactivation text comes solely from the send
+        # node's `free_text` on the lavagnetta (via `step`), which renders `{name}`
+        # / `{{contact.name}}` from the context below. A blank send node → skip.
         analytics = AnalyticsRepository(session)
         decision = decide_outbound(
             within_window=False,
-            fallback_text=fallback_text,
             step=step,
             context={"contact.phone": cand.phone, "contact.name": cand.name or ""},
         )

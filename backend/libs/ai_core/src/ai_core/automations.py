@@ -23,11 +23,19 @@ _VALID_TYPES: dict[str, set[str]] = {
     "action": set(ACTION_TYPES),
 }
 
-# Atomic conditions a `condition_group` clause may reference.
-# Excludes `condition_group` (no nesting) and `ai_check` (async — not evaluable inline).
+# Atomic conditions a `condition_group` clause may reference *synchronously*.
+# Excludes `condition_group` (no nesting) and `ai_check` (async — evaluated only by
+# the event engine, see `_CLAUSE_CONDITION_TYPES`).
 _ATOMIC_CONDITION_TYPES: frozenset[str] = frozenset(
     t for t in CONDITION_TYPES if t not in ("condition_group", "ai_check")
 )
+
+# Condition types a `condition_group` clause may be. Adds `ai_check` to the atomic
+# set: an AI clause is a valid clause, but it is only *evaluated* by the async event
+# engine (`workers.automation.engine._evaluate_group_async`). The sync
+# `_evaluate_group` (scheduler path) fails an ai_check clause closed, so the
+# frontend offers it only in custom/event flows — never in system flows.
+_CLAUSE_CONDITION_TYPES: frozenset[str] = _ATOMIC_CONDITION_TYPES | frozenset({"ai_check"})
 
 # ActionKinds an `ai_reply` node may let the AI dispatch (mirrors the orchestrator
 # ActionKind set minus "none"). Kept here so graph validation stays IO-free.
@@ -230,9 +238,11 @@ def _condition_config_errors(node: dict[str, Any]) -> list[str]:
     for clause in clauses:
         if (
             not isinstance(clause, dict)
-            or str(clause.get("type", "")) not in _ATOMIC_CONDITION_TYPES
+            or str(clause.get("type", "")) not in _CLAUSE_CONDITION_TYPES
         ):
             return [f"node {key!r}: condition_group has a clause with an invalid type"]
+        if str(clause.get("type", "")) == "ai_check" and not str(clause.get("prompt", "")).strip():
+            return [f"node {key!r}: ai_check clause needs a prompt"]
     return []
 
 
@@ -314,8 +324,10 @@ def _evaluate_group(cfg: dict[str, Any], context: dict[str, Any]) -> bool:
 
     Each clause is `{"type": <atomic type>, "negate": bool, ...atomic cfg keys}` —
     the clause dict *is* the atomic config, so we pass it straight to
-    `_evaluate_atomic`. An empty group or a clause with a non-atomic `type` (e.g. a
-    nested `condition_group`) fails closed, matching the unknown-type behaviour.
+    `_evaluate_atomic`. An empty group or a clause with a non-atomic `type` (a nested
+    `condition_group`, or an `ai_check` — which needs IO) fails closed. `ai_check`
+    clauses are evaluated only by the async engine (`_evaluate_group_async`); on this
+    sync path (schedulers, AI-free event groups) they always resolve to False.
     """
     clauses = cfg.get("clauses") or []
     if not clauses:

@@ -1,4 +1,9 @@
-"""Unit tests for the 24h-window outbound dispatcher (compliance core)."""
+"""Unit tests for the 24h-window outbound dispatcher (compliance core).
+
+Content comes EXCLUSIVELY from the lavagnetta send node (`step.free_text`) or a
+bound approved template — there is NO hardcoded fallback copy (ADR 0014). A blank
+send node (no free_text, no approved template) → SKIP ("no_content").
+"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -16,7 +21,9 @@ from db import ResolvedFlowStep
 NOW = datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
 
 
-def _approved_step(**over: object) -> ResolvedFlowStep:
+def _step(**over: object) -> ResolvedFlowStep:
+    """An enabled send step. Defaults: no free_text, but a bound APPROVED template
+    (so the template path is exercised); override `free_text` / `template_*` per test."""
     base: dict[str, object] = {
         "flow_enabled": True,
         "step_enabled": True,
@@ -38,57 +45,88 @@ def test_is_within_24h() -> None:
     assert is_within_24h(None, NOW) is False
 
 
-def test_no_flow_inside_window_sends_text() -> None:
-    d = decide_outbound(within_window=True, fallback_text="ciao", step=None)
-    assert d.mode == MODE_TEXT
-    assert d.text == "ciao"
-
-
-def test_no_flow_outside_window_skips_never_freeform() -> None:
-    # The key compliance fix: outside the window with no template → skip, never text.
-    d = decide_outbound(within_window=False, fallback_text="ciao", step=None)
+def test_no_flow_inside_window_skips() -> None:
+    # ADR 0014: no configured/enabled flow → SKIP even inside the window.
+    d = decide_outbound(within_window=True, step=None)
     assert d.mode == MODE_SKIP
-    assert d.reason == "no_template_outside_window"
+    assert d.reason == "no_flow"
+
+
+def test_no_flow_outside_window_skips() -> None:
+    d = decide_outbound(within_window=False, step=None)
+    assert d.mode == MODE_SKIP
+    assert d.reason == "no_flow"
+
+
+def test_disabled_flow_skips() -> None:
+    d = decide_outbound(within_window=True, step=_step(flow_enabled=False))
+    assert d.mode == MODE_SKIP
+    assert d.reason == "flow_disabled"
+
+
+def test_blank_send_node_inside_window_skips_no_content() -> None:
+    # ADR 0014: an enabled flow whose send node has no free_text AND no approved
+    # template sends NOTHING — no hardcoded copy is invented.
+    d = decide_outbound(
+        within_window=True,
+        step=_step(free_text=None, template_name=None, template_approved=False),
+    )
+    assert d.mode == MODE_SKIP
+    assert d.reason == "no_content"
+
+
+def test_step_free_text_sends_inside_window() -> None:
+    d = decide_outbound(within_window=True, step=_step(free_text="copia dalla lavagnetta"))
+    assert d.mode == MODE_TEXT
+    assert d.text == "copia dalla lavagnetta"
+
+
+def test_auto_inside_window_no_text_uses_approved_template() -> None:
+    # No free_text but a bound approved template → send the (canvas-configured)
+    # template even inside the window, rather than inventing copy.
+    d = decide_outbound(
+        within_window=True, step=_step(free_text=None), context={"contact.phone": "39333"}
+    )
+    assert d.mode == MODE_TEMPLATE
+    assert d.template_name == "reloop_reactivation_x"
 
 
 def test_auto_outside_window_with_approved_template_sends_template() -> None:
-    d = decide_outbound(
-        within_window=False,
-        fallback_text="ciao",
-        step=_approved_step(),
-        context={"contact.phone": "39333"},
-    )
+    d = decide_outbound(within_window=False, step=_step(), context={"contact.phone": "39333"})
     assert d.mode == MODE_TEMPLATE
     assert d.template_name == "reloop_reactivation_x"
     assert d.components == [{"type": "body", "parameters": [{"type": "text", "text": "39333"}]}]
 
 
+def test_auto_outside_window_no_template_skips() -> None:
+    d = decide_outbound(
+        within_window=False, step=_step(template_name=None, template_approved=False)
+    )
+    assert d.mode == MODE_SKIP
+    assert d.reason == "no_template_outside_window"
+
+
 def test_require_template_without_approval_skips() -> None:
     d = decide_outbound(
         within_window=True,
-        fallback_text="ciao",
-        step=_approved_step(window_policy="require_template", template_approved=False),
+        step=_step(window_policy="require_template", template_approved=False),
     )
     assert d.mode == MODE_SKIP
     assert d.reason == "no_approved_template"
 
 
 def test_freeform_only_outside_window_skips() -> None:
-    d = decide_outbound(
-        within_window=False,
-        fallback_text="ciao",
-        step=_approved_step(window_policy="freeform_only"),
-    )
+    d = decide_outbound(within_window=False, step=_step(window_policy="freeform_only"))
     assert d.mode == MODE_SKIP
     assert d.reason == "outside_window_freeform_only"
 
 
-def test_disabled_flow_skips() -> None:
+def test_freeform_only_inside_window_blank_skips_no_content() -> None:
     d = decide_outbound(
-        within_window=True, fallback_text="ciao", step=_approved_step(flow_enabled=False)
+        within_window=True, step=_step(window_policy="freeform_only", free_text=None)
     )
     assert d.mode == MODE_SKIP
-    assert d.reason == "flow_disabled"
+    assert d.reason == "no_content"
 
 
 def test_template_with_unmapped_variables_skips_instead_of_broken_send() -> None:
@@ -96,22 +134,11 @@ def test_template_with_unmapped_variables_skips_instead_of_broken_send() -> None
     # to "" and Meta would reject the send; we skip instead.
     d = decide_outbound(
         within_window=False,
-        fallback_text="ciao",
-        step=_approved_step(variable_mapping={}),
+        step=_step(variable_mapping={}),
         context={},
     )
     assert d.mode == MODE_SKIP
     assert d.reason == "incomplete_template_mapping"
-
-
-def test_step_free_text_overrides_fallback_inside_window() -> None:
-    d = decide_outbound(
-        within_window=True,
-        fallback_text="builtin",
-        step=_approved_step(free_text="custom step copy"),
-    )
-    assert d.mode == MODE_TEXT
-    assert d.text == "custom step copy"
 
 
 def test_render_free_text_placeholders() -> None:
@@ -128,12 +155,11 @@ def test_render_free_text_placeholders() -> None:
 
 
 def test_decide_outbound_renders_free_text_placeholders() -> None:
-    # D4: free text (MODE_TEXT) now resolves placeholders from the template context,
-    # not only templates — {name} / {{appointment.datetime}} no longer go out raw.
+    # Free text (MODE_TEXT) resolves placeholders from the template context —
+    # {name} / {{appointment.datetime}} never go out raw.
     d = decide_outbound(
         within_window=True,
-        fallback_text="",
-        step=_approved_step(free_text="Ciao {name}, promemoria {{appointment.datetime}}"),
+        step=_step(free_text="Ciao {name}, promemoria {{appointment.datetime}}"),
         context={"contact.name": "Anna", "appointment.datetime": "10:00"},
     )
     assert d.mode == MODE_TEXT

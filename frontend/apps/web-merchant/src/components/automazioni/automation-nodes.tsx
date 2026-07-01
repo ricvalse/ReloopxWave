@@ -121,10 +121,18 @@ export const CONDITION_DEFS: TypeDef[] = [
   },
 ];
 
-// Atomic condition defs a `condition_group` clause may use.
-// Excludes `condition_group` (no nesting) and `ai_check` (async — not evaluable inline).
+// Atomic (synchronous) condition defs a `condition_group` clause may use in system
+// flows. Excludes `condition_group` (no nesting) and `ai_check` (async — the
+// scheduler path can't run it).
 export const ATOMIC_CONDITION_DEFS: TypeDef[] = CONDITION_DEFS.filter(
   (d) => d.type !== 'condition_group' && d.type !== 'ai_check',
+);
+
+// Condition defs selectable as a `condition_group` clause in custom/event flows:
+// the atomics plus `ai_check` (evaluated async by the worker engine). Still excludes
+// `condition_group` (no nesting). System flows fall back to ATOMIC_CONDITION_DEFS.
+export const CLAUSE_CONDITION_DEFS: TypeDef[] = CONDITION_DEFS.filter(
+  (d) => d.type !== 'condition_group',
 );
 
 const WINDOW_POLICY_OPTIONS = [

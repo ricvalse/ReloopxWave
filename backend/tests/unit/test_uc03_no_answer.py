@@ -19,7 +19,7 @@ import pytest
 from workers import outbound
 from workers.scheduler import no_answer
 
-from db import ReminderCandidate, ResolvedWhatsAppIntegration
+from db import ReminderCandidate, ResolvedFlowStep, ResolvedWhatsAppIntegration
 
 
 @dataclass
@@ -121,8 +121,17 @@ def _patch_session(
     async def fake_resolve_lifecycle_step(
         session, *, merchant_id, system_key, attempt_index, context
     ):
-        # No system flow configured → scheduler uses built-in free-text fallback.
-        return None
+        # Enabled no-answer flow whose send node carries the merchant's configured
+        # copy from the lavagnetta (ADR 0014: content comes only from the canvas).
+        return ResolvedFlowStep(
+            flow_enabled=True,
+            step_enabled=True,
+            window_policy="auto",
+            free_text="Ciao {name}, ci sei ancora?",
+            variable_mapping={},
+            template_name=None,
+            template_language=None,
+        )
 
     async def fake_resolve_lifecycle_plan(session, *, merchant_id, system_key, context):
         # No enabled system flow → scheduler sources timing from ConfigKeys.
@@ -252,6 +261,26 @@ async def test_graph_drives_threshold_and_max(
     # Graph has a single send → attempt #2 is capped out (config max of 2 would allow it).
     capped = replace(candidate, reminders_sent=1)
     assert await no_answer._maybe_send_reminder(capped, redis=FakeRedis(), kek="unused") is False
+
+
+async def test_no_flow_skips_and_not_recorded(
+    monkeypatch: pytest.MonkeyPatch, candidate, integration
+) -> None:
+    # ADR 0014: no enabled no-answer flow on the canvas → no reminder is sent and
+    # nothing is recorded/persisted.
+    record_calls: list = []
+    _patch_session(monkeypatch, integration=integration, record_reminder_calls=record_calls)
+
+    async def no_flow(session, *, merchant_id, system_key, attempt_index, context):
+        return None
+
+    monkeypatch.setattr(no_answer, "resolve_lifecycle_step", no_flow)
+
+    did_send = await no_answer._maybe_send_reminder(candidate, redis=FakeRedis(), kek="unused")
+
+    assert did_send is False
+    assert record_calls == []
+    assert FakeMessageRepo.persisted == []
 
 
 async def test_redis_dedup_prevents_double_send(

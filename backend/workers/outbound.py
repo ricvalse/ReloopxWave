@@ -77,30 +77,38 @@ class OutboundDecision:
 def decide_outbound(
     *,
     within_window: bool,
-    fallback_text: str,
     step: ResolvedFlowStep | None = None,
     context: dict[str, str] | None = None,
 ) -> OutboundDecision:
     """Decide how to send a proactive message respecting the 24h window.
 
-    `fallback_text` is the scheduler's built-in/config copy used for free text.
-    `step` is the resolved flow step (None → no flow configured: 'auto' policy
-    with no template). `context` maps dotted source keys → values for template
-    variable resolution.
+    The message content comes EXCLUSIVELY from the lavagnetta: the send node's
+    `free_text` (or, for an `ai_reply` node, the AI-generated text carried on the
+    step) or a bound approved template. There is NO built-in/hardcoded fallback
+    copy — if the merchant hasn't configured content on the canvas we SKIP
+    ("no_content") instead of sending something they never wrote (ADR 0014).
+
+    `step is None` means no flow is configured/enabled for this lifecycle event →
+    SKIP ("no_flow"). `context` maps dotted source keys → values for template /
+    free-text variable resolution.
     """
     ctx = context or {}
-    policy = step.window_policy if step else "auto"
+
+    # An automation fires ONLY when an enabled lavagnetta flow authorises it.
+    if step is None:
+        return OutboundDecision(mode=MODE_SKIP, reason="no_flow")
+
+    policy = step.window_policy
 
     # A configured-but-disabled flow/step means the merchant turned this
     # lifecycle messaging off — respect it.
-    if step is not None and (not step.flow_enabled or not step.step_enabled):
+    if not step.flow_enabled or not step.step_enabled:
         return OutboundDecision(mode=MODE_SKIP, reason="flow_disabled")
 
-    text = render_free_text(
-        (step.free_text if step and step.free_text else fallback_text) or "", ctx
-    )
-
-    template_ready = bool(step and step.template_name and step.template_approved)
+    # Content is ONLY what the merchant put on the canvas — no hardcoded fallback.
+    text = render_free_text(step.free_text or "", ctx)
+    has_text = bool(text.strip())
+    template_ready = bool(step.template_name and step.template_approved)
 
     def _template_decision() -> OutboundDecision:
         assert step is not None and step.template_name is not None
@@ -126,21 +134,29 @@ def decide_outbound(
         )
 
     if policy == "freeform_only":
-        if within_window:
-            return OutboundDecision(mode=MODE_TEXT, text=text)
-        return OutboundDecision(mode=MODE_SKIP, reason="outside_window_freeform_only")
+        if not within_window:
+            return OutboundDecision(mode=MODE_SKIP, reason="outside_window_freeform_only")
+        if not has_text:
+            return OutboundDecision(mode=MODE_SKIP, reason="no_content")
+        return OutboundDecision(mode=MODE_TEXT, text=text)
 
     if policy == "require_template":
         if template_ready:
             return _template_decision()
         return OutboundDecision(mode=MODE_SKIP, reason="no_approved_template")
 
-    # policy == "auto" (and the no-flow default)
+    # policy == "auto"
     if within_window:
-        return OutboundDecision(mode=MODE_TEXT, text=text)
+        if has_text:
+            return OutboundDecision(mode=MODE_TEXT, text=text)
+        if template_ready:
+            return _template_decision()
+        # Enabled flow but the merchant hasn't written the message yet → don't
+        # invent copy; skip until they configure the send node on the canvas.
+        return OutboundDecision(mode=MODE_SKIP, reason="no_content")
+    # Outside the window: only an approved template may be sent.
     if template_ready:
         return _template_decision()
-    # Outside the window with no approved template: never send free text.
     return OutboundDecision(mode=MODE_SKIP, reason="no_template_outside_window")
 
 

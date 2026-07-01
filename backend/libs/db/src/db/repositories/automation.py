@@ -144,14 +144,15 @@ class AutomationRepository:
                 continue
             spec = _DEFAULT_SYSTEM_GRAPH[key]
             trigger_cfg = next((cfg for kind, _t, cfg in spec if kind == "trigger"), {})
-            # ADR 0011: system flows are ON by default (their default graph mirrors
-            # the config defaults, so this matches the historical "no flow → send
-            # with defaults" behaviour). The merchant toggles a flow off on the canvas.
-            # first_contact stays off — it has no scheduler consumer yet (hidden in UI).
+            # ADR 0014: system flows are OFF by default — an automation fires ONLY
+            # when the merchant explicitly enables it on the canvas. Seeding them
+            # enabled (the old ADR 0011 behaviour) made reminders / follow-ups go
+            # out without anyone setting them up. The default graph is still seeded
+            # (rich, mirroring the config defaults) so enabling it just works.
             flow = AutomationFlow(
                 merchant_id=merchant_id,
                 name=SYSTEM_FLOW_NAMES[key],
-                enabled=key != "first_contact",
+                enabled=False,
                 system_key=key,
                 trigger_type=SYSTEM_TRIGGER_TYPE[key],
                 trigger_config=dict(trigger_cfg),

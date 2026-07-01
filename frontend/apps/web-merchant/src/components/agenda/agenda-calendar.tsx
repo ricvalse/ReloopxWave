@@ -75,6 +75,28 @@ function TimeEventContent({ event }: { event: CalEvent }) {
   );
 }
 
+/** Cella evento della vista "Agenda". Qui react-big-calendar ha già una colonna
+ *  "Ora" dedicata (`.rbc-agenda-time-cell`) che stampa l'intervallo orario, quindi
+ *  NON ripetiamo l'orario: mostriamo solo nome cliente + servizio (come la card
+ *  della lista, {@link AppointmentRow}). Senza questo override RBC userebbe
+ *  `TimeEventContent`, che ristamperebbe l'orario → doppione in agenda. */
+function AgendaEventContent({ event }: { event: CalEvent }) {
+  const isLocal = !event.resource.ghl_appointment_id;
+  const person = appointmentPersonName(event.resource);
+  const service = appointmentServiceName(event.resource);
+  return (
+    <div className="leading-tight">
+      <span className="font-semibold">{person ?? 'Cliente'}</span>
+      {isLocal ? (
+        <span className="ml-1.5 inline-block rounded bg-amber-500/20 px-1 text-[9px] font-semibold uppercase tracking-wide leading-4 text-amber-700 align-middle">
+          locale
+        </span>
+      ) : null}
+      <p className="text-muted-foreground">{service ?? 'Appuntamento'}</p>
+    </div>
+  );
+}
+
 type Props = {
   appointments: Appointment[];
   onSelectEvent: (appt: Appointment) => void;
@@ -122,6 +144,9 @@ export function AgendaCalendar({ appointments, onSelectEvent }: Props) {
           event: TimeEventContent as any,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           month: { event: MonthEventContent as any },
+          // Vista "Agenda": l'orario è già nella colonna "Ora" → niente doppione.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          agenda: { event: AgendaEventContent as any },
         }}
         onSelectEvent={(e) => onSelectEvent((e as CalEvent).resource)}
         scrollToTime={SCROLL_TO_8AM}

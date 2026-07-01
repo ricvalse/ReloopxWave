@@ -28,7 +28,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_core.automations import evaluate_condition, outgoing_targets
+from ai_core.automations import (
+    _ATOMIC_CONDITION_TYPES,
+    evaluate_condition,
+    outgoing_targets,
+)
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
@@ -341,12 +345,13 @@ async def _walk(
             continue
 
         if node.kind == "condition":
+            cfg = node.config or {}
             if node.type == "ai_check":
-                passed = await _evaluate_ai_check(node, node.config or {}, run_ctx, ai_deps)
+                passed = await _evaluate_ai_check(cfg, run_ctx, ai_deps, label=node.node_key)
+            elif node.type == "condition_group" and _group_has_ai_clause(cfg):
+                passed = await _evaluate_group_async(cfg, run_ctx, ai_deps, label=node.node_key)
             else:
-                passed = evaluate_condition(
-                    node.type, node.config or {}, run_ctx.as_condition_context()
-                )
+                passed = evaluate_condition(node.type, cfg, run_ctx.as_condition_context())
             queue.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
         elif node.kind == "action":
             if node.type == "wait":
@@ -454,7 +459,6 @@ async def _do_action(
         )
         decision = decide_outbound(
             within_window=run_ctx.within_window,
-            fallback_text=str(cfg.get("free_text") or "").replace("{name}", run_ctx.name or ""),
             step=step,
             context=run_ctx.as_template_context(),
         )
@@ -579,7 +583,6 @@ async def _do_ai_reply(
     )
     decision = decide_outbound(
         within_window=run_ctx.within_window,
-        fallback_text=response.reply_text,
         step=step,
         context=run_ctx.as_template_context(),
     )
@@ -620,11 +623,12 @@ async def _build_ai_reply_deps(
     run_ctx: RunContext,
     merchant_id: UUID,
 ) -> AiReplyDeps | None:
-    """Assemble AI deps only when the flow has an ai_reply or ai_check node and we
-    have a conversation + a runtime with the orchestrator/dispatcher wired."""
+    """Assemble AI deps only when the flow needs the LLM (an ai_reply/ai_check node,
+    or a condition_group with an ai_check clause) and we have a conversation + a
+    runtime with the orchestrator/dispatcher wired."""
     if run_ctx.conversation_id is None:
         return None
-    if not any(n.type in ("ai_reply", "ai_check") for n in automation.nodes):
+    if not _flow_uses_ai(automation):
         return None
     runtime = ctx.get("runtime")
     if runtime is None:
@@ -649,19 +653,72 @@ def _history_to_chat(messages: list[Message]) -> list[ChatMessage]:
     ]
 
 
-async def _evaluate_ai_check(
-    node: Any,
+def _group_has_ai_clause(cfg: dict[str, Any]) -> bool:
+    """True if a condition_group config has at least one `ai_check` clause."""
+    return any(
+        isinstance(c, dict) and str(c.get("type", "")) == "ai_check"
+        for c in (cfg.get("clauses") or [])
+    )
+
+
+def _flow_uses_ai(automation: AutomationFlow) -> bool:
+    """True if any node needs the LLM: an ai_reply/ai_check node, or a
+    condition_group whose clauses include an ai_check."""
+    for n in automation.nodes:
+        if n.type in ("ai_reply", "ai_check"):
+            return True
+        if n.type == "condition_group" and _group_has_ai_clause(n.config or {}):
+            return True
+    return False
+
+
+async def _evaluate_group_async(
     cfg: dict[str, Any],
     run_ctx: RunContext,
     ai_deps: AiReplyDeps | None,
+    *,
+    label: str,
 ) -> bool:
-    """Evaluate an ai_check condition via a lightweight LLM yes/no call.
+    """Async variant of ai_core `_evaluate_group` for a condition_group whose clauses
+    may include `ai_check` (each AI clause = one LLM yes/no call). Atomic clauses
+    reuse the sync `evaluate_condition`. Per-clause `negate` is honoured; an empty
+    group or an unknown clause type fails closed. AND/OR from `operator`."""
+    clauses = cfg.get("clauses") or []
+    if not clauses:
+        return False
+    operator = str(cfg.get("operator", "and")).lower()
+    context = run_ctx.as_condition_context()
+    results: list[bool] = []
+    for i, clause in enumerate(clauses):
+        if not isinstance(clause, dict):
+            results.append(False)
+            continue
+        ctype = str(clause.get("type", ""))
+        if ctype == "ai_check":
+            value = await _evaluate_ai_check(clause, run_ctx, ai_deps, label=f"{label}[{i}]")
+        elif ctype in _ATOMIC_CONDITION_TYPES:
+            value = evaluate_condition(ctype, clause, context)
+        else:
+            value = False
+        results.append(not value if clause.get("negate") else value)
+    return any(results) if operator == "or" else all(results)
+
+
+async def _evaluate_ai_check(
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    ai_deps: AiReplyDeps | None,
+    *,
+    label: str,
+) -> bool:
+    """Evaluate an ai_check condition (standalone node or group clause) via a
+    lightweight LLM yes/no call.
 
     Builds a minimal context (lead info + last 10 messages) and asks the LLM
     to return {"result": true|false}. Fails closed (False) on any error.
     """
     if ai_deps is None or run_ctx.conversation_id is None:
-        logger.info("automation.ai_check.skipped", node=node.node_key, reason="no_deps")
+        logger.info("automation.ai_check.skipped", node=label, reason="no_deps")
         return False
     prompt = str(cfg.get("prompt", "")).strip()
     if not prompt:
@@ -714,10 +771,10 @@ async def _evaluate_ai_check(
         )
         data = json.loads(result.content)
         passed = bool(data.get("result", False))
-        logger.info("automation.ai_check", node=node.node_key, passed=passed)
+        logger.info("automation.ai_check", node=label, passed=passed)
         return passed
     except Exception as exc:
-        logger.warning("automation.ai_check.error", node=node.node_key, error=str(exc))
+        logger.warning("automation.ai_check.error", node=label, error=str(exc))
         return False
 
 

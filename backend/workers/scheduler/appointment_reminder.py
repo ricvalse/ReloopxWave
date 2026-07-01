@@ -82,8 +82,10 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         appts = AppointmentRepository(session)
         analytics = AnalyticsRepository(session)
 
+        # No hardcoded copy: the reminder text comes solely from the send node's
+        # `free_text` on the lavagnetta (via `step`), which can render
+        # `{{appointment.datetime}}` from the context below. A blank send → skip.
         when = _format_slot(cand.start_at, cand.tz_name)
-        fallback_text = f"Promemoria: hai un appuntamento {when}. A presto!"
 
         within_window = is_within_24h(cand.last_inbound_at, now)
         plan_context = {
@@ -117,7 +119,6 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         )
         decision = decide_outbound(
             within_window=within_window,
-            fallback_text=fallback_text,
             step=step,
             context={"contact.phone": cand.phone, "appointment.datetime": when},
         )

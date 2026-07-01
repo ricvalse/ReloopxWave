@@ -223,21 +223,40 @@ def test_validate_ai_check_config() -> None:
     ok = validate_graph([_trigger(), _ai_check(prompt="Il lead ha chiesto il prezzo?")], [])
     assert ok.ok
 
-    # ai_check is NOT a valid clause inside condition_group (async-only).
+    # ai_check stays out of the *sync* atomic set (scheduler path can't run it)…
     assert "ai_check" not in _ATOMIC_CONDITION_TYPES
-    bad_clause = validate_graph(
+    # …but it IS a valid clause inside condition_group (evaluated async by the engine).
+
+    def _group_with_ai(**clause: object) -> dict:
+        return {
+            "node_key": "g",
+            "kind": "condition",
+            "type": "condition_group",
+            "config": {"operator": "and", "clauses": [{"type": "ai_check", **clause}]},
+        }
+
+    # ai_check clause with a prompt → accepted.
+    ok_clause = validate_graph([_trigger(), _group_with_ai(prompt="Ha chiesto il prezzo?")], [])
+    assert ok_clause.ok
+
+    # ai_check clause without a prompt → error.
+    bad_clause = validate_graph([_trigger(), _group_with_ai()], [])
+    assert any("ai_check clause needs a prompt" in e for e in bad_clause.errors)
+
+    # A genuinely unknown clause type is still rejected.
+    unknown_clause = validate_graph(
         [
             _trigger(),
             {
                 "node_key": "g",
                 "kind": "condition",
                 "type": "condition_group",
-                "config": {"operator": "and", "clauses": [{"type": "ai_check", "prompt": "x"}]},
+                "config": {"operator": "and", "clauses": [{"type": "telepathy"}]},
             },
         ],
         [],
     )
-    assert any("invalid type" in e for e in bad_clause.errors)
+    assert any("invalid type" in e for e in unknown_clause.errors)
 
 
 def test_validate_ai_reply_config() -> None:
