@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 
 type GhlLocation = {
@@ -19,6 +19,7 @@ export function InstalledLocationsList() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [nameErr, setNameErr] = useState<Record<string, string>>({});
+  const [query, setQuery] = useState('');
 
   const locations = useQuery({
     queryKey: ['ghl', 'locations'],
@@ -107,6 +108,21 @@ export function InstalledLocationsList() {
   const merchantName = (id: string | null) =>
     id ? (merchantList.find((m) => m.id === id)?.name ?? id) : null;
 
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? rows.filter((loc) =>
+        [
+          loc.location_name ?? '',
+          loc.location_id,
+          merchantName(loc.merchant_id) ?? '',
+          statusLabel(loc.status),
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(q),
+      )
+    : rows;
+
   return (
     <Card>
       <CardHeader>
@@ -115,6 +131,18 @@ export function InstalledLocationsList() {
           Ogni sub-account su cui l&apos;agenzia ha installato l&apos;app appare qui.
           Associa le location &laquo;in attesa&raquo; a un merchant per attivare il bot.
         </p>
+        {rows.length > 0 && (
+          <div className="mt-3">
+            <Input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Cerca per nome, ID location o merchant…"
+              className="max-w-sm"
+              aria-label="Cerca location installate"
+            />
+          </div>
+        )}
       </CardHeader>
       <CardContent className="p-0">
         {locations.isLoading ? (
@@ -129,6 +157,10 @@ export function InstalledLocationsList() {
             Nessuna location installata. Installa l&apos;app sui sub-account dalla scheda
             Marketplace dopo aver collegato l&apos;agenzia.
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-6 text-sm text-muted-foreground">
+            Nessuna location corrisponde a &laquo;{query}&raquo;.
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -140,7 +172,7 @@ export function InstalledLocationsList() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((loc) => {
+              {filtered.map((loc) => {
                 const linked = loc.merchant_id != null;
                 return (
                   <tr key={loc.location_id} className="border-b last:border-0">
@@ -233,15 +265,18 @@ export function InstalledLocationsList() {
   );
 }
 
+function statusLabel(status: string) {
+  return status === 'active'
+    ? 'Attiva'
+    : status === 'pending_link'
+      ? 'In attesa'
+      : status === 'revoked'
+        ? 'Revocata'
+        : status;
+}
+
 function LocationStatus({ status }: { status: string }) {
-  const label =
-    status === 'active'
-      ? 'Attiva'
-      : status === 'pending_link'
-        ? 'In attesa'
-        : status === 'revoked'
-          ? 'Revocata'
-          : status;
+  const label = statusLabel(status);
   const cls =
     status === 'active'
       ? 'bg-emerald-100 text-emerald-900 ring-emerald-200'
