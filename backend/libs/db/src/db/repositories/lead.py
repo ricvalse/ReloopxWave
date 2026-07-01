@@ -23,6 +23,12 @@ class ReactivationCandidate:
     last_reactivation_at: datetime | None
     name: str | None = None
     score: int = 0
+    # ADR 0015: last inbound across the lead's conversations — the re-engagement
+    # signal the automation engine uses to cancel a stale reactivation cadence.
+    last_inbound_at: datetime | None = None
+    # ADR 0015 edge-trigger anchor: the `last_interaction_at` we last emitted a
+    # `lead.dormant` trigger for. None = never fired for this lead.
+    dormant_fired_for: datetime | None = None
 
 
 class LeadRepository:
@@ -179,10 +185,15 @@ class LeadRepository:
         self,
         *,
         dormant_cutoff: datetime,
-        interval_cutoff: datetime,
-        max_attempts: int,
     ) -> list[ReactivationCandidate]:
-        """Cross-tenant scan of leads due for a reactivation attempt (UC-06)."""
+        """Cross-tenant scan of dormant leads (UC-06).
+
+        ADR 0015: the scheduler is a pure edge-triggered emitter now — it no longer
+        tracks per-attempt cadence or interval (that lives in the automation graph),
+        it just surfaces leads idle past a conservative dormancy floor plus the
+        `dormant_fired_for` anchor so the caller emits `lead.dormant` once per
+        dormancy episode. Opted-out / erased / human-takeover leads are excluded.
+        """
         latest_conv_subq = (
             select(
                 Conversation.lead_id,
@@ -198,6 +209,7 @@ class LeadRepository:
                 Conversation.lead_id,
                 Conversation.wa_phone_number_id,
                 Conversation.auto_reply,
+                Conversation.last_inbound_at,
             )
             .distinct(Conversation.lead_id)
             .order_by(Conversation.lead_id, Conversation.last_message_at.desc())
@@ -205,11 +217,12 @@ class LeadRepository:
         )
 
         attempts_expr = cast(func.coalesce(Lead.meta["reactivation_attempts"].astext, "0"), Integer)
-        last_attempt_raw = Lead.meta["last_reactivation_at"].astext
-
-        last_attempt_ts = cast(last_attempt_raw, DateTime(timezone=True)).label(
-            "last_reactivation_at"
-        )
+        last_attempt_ts = cast(
+            Lead.meta["last_reactivation_at"].astext, DateTime(timezone=True)
+        ).label("last_reactivation_at")
+        dormant_fired_for_ts = cast(
+            Lead.meta["dormant_fired_for"].astext, DateTime(timezone=True)
+        ).label("dormant_fired_for")
 
         stmt = (
             select(
@@ -220,20 +233,17 @@ class LeadRepository:
                 Lead.name,
                 Lead.score,
                 last_conv.c.wa_phone_number_id,
+                last_conv.c.last_inbound_at,
                 latest_conv_subq.c.last_interaction,
                 attempts_expr.label("attempts_sent"),
                 last_attempt_ts,
+                dormant_fired_for_ts,
             )
             .join(Merchant, Merchant.id == Lead.merchant_id)
             .join(latest_conv_subq, latest_conv_subq.c.lead_id == Lead.id)
             .join(last_conv, last_conv.c.lead_id == Lead.id)
             .where(
                 latest_conv_subq.c.last_interaction < dormant_cutoff,
-                attempts_expr < max_attempts,
-                (
-                    last_attempt_raw.is_(None)
-                    | (cast(last_attempt_raw, DateTime(timezone=True)) < interval_cutoff)
-                ),
                 # UC-06: never reactivate opted-out, erased, or human-takeover leads.
                 Lead.opted_out_at.is_(None),
                 Lead.status != "erased",
@@ -256,6 +266,8 @@ class LeadRepository:
                     last_reactivation_at=row["last_reactivation_at"],
                     name=row["name"],
                     score=int(row["score"] or 0),
+                    last_inbound_at=row["last_inbound_at"],
+                    dormant_fired_for=row["dormant_fired_for"],
                 )
             )
         return results
@@ -272,6 +284,25 @@ class LeadRepository:
     async def is_opted_out(self, *, merchant_id: UUID, phone: str) -> bool:
         stmt = select(Lead.opted_out_at).where(Lead.merchant_id == merchant_id, Lead.phone == phone)
         return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def mark_dormant_fired(self, lead_id: UUID, anchor: datetime) -> None:
+        """Stamp the `last_interaction_at` anchor a `lead.dormant` trigger was emitted
+        for (ADR 0015). Re-arms only when the lead re-engages (advancing the max
+        conversation activity past this anchor)."""
+        await self._session.execute(
+            text(
+                """
+                UPDATE leads
+                SET meta = jsonb_set(
+                    coalesce(meta, '{}'::jsonb),
+                    '{dormant_fired_for}',
+                    to_jsonb(:anchor::text)
+                )
+                WHERE id = :lead_id
+                """
+            ),
+            {"lead_id": str(lead_id), "anchor": anchor.isoformat()},
+        )
 
     async def record_reactivation_sent(self, lead_id: UUID) -> None:
         await self._session.execute(

@@ -17,22 +17,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ai_core.automations import SendPlan, resolve_send_node_at, resolve_send_plan
 from db import (
-    FLOW_BOOKING_REMINDER,
     AnalyticsRepository,
     AppointmentReminderCandidate,
     AppointmentRepository,
+    AutomationRepository,
     ConversationRepository,
     IntegrationRepository,
+    ResolvedFlowStep,
     TenantContext,
     session_scope,
     tenant_session,
 )
+from db.models import WhatsAppTemplate
 from integrations.whatsapp.factory import build_whatsapp_sender
 from shared import get_logger
-from workers.automation.lifecycle import resolve_lifecycle_plan, resolve_lifecycle_step
 from workers.outbound import (
     MODE_SKIP,
     decide_outbound,
@@ -41,6 +44,70 @@ from workers.outbound import (
 )
 
 logger = get_logger(__name__)
+
+
+async def _enabled_booking_flow(session: Any, merchant_id: Any) -> Any | None:
+    """The merchant's enabled `booking_created` automation (ADR 0015 — appointment
+    reminders are sourced from a normal automation, not a system flow)."""
+    autos = await AutomationRepository(session).list_enabled_by_trigger(
+        merchant_id=merchant_id, trigger_type="booking_created"
+    )
+    return autos[0] if autos else None
+
+
+def _graph(flow: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes = [
+        {"node_key": n.node_key, "kind": n.kind, "type": n.type, "config": n.config or {}}
+        for n in flow.nodes
+    ]
+    edges = [
+        {"source_key": e.source_key, "target_key": e.target_key, "branch": e.branch}
+        for e in flow.edges
+    ]
+    return nodes, edges
+
+
+async def _resolve_booking_plan(
+    session: Any, *, merchant_id: Any, context: dict[str, Any]
+) -> SendPlan | None:
+    """Send plan of the enabled booking_created automation (None if absent)."""
+    flow = await _enabled_booking_flow(session, merchant_id)
+    if flow is None:
+        return None
+    nodes, edges = _graph(flow)
+    return resolve_send_plan(nodes, edges, context=context)
+
+
+async def _resolve_booking_step(
+    session: Any, *, merchant_id: Any, attempt_index: int, context: dict[str, Any]
+) -> ResolvedFlowStep | None:
+    """ResolvedFlowStep for the attempt_index-th reminder send. None → no enabled
+    flow (or fewer sends than attempt_index) → decide_outbound SKIPs (no_flow)."""
+    flow = await _enabled_booking_flow(session, merchant_id)
+    if flow is None:
+        return None
+    nodes, edges = _graph(flow)
+    cfg = resolve_send_node_at(nodes, edges, attempt_index=attempt_index, context=context)
+    if cfg is None:
+        return None
+    template: WhatsAppTemplate | None = None
+    template_id = cfg.get("template_id")
+    if template_id:
+        try:
+            template = await session.get(WhatsAppTemplate, UUID(str(template_id)))
+        except (ValueError, TypeError):
+            template = None
+    return ResolvedFlowStep(
+        flow_enabled=True,
+        step_enabled=True,
+        window_policy=str(cfg.get("window_policy", "auto")),
+        free_text=cfg.get("free_text"),
+        variable_mapping=dict(cfg.get("variable_mapping") or {}),
+        template_name=template.name if template else None,
+        template_language=template.language if template else None,
+        template_variables=list(template.variables) if template else [],
+        template_approved=bool(template and template.status == "approved"),
+    )
 
 
 async def send_appointment_reminders(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -99,10 +166,9 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         attempt_index = 0
         if cand.reminder_due_at is not None:
             hours_before = round((cand.start_at - cand.reminder_due_at).total_seconds() / 3600)
-            plan = await resolve_lifecycle_plan(
+            plan = await _resolve_booking_plan(
                 session,
                 merchant_id=cand.merchant_id,
-                system_key=FLOW_BOOKING_REMINDER,
                 context=plan_context,
             )
             if plan is not None:
@@ -110,10 +176,9 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
                     (i for i, s in enumerate(plan.sends) if s.anchor_hours_before == hours_before),
                     0,
                 )
-        step = await resolve_lifecycle_step(
+        step = await _resolve_booking_step(
             session,
             merchant_id=cand.merchant_id,
-            system_key=FLOW_BOOKING_REMINDER,
             attempt_index=attempt_index,
             context=plan_context,
         )

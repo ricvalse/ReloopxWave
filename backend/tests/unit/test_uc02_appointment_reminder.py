@@ -88,10 +88,8 @@ def _patch(
                 persisted.append(kw)
             return object()
 
-    async def fake_resolve_lifecycle_step(
-        session, *, merchant_id, system_key, attempt_index, context
-    ):
-        return _enabled_step()  # enabled flow, blank copy → built-in free-text fallback
+    async def fake_resolve_step(session, *, merchant_id, attempt_index, context):
+        return _enabled_step()  # enabled booking_created flow, copy from the canvas
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -123,7 +121,7 @@ def _patch(
 
     monkeypatch.setattr(mod, "tenant_session", fake_tenant_session)
     monkeypatch.setattr(mod, "AppointmentRepository", FakeApptRepo)
-    monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
+    monkeypatch.setattr(mod, "_resolve_booking_step", fake_resolve_step)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
     monkeypatch.setattr(mod, "ConversationRepository", FakeConvRepo)
@@ -167,10 +165,10 @@ async def test_no_flow_skips_and_not_marked(monkeypatch: pytest.MonkeyPatch) -> 
     events: list = []
     _patch(monkeypatch, marked=marked, events=events)
 
-    async def no_flow(session, *, merchant_id, system_key, attempt_index, context):
+    async def no_flow(session, *, merchant_id, attempt_index, context):
         return None
 
-    monkeypatch.setattr(mod, "resolve_lifecycle_step", no_flow)
+    monkeypatch.setattr(mod, "_resolve_booking_step", no_flow)
 
     cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))  # inside window
     sent = await mod._maybe_send(cand, now=NOW, kek="unused")
@@ -195,11 +193,11 @@ async def test_multi_reminder_picks_send_matching_offset(
 
     captured: dict = {}
 
-    async def fake_step(session, *, merchant_id, system_key, attempt_index, context):
+    async def fake_step(session, *, merchant_id, attempt_index, context):
         captured["attempt_index"] = attempt_index
         return _enabled_step()
 
-    async def fake_plan(session, *, merchant_id, system_key, context):
+    async def fake_plan(session, *, merchant_id, context):
         return SendPlan(
             sends=[
                 PlannedSend(0, 0, 24, {}),
@@ -208,8 +206,8 @@ async def test_multi_reminder_picks_send_matching_offset(
             ]
         )
 
-    monkeypatch.setattr(mod, "resolve_lifecycle_step", fake_step)
-    monkeypatch.setattr(mod, "resolve_lifecycle_plan", fake_plan)
+    monkeypatch.setattr(mod, "_resolve_booking_step", fake_step)
+    monkeypatch.setattr(mod, "_resolve_booking_plan", fake_plan)
 
     # start_at = NOW+12h, reminder_due_at = NOW → offset firing now is 12h → index 1.
     cand = replace(

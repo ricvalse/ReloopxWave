@@ -12,6 +12,7 @@ from integrations.ghl.client import (
     GHLClient,
     GHLTokenBundle,
     build_contact_custom_fields,
+    extract_location_name,
 )
 
 
@@ -201,6 +202,20 @@ def test_build_contact_custom_fields_skips_empty_and_unmapped() -> None:
     values = {"budget": "", "note": "qualcosa"}
     assert build_contact_custom_fields(field_map, values) == []
     assert build_contact_custom_fields({}, values) == []
+
+
+def test_extract_location_name_wrapped_and_flat() -> None:
+    # GHL's GET /locations/{id} wraps the sub-account under "location".
+    assert extract_location_name({"location": {"name": "Pizzeria Roma"}}) == "Pizzeria Roma"
+    # Tolerate a flat body too.
+    assert extract_location_name({"name": "Bar Milano"}) == "Bar Milano"
+
+
+def test_extract_location_name_missing_returns_none() -> None:
+    assert extract_location_name({"location": {"timezone": "Europe/Rome"}}) is None
+    assert extract_location_name({"location": {"name": ""}}) is None
+    assert extract_location_name({}) is None
+    assert extract_location_name({"location": None}) is None
 
 
 async def test_get_free_slots_epoch_ms_and_flatten() -> None:

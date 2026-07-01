@@ -44,6 +44,19 @@ def build_contact_custom_fields(
     return out
 
 
+def extract_location_name(resp: dict[str, Any]) -> str | None:
+    """Pull the sub-account display name out of a `GET /locations/{id}` body.
+
+    GHL wraps it as `{"location": {"name": ...}}`; tolerate a flat `{"name": ...}`
+    body too. Returns None when no usable name is present. Shared by the INSTALL
+    worker and the agency-side "refresh name" endpoint so both parse identically.
+    """
+    raw_loc = resp.get("location")
+    loc = raw_loc if isinstance(raw_loc, dict) else resp
+    name = loc.get("name") if isinstance(loc, dict) else None
+    return str(name) if name else None
+
+
 @dataclass(slots=True)
 class GHLTokenBundle:
     access_token: str

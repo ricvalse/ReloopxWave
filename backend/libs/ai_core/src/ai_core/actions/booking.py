@@ -26,7 +26,6 @@ from ai_core.automations import resolve_send_plan
 from ai_core.orchestrator import OrchestratorAction
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
-    FLOW_BOOKING_REMINDER,
     AnalyticsRepository,
     AppointmentRepository,
     AutomationRepository,
@@ -57,15 +56,18 @@ async def _resolve_reminder_lead_hours(
     config: ConfigResolver,
     fallback: list[int],
 ) -> list[int]:
-    """Ore-di-anticipo dei promemoria appuntamento (ADR 0011).
+    """Ore-di-anticipo dei promemoria appuntamento (ADR 0015).
 
-    Precedenza: grafo del system flow `booking_reminder` se ABILITATO (ore dei
-    nodi `wait_until_before`) → ConfigKey `booking.reminder_schedule` → `fallback`.
-    Così il merchant può configurare gli anticipi dalla lavagnetta; se il flusso è
-    disabilitato/assente, vale la card numerica (compat).
+    Precedenza: grafo di un'automazione `booking_created` ABILITATA (ore dei nodi
+    `wait_until_before`) → ConfigKey `booking.reminder_schedule` → `fallback`. Così
+    il merchant configura gli anticipi dalla lavagnetta; se non c'è un flusso
+    abilitato, vale la card numerica (compat).
     """
-    flow = await AutomationRepository(session).get_by_system_key(merchant_id, FLOW_BOOKING_REMINDER)
-    if flow is not None and flow.enabled:
+    autos = await AutomationRepository(session).list_enabled_by_trigger(
+        merchant_id=merchant_id, trigger_type="booking_created"
+    )
+    flow = autos[0] if autos else None
+    if flow is not None:
         nodes = [
             {"node_key": n.node_key, "kind": n.kind, "type": n.type, "config": n.config or {}}
             for n in flow.nodes

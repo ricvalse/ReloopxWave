@@ -1,4 +1,4 @@
-from integrations.ghl.client import GHLClient, GHLTokenBundle
+from integrations.ghl.client import GHLClient, GHLTokenBundle, extract_location_name
 from integrations.ghl.marketplace_signatures import (
     verify_ghl_marketplace_ed25519_signature,
     verify_ghl_marketplace_signature,
@@ -75,6 +75,7 @@ __all__ = [
     "build_submit_components",
     "build_whatsapp_sender",
     "exchange_authorization_code",
+    "extract_location_name",
     "extract_variables",
     "lint_template",
     "map_meta_status_to_local",

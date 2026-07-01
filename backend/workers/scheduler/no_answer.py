@@ -1,15 +1,15 @@
-"""UC-03 — follow-up for leads that went quiet.
+"""UC-03 — no-answer trigger emitter.
 
-Job cadence: every 15 minutes (configured in Railway Cron, not here). Every
-tick we:
-  1. Scan (admin session) for active conversations idle > 30 min with fewer
-     than max_followups reminders sent so far.
-  2. Per candidate, resolve the merchant's per-config `no_answer.*` thresholds
-     via the config cascade and decide whether the next reminder is due.
-  3. Resolve WhatsApp integration, send the reminder, stamp the conversation.
+ADR 0015: this scheduler is a pure *edge-triggered emitter*. Every 15 minutes it
+scans for conversations that went silent, and emits a `lead.no_answer` analytics
+event **once per silence episode**. It sends nothing itself — the response
+(content + multi-attempt cadence) lives entirely in the merchant's automation on
+the lavagnetta, dispatched by the automation engine off this event.
 
-Idempotency: a Redis dedup key per (conversation, attempt) stops us sending
-the same reminder twice even if the job overlaps with itself.
+Idempotency is edge-triggered, not Redis-based: the emission is anchored on the
+conversation's `last_inbound_at` (`no_answer_fired_for`). We fire once and
+suppress until the lead sends a new inbound (advancing `last_inbound_at`), which
+re-arms the trigger for the next silence episode.
 """
 
 from __future__ import annotations
@@ -17,233 +17,99 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from redis.asyncio import Redis
-
-from ai_core.automations import NO_ANSWER_MAX_SENDS
-from config_resolver import ConfigKey, ConfigResolver
 from db import (
-    FLOW_NO_ANSWER,
     AnalyticsRepository,
+    AutomationRepository,
     ConversationRepository,
-    IntegrationRepository,
     ReminderCandidate,
     TenantContext,
     session_scope,
     tenant_session,
 )
-from integrations.whatsapp.factory import build_whatsapp_sender
+from db.models.automation import AutomationFlow
 from shared import get_logger
-from workers.automation.lifecycle import resolve_lifecycle_plan, resolve_lifecycle_step
-from workers.outbound import (
-    MODE_SKIP,
-    decide_outbound,
-    is_within_24h,
-    send_and_persist_decision,
-)
 
 logger = get_logger(__name__)
 
-DEDUP_TTL_SECONDS = 60 * 60 * 24 * 3  # 3 days — longer than the second-reminder window
+# Conservative floor: a conversation must be silent at least this long before it
+# can count as a "no answer". The merchant's real first-reminder delay is set on
+# the trigger node (`delay_minutes`) and/or a leading `wait` in the graph.
+_MIN_IDLE_MINUTES = 30
 
 
 async def followup_no_answer(ctx: dict[str, Any]) -> dict[str, Any]:
-    settings = ctx["settings"]
-    redis: Redis = ctx.get("redis") or Redis.from_url(settings.redis_url)
-
-    # Default max_followups is 2; per-merchant overrides are checked inside the loop.
-    candidates = await _scan_candidates(max_followups=4)
+    now = datetime.now(tz=UTC)
+    candidates = await _scan_candidates()
     logger.info("uc03.scan", count=len(candidates))
 
-    sent = 0
+    emitted = 0
     for cand in candidates:
-        did_send = await _maybe_send_reminder(
-            cand, redis=redis, kek=settings.integrations_kek_base64
-        )
-        if did_send:
-            sent += 1
+        if await _maybe_emit(cand, now=now):
+            emitted += 1
 
-    return {"candidates": len(candidates), "sent": sent}
+    return {"candidates": len(candidates), "emitted": emitted}
 
 
-async def _scan_candidates(*, max_followups: int) -> list[ReminderCandidate]:
+async def _scan_candidates() -> list[ReminderCandidate]:
     async with session_scope() as session:
         repo = ConversationRepository(session)
-        return await repo.list_reminder_candidates(max_followups=max_followups)
+        return await repo.list_reminder_candidates(min_idle_minutes=_MIN_IDLE_MINUTES)
 
 
-async def _maybe_send_reminder(cand: ReminderCandidate, *, redis: Redis, kek: str) -> bool:
-    now = datetime.now(tz=UTC)
+async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
+    # Edge gate: fire once per silence episode, keyed on last_inbound_at.
+    if cand.last_inbound_at is None:
+        return False
+    if cand.no_answer_fired_for is not None and cand.no_answer_fired_for >= cand.last_inbound_at:
+        return False
+
     tenant_ctx = TenantContext(
         tenant_id=cand.tenant_id,
         merchant_id=cand.merchant_id,
         role="worker",
         actor_id=cand.merchant_id,
     )
-
     async with tenant_session(tenant_ctx) as session:
-        config = ConfigResolver(session)
-        first_min = _as_int(
-            await config.resolve(
-                ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN, merchant_id=cand.merchant_id
-            ),
-            120,
+        autos = await AutomationRepository(session).list_enabled_by_trigger(
+            merchant_id=cand.merchant_id, trigger_type="no_answer"
         )
-        second_min = _as_int(
-            await config.resolve(
-                ConfigKey.NO_ANSWER_SECOND_REMINDER_MIN, merchant_id=cand.merchant_id
-            ),
-            1440,
-        )
-        config_max = _as_int(
-            await config.resolve(ConfigKey.NO_ANSWER_MAX_FOLLOWUPS, merchant_id=cand.merchant_id),
-            2,
-        )
-
-        # ADR 0011: an ENABLED system flow sources the timing from the canvas;
-        # otherwise fall back to the ConfigKeys above (compat). The plan's per-send
-        # delay wins when set (> 0), else the config threshold fills the gap.
-        within_window = is_within_24h(cand.last_inbound_at, now)
-        minutes_of_day = now.hour * 60 + now.minute
-        plan = await resolve_lifecycle_plan(
-            session,
-            merchant_id=cand.merchant_id,
-            system_key=FLOW_NO_ANSWER,
-            context={"within_24h_window": within_window, "minutes_of_day": minutes_of_day},
-        )
-        graph_sends = plan.sends if plan else []
-        max_attempts = min(len(graph_sends), NO_ANSWER_MAX_SENDS) if graph_sends else config_max
-
-        next_attempt = cand.reminders_sent + 1
-        if next_attempt > max_attempts:
+        if not autos:
+            # Nobody is listening — don't emit (and don't burn the anchor, so the
+            # trigger fires the moment the merchant enables a no-answer automation).
             return False
 
-        # S-05: if the lead has a learned optimal send hour, defer until that window.
-        if cand.optimal_send_hour is not None:
-            current_hour = now.hour
-            dist = min(
-                abs(current_hour - cand.optimal_send_hour),
-                24 - abs(current_hour - cand.optimal_send_hour),
-            )
-            if dist > 2:
-                logger.debug(
-                    "uc03.deferred_optimal_hour",
-                    conversation_id=str(cand.conversation_id),
-                    optimal=cand.optimal_send_hour,
-                    current=current_hour,
-                )
-                return False
-
-        threshold_min = first_min if next_attempt == 1 else second_min
-        if graph_sends and len(graph_sends) >= next_attempt:
-            graph_delay = graph_sends[next_attempt - 1].delay_minutes
-            if graph_delay > 0:
-                threshold_min = graph_delay
-        reference = cand.last_reminder_at or cand.last_message_at
-        if now - reference < timedelta(minutes=threshold_min):
+        threshold_min = _threshold_minutes(autos)
+        if now - cand.last_message_at < timedelta(minutes=threshold_min):
             return False
 
-        # Decide free-text vs template based on the 24h window + optional system
-        # flow graph. Decide BEFORE consuming the dedup key so a skip (e.g. no
-        # approved template yet) can be retried once a template lands.
-        step = await resolve_lifecycle_step(
-            session,
-            merchant_id=cand.merchant_id,
-            system_key=FLOW_NO_ANSWER,
-            attempt_index=next_attempt - 1,
-            context={
-                "within_24h_window": within_window,
-                "minutes_of_day": minutes_of_day,
-            },
+        await ConversationRepository(session).mark_no_answer_fired(
+            cand.conversation_id, cand.last_inbound_at
         )
-
-        # No hardcoded copy: the message text comes solely from the send node's
-        # `free_text` on the lavagnetta (via `step`). A blank send node → skip.
-        analytics = AnalyticsRepository(session)
-        decision = decide_outbound(
-            within_window=within_window,
-            step=step,
-            context={
-                "contact.phone": cand.wa_contact_phone,
-                "contact.name": cand.lead_name or "",
-                "lead.name": cand.lead_name or "",
-                "lead.first_name": (cand.lead_name or "").split(" ")[0],
-            },
-        )
-        if decision.mode == MODE_SKIP:
-            logger.info(
-                "uc03.skipped",
-                conversation_id=str(cand.conversation_id),
-                reason=decision.reason,
-                within_window=within_window,
-            )
-            await analytics.emit(
-                tenant_id=cand.tenant_id,
-                merchant_id=cand.merchant_id,
-                event_type="reminder.skipped",
-                subject_type="conversation",
-                subject_id=cand.conversation_id,
-                properties={"attempt": next_attempt, "reason": decision.reason},
-            )
-            return False
-
-        # Resolve the integration BEFORE consuming the dedup key — a missing or
-        # not-yet-provisioned channel must not burn the attempt's key for the
-        # full TTL (which would silently lose the reminder even after the channel
-        # is fixed minutes later).
-        integrations = IntegrationRepository(session, kek_base64=kek)
-        wa = await integrations.resolve_whatsapp(cand.wa_phone_number_id)
-        if wa is None:
-            logger.info("uc03.no_wa_integration", conversation_id=str(cand.conversation_id))
-            return False
-
-        # Redis dedup — one worker wins the send even if the scan returned dupes.
-        dedup_key = f"noanswer:{cand.conversation_id}:{next_attempt}"
-        acquired = await redis.set(dedup_key, "1", nx=True, ex=DEDUP_TTL_SECONDS)
-        if not acquired:
-            return False
-
-        # Send first, then persist — if the provider fails, we'd rather retry
-        # than leave a ghost "reminder sent" row. Dedup key prevents duplicate
-        # sends within TTL.
-        client = build_whatsapp_sender(
-            phone_number_id=wa.phone_number_id,
-            api_key=wa.api_key,
-            waba_base_url=wa.waba_base_url,
-        )
-        try:
-            await send_and_persist_decision(
-                client,
-                to_phone=cand.wa_contact_phone,
-                decision=decision,
-                session=session,
-                conversation_id=cand.conversation_id,
-                merchant_id=cand.merchant_id,
-                sender_type="no_answer",
-            )
-        finally:
-            await client.close()
-
-        convs = ConversationRepository(session)
-        await convs.record_reminder_sent(cand.conversation_id)
-
-        await analytics.emit(
+        await AnalyticsRepository(session).emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
-            event_type="reminder.sent",
+            event_type="lead.no_answer",
             subject_type="conversation",
             subject_id=cand.conversation_id,
             properties={
-                "attempt": next_attempt,
-                "idle_minutes": int((now - reference).total_seconds() / 60),
-                "mode": decision.mode,
+                "idle_minutes": int((now - cand.last_message_at).total_seconds() / 60),
+                # Re-engagement anchor: the engine cancels a stale cadence if the
+                # lead's last_inbound_at advances past this at resume time.
+                "episode_anchor": cand.last_inbound_at.isoformat(),
             },
         )
-        return True
+        logger.info("uc03.emitted", conversation_id=str(cand.conversation_id))
+    return True
 
 
-def _as_int(value: object, default: int) -> int:
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return default
+def _threshold_minutes(autos: list[AutomationFlow]) -> int:
+    """Smallest `no_answer` trigger delay across the enabled automations — the
+    trigger fires as soon as the earliest-configured one wants it. Falls back to
+    the idle floor when no trigger sets an explicit `delay_minutes`."""
+    values: list[int] = []
+    for auto in autos:
+        trigger = next((n for n in auto.nodes if n.kind == "trigger"), None)
+        delay = (trigger.config or {}).get("delay_minutes") if trigger else None
+        if isinstance(delay, (int, float)) and delay > 0:
+            values.append(int(delay))
+    return min(values) if values else _MIN_IDLE_MINUTES

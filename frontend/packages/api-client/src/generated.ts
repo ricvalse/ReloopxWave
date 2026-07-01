@@ -1388,6 +1388,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/ghl/locations/{location_id}/refresh-name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ghl Refresh Location Name
+         * @description Backfill a location's display name from GHL (`GET /locations/{id}`).
+         *
+         *     The name is fetched best-effort at INSTALL time and can end up null (fetch
+         *     failed, or the location predates that code). This lets an agency admin
+         *     re-pull it on demand from the linking UI. Uses the stored location token
+         *     (auto-refreshing + persisting it on rotation, like `/ghl/calendars`), so it
+         *     works even for `pending_link` sub-accounts not yet tied to a merchant.
+         */
+        post: operations["ghl_refresh_location_name_integrations_ghl_locations__location_id__refresh_name_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/ghl/locations/{location_id}/link": {
         parameters: {
             query?: never;
@@ -2050,10 +2076,6 @@ export interface components {
             description: string | null;
             /** Enabled */
             enabled: boolean;
-            /** System Key */
-            system_key: string | null;
-            /** Is System */
-            is_system: boolean;
             /** Trigger Type */
             trigger_type: string | null;
             /** Trigger Config */
@@ -3253,6 +3275,17 @@ export interface components {
             max_attempts: number;
             /** Message */
             message?: string | null;
+        };
+        /** RefreshLocationNameOut */
+        RefreshLocationNameOut: {
+            /** Location Id */
+            location_id: string;
+            /** Location Name */
+            location_name: string | null;
+            /** Refreshed */
+            refreshed: boolean;
+            /** Detail */
+            detail?: string | null;
         };
         /** RescheduleIn */
         RescheduleIn: {
@@ -6854,6 +6887,39 @@ export interface operations {
             };
         };
     };
+    ghl_refresh_location_name_integrations_ghl_locations__location_id__refresh_name_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                location_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefreshLocationNameOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ghl_link_location_integrations_ghl_locations__location_id__link_post: {
         parameters: {
             query?: never;
@@ -7859,6 +7925,7 @@ export enum ApiPaths {
     ghl_oauth_callback_integrations_crm_oauth_callback_get = "/integrations/crm/oauth/callback",
     ghl_agency_status_integrations_ghl_agency_status_get = "/integrations/ghl/agency/status",
     ghl_locations_integrations_ghl_locations_get = "/integrations/ghl/locations",
+    ghl_refresh_location_name_integrations_ghl_locations__location_id__refresh_name_post = "/integrations/ghl/locations/{location_id}/refresh-name",
     ghl_link_location_integrations_ghl_locations__location_id__link_post = "/integrations/ghl/locations/{location_id}/link",
     ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post = "/integrations/ghl/locations/{location_id}/unlink",
     ghl_calendars_integrations_ghl_calendars_get = "/integrations/ghl/calendars",

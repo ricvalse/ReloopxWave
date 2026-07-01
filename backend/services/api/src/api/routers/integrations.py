@@ -50,7 +50,7 @@ from integrations import (
     sign_oauth_state,
     verify_oauth_state,
 )
-from integrations.ghl.client import GHLClient, GHLTokenBundle
+from integrations.ghl.client import GHLClient, GHLTokenBundle, extract_location_name
 from shared import (
     IntegrationError,
     NotFoundError,
@@ -121,6 +121,15 @@ class LocationOut(BaseModel):
 
 class LocationsOut(BaseModel):
     locations: list[LocationOut]
+
+
+class RefreshLocationNameOut(BaseModel):
+    location_id: str
+    location_name: str | None
+    # False when GHL didn't return a usable name (rejected token, missing scope,
+    # transient error). `detail` carries a hint for the UI in that case.
+    refreshed: bool
+    detail: str | None = None
 
 
 class LinkLocationIn(BaseModel):
@@ -248,6 +257,96 @@ async def ghl_locations(ctx: CurrentContext, session: DBSession) -> LocationsOut
             )
             for r in rows
         ]
+    )
+
+
+@router.post("/ghl/locations/{location_id}/refresh-name", response_model=RefreshLocationNameOut)
+async def ghl_refresh_location_name(
+    location_id: str,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> RefreshLocationNameOut:
+    """Backfill a location's display name from GHL (`GET /locations/{id}`).
+
+    The name is fetched best-effort at INSTALL time and can end up null (fetch
+    failed, or the location predates that code). This lets an agency admin
+    re-pull it on demand from the linking UI. Uses the stored location token
+    (auto-refreshing + persisting it on rotation, like `/ghl/calendars`), so it
+    works even for `pending_link` sub-accounts not yet tied to a merchant.
+    """
+    tenant_id = _require_agency_scope(ctx)
+    settings = get_settings()
+    kek = settings.integrations_kek_base64
+    repo = GHLMarketplaceRepository(session, kek_base64=kek)
+    token = await repo.resolve_location_token_any_status(location_id)
+    if token is None or token.tenant_id != tenant_id:
+        raise NotFoundError("GHL location not found or not connected", location_id=location_id)
+
+    async def _persist(bundle: GHLTokenBundle) -> None:
+        if not bundle.location_id:
+            return
+        async with session_scope() as token_session:
+            await GHLMarketplaceRepository(token_session, kek_base64=kek).set_location_token(
+                location_id=bundle.location_id,
+                access_token=bundle.access_token,
+                refresh_token=bundle.refresh_token,
+                expires_at=bundle.expires_at,
+            )
+
+    client = GHLClient(
+        token_bundle=GHLTokenBundle(
+            access_token=token.access_token,
+            refresh_token=token.refresh_token,
+            expires_at=token.expires_at,
+            location_id=location_id,
+            user_type="Location",
+        ),
+        client_id=settings.ghl_client_id,
+        client_secret=settings.ghl_client_secret,
+        on_token_refresh=_persist,
+    )
+    try:
+        resp = await client.get_location(location_id)
+    except Exception as exc:
+        # Cosmetic backfill — never 500. GHL can reject the token (IntegrationError)
+        # or be unreachable/time out (raw httpx transport errors, which are NOT
+        # IntegrationError), so catch broadly like the INSTALL worker's
+        # `_fetch_location_name`. Surface a retry hint instead.
+        logger.warning(
+            "integrations.ghl.location.name_refresh_failed",
+            tenant_id=str(tenant_id),
+            location_id=location_id,
+            error_code=getattr(exc, "error_code", None),
+            error=str(exc),
+        )
+        return RefreshLocationNameOut(
+            location_id=location_id,
+            location_name=None,
+            refreshed=False,
+            detail="GHL non ha risposto. Verifica la connessione dell'agenzia e riprova.",
+        )
+    finally:
+        await client.close()
+
+    name = extract_location_name(resp)
+    if name:
+        await repo.upsert_location_install(
+            tenant_id=tenant_id,
+            company_id=token.company_id,
+            location_id=location_id,
+            location_name=name,
+        )
+    logger.info(
+        "integrations.ghl.location.name_refreshed",
+        tenant_id=str(tenant_id),
+        location_id=location_id,
+        named=bool(name),
+    )
+    return RefreshLocationNameOut(
+        location_id=location_id,
+        location_name=name,
+        refreshed=bool(name),
+        detail=None if name else "GHL non ha restituito un nome per questa location.",
     )
 
 

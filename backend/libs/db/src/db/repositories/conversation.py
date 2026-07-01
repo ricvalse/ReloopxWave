@@ -10,6 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Conversation, Lead, Merchant
 
 
+def _parse_iso(value: object) -> datetime | None:
+    """Parse an ISO-8601 timestamp stored as text in JSONB meta (None on miss)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 @dataclass(slots=True, frozen=True)
 class ReminderCandidate:
     conversation_id: UUID
@@ -20,13 +30,18 @@ class ReminderCandidate:
     last_message_at: datetime
     reminders_sent: int
     last_reminder_at: datetime | None
-    # Last inbound (customer) message — drives the 24h window decision. May be
-    # None on legacy rows created before migration 0014.
+    # Last inbound (customer) message — drives the 24h window decision AND the
+    # no-answer episode anchor (ADR 0015): the trigger fires once per silence
+    # episode, re-arming only when the lead sends a new inbound. May be None on
+    # legacy rows created before migration 0014.
     last_inbound_at: datetime | None = None
     # S-05: preferred send hour (0-23) learned by the send-time optimizer.
     optimal_send_hour: int | None = None
     # Lead display name — feeds `{name}` / `{{contact.name}}` in send-node free text.
     lead_name: str | None = None
+    # ADR 0015 edge-trigger anchor: the `last_inbound_at` we last emitted a
+    # `lead.no_answer` trigger for. None = never fired for this conversation.
+    no_answer_fired_for: datetime | None = None
 
 
 class ConversationRepository:
@@ -122,13 +137,16 @@ class ConversationRepository:
         )
 
     async def list_reminder_candidates(
-        self, *, max_followups: int, min_idle_minutes: int = 30
+        self, *, min_idle_minutes: int = 30
     ) -> list[ReminderCandidate]:
-        """Cross-tenant scan of conversations that might need a follow-up.
+        """Cross-tenant scan of conversations silent long enough to be a no-answer.
 
-        Applies a conservative floor on idle time so we don't pull every active
-        conversation on every tick. The per-merchant reminder threshold is
-        applied later, after the config cascade is resolved.
+        ADR 0015: the scheduler is a pure edge-triggered emitter — it no longer
+        tracks per-attempt cadence (that lives in the automation graph now), it
+        just surfaces conversations idle past a conservative floor, plus the
+        `no_answer_fired_for` anchor so the caller emits `lead.no_answer` once per
+        silence episode. Only conversations with a real inbound (`last_inbound_at`)
+        can go silent on the lead, so we require it.
         """
         now = datetime.now(tz=UTC)
         idle_cutoff = now - timedelta(minutes=min_idle_minutes)
@@ -148,6 +166,7 @@ class ConversationRepository:
                 Conversation.last_inbound_at,
                 reminders_sent_expr.label("reminders_sent"),
                 Conversation.meta["last_reminder_at"].astext.label("last_reminder_at"),
+                Conversation.meta["no_answer_fired_for"].astext.label("no_answer_fired_for"),
                 Lead.optimal_send_hour,
                 Lead.name.label("lead_name"),
             )
@@ -157,7 +176,7 @@ class ConversationRepository:
                 Conversation.status == "active",
                 Conversation.last_message_at.is_not(None),
                 Conversation.last_message_at < idle_cutoff,
-                reminders_sent_expr < max_followups,
+                Conversation.last_inbound_at.is_not(None),
             )
             .limit(500)  # safety cap per tick
         )
@@ -165,14 +184,6 @@ class ConversationRepository:
 
         results: list[ReminderCandidate] = []
         for row in rows.mappings():
-            last_rem = row["last_reminder_at"]
-            if isinstance(last_rem, str):
-                try:
-                    last_reminder_at = datetime.fromisoformat(last_rem.replace("Z", "+00:00"))
-                except ValueError:
-                    last_reminder_at = None
-            else:
-                last_reminder_at = None
             results.append(
                 ReminderCandidate(
                     conversation_id=row["id"],
@@ -182,10 +193,11 @@ class ConversationRepository:
                     wa_contact_phone=row["wa_contact_phone"] or "",
                     last_message_at=row["last_message_at"],
                     reminders_sent=int(row["reminders_sent"]),
-                    last_reminder_at=last_reminder_at,
+                    last_reminder_at=_parse_iso(row["last_reminder_at"]),
                     last_inbound_at=row["last_inbound_at"],
                     optimal_send_hour=row["optimal_send_hour"],
                     lead_name=row["lead_name"],
+                    no_answer_fired_for=_parse_iso(row["no_answer_fired_for"]),
                 )
             )
         return results
@@ -346,6 +358,25 @@ class ConversationRepository:
                 """
             ),
             {"conversation_id": str(conversation_id)},
+        )
+
+    async def mark_no_answer_fired(self, conversation_id: UUID, anchor: datetime) -> None:
+        """Stamp the `last_inbound_at` anchor a `lead.no_answer` trigger was emitted
+        for (ADR 0015). The scheduler suppresses re-emission until the lead sends a
+        new inbound (advancing `last_inbound_at` past this anchor)."""
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = jsonb_set(
+                    coalesce(meta, '{}'::jsonb),
+                    '{no_answer_fired_for}',
+                    to_jsonb(:anchor::text)
+                )
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id), "anchor": anchor.isoformat()},
         )
 
     async def update_state(self, conversation_id: UUID, state: str) -> None:

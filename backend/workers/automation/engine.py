@@ -32,6 +32,7 @@ from ai_core.automations import (
     _ATOMIC_CONDITION_TYPES,
     evaluate_condition,
     outgoing_targets,
+    wait_minutes,
 )
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
 from ai_core.llm import ChatMessage
@@ -67,12 +68,16 @@ from workers.outbound import (
 logger = get_logger(__name__)
 
 # analytics event_type → automation trigger_type (V1 trigger surface).
+# ADR 0015: the no_answer / reactivation schedulers are pure edge-triggered
+# emitters — they emit `lead.no_answer` / `lead.dormant` (once per episode), which
+# drive normal automations here. `reminder.sent` / `lead_reactivation.sent` are
+# NOT mapped: they are pure KPI records now, not trigger signals.
 EVENT_TO_TRIGGER: dict[str, str] = {
     "message.received": "message_received",
     "booking.created": "booking_created",
     "booking.failed": "booking_failed",
-    "reminder.sent": "no_answer",  # the no-answer follow-up fired = lead stayed silent
-    "lead_reactivation.sent": "lead_dormant",  # the dormant scan fired for this lead
+    "lead.no_answer": "no_answer",  # the lead went silent past the configured delay
+    "lead.dormant": "lead_dormant",  # the lead crossed the dormancy threshold
 }
 
 _CURSOR_KEY = "automation:dispatch:cursor"
@@ -100,6 +105,9 @@ class RunContext:
     conversation_id: UUID | None
     tenant_id: UUID
     merchant_id: UUID
+    # Last inbound (customer) message time — the ADR 0015 re-engagement signal the
+    # stale-cadence guard compares against the episode anchor at each resume.
+    last_inbound_at: datetime | None = None
     # Per-channel WhatsApp creds, captured once the integration resolves; threaded
     # into the TurnContext for AI-dispatched actions (e.g. propose_slots) that send.
     api_key: str = ""
@@ -196,6 +204,9 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
                     subject_type=ev.subject_type or "",
                     subject_id=str(ev.subject_id),
                     dedup=f"{auto.id}:{ev.id}",
+                    # ADR 0015: carry the episode anchor so a resumed cadence can
+                    # cancel itself if the lead re-engaged (see automation_run).
+                    episode_anchor=(ev.properties or {}).get("episode_anchor"),
                 )
                 dispatched += 1
 
@@ -218,6 +229,7 @@ async def automation_run(
     subject_id: str,
     start_keys: list[str] | None = None,
     dedup: str | None = None,
+    episode_anchor: str | None = None,
 ) -> dict[str, Any]:
     """Execute one automation graph for one triggering subject."""
     redis = ctx["redis"]
@@ -244,10 +256,6 @@ async def automation_run(
         automation = await AutomationRepository(session).get(UUID(automation_id))
         if automation is None or not automation.enabled:
             return {"skipped": "missing_or_disabled"}
-        # System lifecycle flows are scheduler-driven; never run them event-driven
-        # (defense in depth — list_enabled_by_trigger already excludes them).
-        if automation.system_key is not None:
-            return {"skipped": "system_flow"}
 
         run_ctx = await _resolve_context(
             session,
@@ -258,6 +266,13 @@ async def automation_run(
         )
         if run_ctx is None:
             return {"skipped": "no_context"}
+
+        # ADR 0015 stale-cadence guard: an edge-triggered episode (no_answer /
+        # dormant) carries the anchor timestamp it fired for. If the lead has since
+        # re-engaged (a newer inbound than the anchor), the episode is over — abort
+        # the remaining cadence instead of pestering someone who already replied.
+        if _episode_ended(episode_anchor, run_ctx.last_inbound_at):
+            return {"skipped": "episode_ended"}
 
         integrations = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
         wa = await integrations.resolve_whatsapp(run_ctx.wa_phone_number_id)
@@ -288,7 +303,11 @@ async def automation_run(
         finally:
             await sender.close()
 
-    # Schedule wait-node continuations after the session closes.
+    # Schedule wait-node continuations after the session closes. Each continuation
+    # carries a deterministic dedup key derived from this run's key + the resume
+    # nodes, so an ARQ retry/re-delivery of the deferred job can't double-send the
+    # segment (the deferred run re-checks the key at start via the `dedup` gate).
+    dedup_base = dedup if dedup is not None else f"{automation_id}:{subject_id}"
     for minutes, keys in deferrals:
         await redis.enqueue_job(
             "automation_run",
@@ -298,6 +317,8 @@ async def automation_run(
             subject_type=subject_type,
             subject_id=subject_id,
             start_keys=keys,
+            dedup=f"{dedup_base}:{'-'.join(sorted(keys))}",
+            episode_anchor=episode_anchor,
             _defer_by=timedelta(minutes=max(0, minutes)),
         )
 
@@ -355,11 +376,22 @@ async def _walk(
             queue.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
         elif node.kind == "action":
             if node.type == "wait":
-                minutes = _as_int((node.config or {}).get("minutes"), 0)
+                # Honour the node's `unit` (minutes|hours|days) — `wait_minutes`
+                # normalises it, matching the scheduler path (`resolve_send_plan`).
+                # A raw `.get("minutes")` here ignored the unit, so a "7 days" wait
+                # deferred 7 minutes.
+                minutes = wait_minutes(node.config or {})
                 successors = outgoing_targets(edges, key)
                 if successors and minutes > 0:
                     deferrals.append((minutes, successors))
                 # Stop this branch here; it resumes in the deferred run.
+                continue
+            if node.type == "wait_until_before":
+                # ADR 0015: sends gated on a future appointment (N hours before
+                # start) are delivered by the dedicated appointment-reminder
+                # scheduler, which reads the hours-before + copy from this same
+                # node. The event engine stops the branch here so it doesn't also
+                # fire the reminder at booking time.
                 continue
             if node.type == "ai_reply" and ai_reply_fired:
                 logger.info(
@@ -965,6 +997,7 @@ async def _resolve_context(
         tenant_id=tenant_id,
         merchant_id=merchant_id,
         ai_paused=ai_paused,
+        last_inbound_at=conv.last_inbound_at if conv else None,
     )
 
 
@@ -1032,3 +1065,16 @@ def _parse_ts(raw: Any) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _episode_ended(episode_anchor: str | None, last_inbound_at: datetime | None) -> bool:
+    """ADR 0015: True when an edge-triggered episode is stale — the lead sent a new
+    inbound (``last_inbound_at``) after the anchor the trigger fired for, so a
+    resumed cadence must stop. No anchor (event-driven, non-episodic triggers like
+    booking/first-contact) or no inbound → never stale."""
+    if not episode_anchor:
+        return False
+    anchor = _parse_ts(episode_anchor.replace("Z", "+00:00"))
+    if anchor is None or last_inbound_at is None:
+        return False
+    return last_inbound_at > anchor

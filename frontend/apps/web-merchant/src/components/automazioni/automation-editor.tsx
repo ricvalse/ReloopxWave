@@ -22,7 +22,6 @@ import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
 import {
   ACTION_DEFS,
-  ATOMIC_CONDITION_DEFS,
   CLAUSE_CONDITION_DEFS,
   CONDITION_DEFS,
   DEFS_BY_KIND,
@@ -78,13 +77,11 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
   return {};
 }
 
-function toRFNodes(a: Automation, isSystem: boolean): Node[] {
+function toRFNodes(a: Automation): Node[] {
   return a.nodes.map((n) => ({
     id: n.node_key,
     type: n.kind,
     position: { x: n.position_x, y: n.position_y },
-    // System lifecycle flows have a locked trigger (the entry point can't be removed).
-    deletable: !(isSystem && n.kind === 'trigger'),
     data: {
       kind: n.kind as NodeKind,
       type: n.type,
@@ -118,11 +115,10 @@ export function AutomationEditor({
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
-  const isSystem = editing?.is_system ?? false;
   const [name, setName] = useState(editing?.name ?? 'Nuova automazione');
   const [enabled, setEnabled] = useState(editing?.enabled ?? false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(
-    editing ? toRFNodes(editing, isSystem) : [],
+    editing ? toRFNodes(editing) : [],
   );
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(editing ? toRFEdges(editing) : []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -185,9 +181,6 @@ export function AutomationEditor({
 
   const deleteSelected = () => {
     if (!selectedId) return;
-    const node = nodes.find((n) => n.id === selectedId);
-    // The trigger of a system lifecycle flow is locked.
-    if (isSystem && (node?.data as AutomationNodeData | undefined)?.kind === 'trigger') return;
     setNodes((nds) => nds.filter((n) => n.id !== selectedId));
     setEdges((eds) => eds.filter((e) => e.source !== selectedId && e.target !== selectedId));
     setSelectedId(null);
@@ -238,35 +231,10 @@ export function AutomationEditor({
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
   const triggerCount = nodes.filter((n) => (n.data as AutomationNodeData).kind === 'trigger').length;
-  // Palette per flow kind. System flows: the trigger is locked (hide the Trigger
-  // group) and resolved synchronously by the schedulers, so only send / wait /
-  // wait_until_before actions + synchronous conditions are offered (no ai_check,
-  // ai_reply, set_lead_field, human_handoff, or the legacy send_* variants). A
-  // booking flow uses "attendi fino a X ore prima"; the others use the relative
-  // wait. Custom (event-driven) flows hide wait_until_before (unsupported by the
-  // event engine).
-  const isBookingSystem = isSystem && editing?.trigger_type === 'booking_created';
-  const palette = PALETTE.filter((g) => !(isSystem && g.kind === 'trigger')).map((g) => {
-    if (!isSystem) {
-      if (g.kind === 'action') {
-        return { ...g, defs: g.defs.filter((d) => d.type !== 'wait_until_before') };
-      }
-      return g;
-    }
-    if (g.kind === 'condition') {
-      return { ...g, defs: g.defs.filter((d) => d.type !== 'ai_check') };
-    }
-    if (g.kind === 'action') {
-      const hidden = ['send_template', 'send_message', 'ai_reply', 'set_lead_field', 'human_handoff'];
-      const defs = g.defs.filter(
-        (d) =>
-          !hidden.includes(d.type) &&
-          (isBookingSystem ? d.type !== 'wait' : d.type !== 'wait_until_before'),
-      );
-      return { ...g, defs };
-    }
-    return g;
-  });
+  // Every automation gets the full palette: the Trigger group, all conditions and
+  // all actions. There is no longer a "system flow" with a locked trigger or a
+  // restricted set of blocks.
+  const palette = PALETTE;
 
   return (
     <Card>
@@ -288,12 +256,7 @@ export function AutomationEditor({
           </div>
         </div>
 
-        {isSystem ? (
-          <p className="text-xs text-muted-foreground">
-            Flusso di sistema: il trigger è bloccato. Aggiungi condizioni e azioni «Invia» per
-            personalizzare gli invii; attivalo per usarlo al posto del testo predefinito.
-          </p>
-        ) : triggerCount !== 1 ? (
+        {triggerCount !== 1 ? (
           <p className="text-xs text-amber-600 dark:text-amber-500">
             Un’automazione richiede esattamente un nodo trigger (ora: {triggerCount}). Necessario per attivarla.
           </p>
@@ -351,7 +314,6 @@ export function AutomationEditor({
             {selectedNode ? (
               <NodeConfigPanel
                 node={selectedNode}
-                isSystem={isSystem}
                 approvedTemplates={approvedTemplates}
                 allTemplates={templates.data ?? []}
                 onChange={(key, value) => updateConfig(selectedNode.id, key, value)}
@@ -372,14 +334,12 @@ export function AutomationEditor({
 
 function NodeConfigPanel({
   node,
-  isSystem,
   approvedTemplates,
   allTemplates,
   onChange,
   onDelete,
 }: {
   node: Node;
-  isSystem: boolean;
   approvedTemplates: Template[];
   allTemplates: Template[];
   onChange: (key: string, value: unknown) => void;
@@ -434,7 +394,6 @@ function NodeConfigPanel({
             key={field.key}
             field={field}
             value={config[field.key]}
-            isSystem={isSystem}
             approvedTemplates={approvedTemplates}
             onChange={(value) => onChange(field.key, value)}
           />
@@ -447,13 +406,11 @@ function NodeConfigPanel({
 function ConfigField({
   field,
   value,
-  isSystem,
   approvedTemplates,
   onChange,
 }: {
   field: FieldDef;
   value: unknown;
-  isSystem?: boolean;
   approvedTemplates: Template[];
   onChange: (value: unknown) => void;
 }) {
@@ -516,7 +473,6 @@ function ConfigField({
       ) : field.kind === 'clauses' ? (
         <ClausesEditor
           value={value}
-          isSystem={isSystem}
           approvedTemplates={approvedTemplates}
           onChange={onChange}
         />
@@ -558,18 +514,14 @@ function clauseDefaults(type: string): Clause {
 // own fields via ConfigField, writing into the clause object.
 function ClausesEditor({
   value,
-  isSystem,
   approvedTemplates,
   onChange,
 }: {
   value: unknown;
-  isSystem?: boolean;
   approvedTemplates: Template[];
   onChange: (value: unknown) => void;
 }) {
-  // Custom/event flows can use `ai_check` clauses (evaluated async by the worker);
-  // system flows are scheduler-resolved (sync) so they get the atomic set only.
-  const clauseDefs = isSystem ? ATOMIC_CONDITION_DEFS : CLAUSE_CONDITION_DEFS;
+  const clauseDefs = CLAUSE_CONDITION_DEFS;
   const clauses: Clause[] = Array.isArray(value) ? (value as Clause[]) : [];
   const update = (i: number, next: Clause) =>
     onChange(clauses.map((c, idx) => (idx === i ? next : c)));

@@ -313,6 +313,20 @@ class GHLMarketplaceRepository:
             return None
         return self._to_resolved_location(row)
 
+    async def resolve_location_token_any_status(
+        self, location_id: str
+    ) -> ResolvedLocationToken | None:
+        """Decrypt a location's token by id for ANY non-revoked status, including
+        `pending_link` (minted at INSTALL but not yet linked to a merchant) and
+        `error`. Unlike `resolve_location_by_id` (active-only), this powers
+        agency-side maintenance — e.g. backfilling the display name on a
+        sub-account that failed the best-effort name fetch at install time.
+        Returns None for unknown, revoked, or un-tokened rows."""
+        row = await self._get_location(location_id)
+        if row is None or row.status == "revoked":
+            return None
+        return self._to_resolved_location(row)
+
     async def merchant_id_for_location(self, location_id: str) -> UUID | None:
         """Lightweight locationId -> merchant_id lookup (no token decrypt).
 

@@ -84,11 +84,6 @@ ACTION_TYPES = (
     "human_handoff",
 )
 
-# The 4 lifecycle flows that were the legacy linear `flows` (db/models/flow.py).
-# When `automation_flows.system_key` is one of these, the flow is a *system*
-# automation: scheduler-driven (not event-driven), trigger locked, non-deletable.
-SYSTEM_AUTOMATION_KEYS = ("no_answer", "reactivation", "booking_reminder", "first_contact")
-
 
 class AutomationFlow(Base, TimestampMixin):
     __tablename__ = "automation_flows"
@@ -104,10 +99,6 @@ class AutomationFlow(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     # A flow only fires once a merchant explicitly enables it (no half-built runs).
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # NULL for custom (event-driven) flows. One of SYSTEM_AUTOMATION_KEYS for the
-    # 4 lifecycle flows: scheduler-driven, trigger locked, non-deletable, and
-    # excluded from the event dispatcher. Unique per merchant (partial index).
-    system_key: Mapped[str | None] = mapped_column(String(32), index=True)
     # Denormalised from the single trigger node so the dispatcher can resolve
     # subscribers for an event type without scanning nodes.
     trigger_type: Mapped[str | None] = mapped_column(String(64), index=True)

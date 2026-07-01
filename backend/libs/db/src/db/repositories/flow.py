@@ -17,17 +17,8 @@ from sqlalchemy.orm import selectinload
 
 from db.models import Flow, FlowStep, WhatsAppTemplate
 
-# Canonical lifecycle flow keys (V1). 'custom' is reserved for future use.
-FLOW_NO_ANSWER = "no_answer"
-FLOW_REACTIVATION = "reactivation"
-FLOW_BOOKING_REMINDER = "booking_reminder"
+# Canonical lifecycle flow key (V1). 'custom' is reserved for future use.
 FLOW_FIRST_CONTACT = "first_contact"
-LIFECYCLE_FLOW_KEYS = (
-    FLOW_NO_ANSWER,
-    FLOW_REACTIVATION,
-    FLOW_BOOKING_REMINDER,
-    FLOW_FIRST_CONTACT,
-)
 
 
 @dataclass(slots=True, frozen=True)

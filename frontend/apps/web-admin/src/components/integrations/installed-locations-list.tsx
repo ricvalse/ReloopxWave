@@ -18,6 +18,7 @@ type Merchant = { id: string; name: string; slug: string };
 export function InstalledLocationsList() {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Record<string, string>>({});
+  const [nameErr, setNameErr] = useState<Record<string, string>>({});
 
   const locations = useQuery({
     queryKey: ['ghl', 'locations'],
@@ -69,6 +70,38 @@ export function InstalledLocationsList() {
     onSuccess: () => void invalidate(),
   });
 
+  const refreshName = useMutation({
+    mutationFn: async (locationId: string) => {
+      const api = getApiClient();
+      const { data, error } = await api.POST(
+        '/integrations/ghl/locations/{location_id}/refresh-name',
+        { params: { path: { location_id: locationId } } },
+      );
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return data as {
+        location_id: string;
+        location_name: string | null;
+        refreshed: boolean;
+        detail: string | null;
+      };
+    },
+    onSuccess: (data, locationId) => {
+      void invalidate();
+      setNameErr((s) => {
+        const next = { ...s };
+        if (data.refreshed) delete next[locationId];
+        else next[locationId] = data.detail ?? 'Nome non disponibile.';
+        return next;
+      });
+    },
+    onError: (err, locationId) => {
+      setNameErr((s) => ({
+        ...s,
+        [locationId]: err instanceof Error ? err.message : 'Errore imprevisto.',
+      }));
+    },
+  });
+
   const rows = locations.data ?? [];
   const merchantList = merchants.data ?? [];
   const merchantName = (id: string | null) =>
@@ -112,10 +145,34 @@ export function InstalledLocationsList() {
                 return (
                   <tr key={loc.location_id} className="border-b last:border-0">
                     <td className="px-4 py-3">
-                      <div>{loc.location_name ?? '—'}</div>
+                      <div className="flex items-center gap-2">
+                        <span>{loc.location_name ?? '—'}</span>
+                        {loc.location_name == null && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            disabled={
+                              refreshName.isPending &&
+                              refreshName.variables === loc.location_id
+                            }
+                            onClick={() => refreshName.mutate(loc.location_id)}
+                          >
+                            {refreshName.isPending &&
+                            refreshName.variables === loc.location_id
+                              ? 'Aggiorno…'
+                              : 'Aggiorna nome'}
+                          </Button>
+                        )}
+                      </div>
                       <div className="font-mono text-xs text-muted-foreground">
                         {loc.location_id}
                       </div>
+                      {loc.location_name == null && nameErr[loc.location_id] && (
+                        <div className="mt-1 text-xs text-destructive">
+                          {nameErr[loc.location_id]}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <LocationStatus status={loc.status} />

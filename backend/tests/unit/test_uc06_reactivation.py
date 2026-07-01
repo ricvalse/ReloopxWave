@@ -1,25 +1,26 @@
-"""UC-06 — reactivation opt-out + send decisioning.
+"""UC-06 — opt-out detection + dormant trigger emitter (ADR 0015).
 
-Covers the Sprint-5 additions:
-  * `_is_opt_out` — STOP/CANCELLA detection (exact, normalised) that drives the
+Covers:
+  * `_is_opt_out` — STOP/CANCELLA detection (exact, normalised) driving the
     opt-out intercept in `handle_inbound_persist`.
-  * reactivation `_maybe_send`: sends via an approved template (dormant leads are
-    outside the 24h window), and skips cleanly when no template is configured.
+  * reactivation `_maybe_emit`: emits a `lead.dormant` event once per dormancy
+    episode (edge-triggered on `last_interaction_at`) when an enabled `lead_dormant`
+    automation exists and the lead has crossed its threshold; sends nothing itself.
 """
 
 from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
-from workers import outbound
 from workers.scheduler import reactivation
 
 from ai_core.conversation_service import _is_opt_out
-from db import ReactivationCandidate, ResolvedWhatsAppIntegration
+from db import ReactivationCandidate
 
 
 def test_is_opt_out_matches_exact_keywords() -> None:
@@ -32,39 +33,17 @@ def test_is_opt_out_ignores_sentences() -> None:
         assert _is_opt_out(msg) is False
 
 
-# ---- reactivation send ----------------------------------------------------
+# ---- reactivation trigger emitter -----------------------------------------
 
 
-@dataclass
-class FakeRedis:
-    _store: dict | None = None
-
-    async def set(self, key, value, *, nx=False, ex=None):
-        if self._store is None:
-            self._store = {}
-        if nx and key in self._store:
-            return None
-        self._store[key] = value
-        return True
+def _fake_flow(days: int = 90) -> Any:
+    trigger = SimpleNamespace(kind="trigger", type="lead_dormant", config={"days": days})
+    return SimpleNamespace(nodes=[trigger], edges=[])
 
 
-@dataclass
-class FakeStep:
-    window_policy: str = "auto"
-    free_text: str | None = None
-    template_name: str | None = None
-    template_language: str | None = "it"
-    template_variables: list | None = None
-    variable_mapping: dict | None = None
-    template_approved: bool = False
-    template_header_image_url: str | None = None
-    flow_enabled: bool = True
-    step_enabled: bool = True
-
-
-def _candidate() -> ReactivationCandidate:
+def _candidate(**over: Any) -> ReactivationCandidate:
     now = datetime.now(tz=UTC)
-    return ReactivationCandidate(
+    base: dict[str, Any] = dict(
         lead_id=uuid.uuid4(),
         merchant_id=uuid.uuid4(),
         tenant_id=uuid.uuid4(),
@@ -74,143 +53,89 @@ def _candidate() -> ReactivationCandidate:
         attempts_sent=0,
         last_reactivation_at=None,
         name="Mario",
+        last_inbound_at=now - timedelta(days=120),
+        dormant_fired_for=None,
     )
+    base.update(over)
+    return ReactivationCandidate(**base)
 
 
-class _FakeConv:
-    def __init__(self) -> None:
-        self.id = uuid.uuid4()
-
-
-def _patch(
-    monkeypatch,
-    *,
-    step: FakeStep | None,
-    records: list,
-    sends: list,
-    persisted: list | None = None,
-) -> None:
+def _patch(monkeypatch: pytest.MonkeyPatch, *, flows: list, marks: list, events: list) -> None:
     @asynccontextmanager
     async def fake_tenant_session(ctx):
         yield object()
 
-    class FakeConvRepo:
+    class FakeAutoRepo:
         def __init__(self, session): ...
-        async def get_active(self, *, merchant_id, wa_contact_phone):
-            return None
-
-        async def create(self, **kw):
-            return _FakeConv()
-
-    class FakeMessageRepo:
-        def __init__(self, session): ...
-        async def persist_outbound_message(self, **kw):
-            if persisted is not None:
-                persisted.append(kw)
-            return object()
-
-    class FakeConfig:
-        def __init__(self, session): ...
-        async def resolve(self, key, *, merchant_id):
-            return {
-                "reactivation.dormant_days": 90,
-                "reactivation.interval_days": 7,
-                "reactivation.max_attempts": 3,
-            }.get(getattr(key, "value", str(key)))
-
-    async def fake_resolve_lifecycle_step(
-        session, *, merchant_id, system_key, attempt_index, context
-    ):
-        return step
-
-    async def fake_resolve_lifecycle_plan(session, *, merchant_id, system_key, context):
-        # No enabled system flow → scheduler sources timing from ConfigKeys.
-        return None
-
-    class FakeIntegrationRepo:
-        def __init__(self, session, *, kek_base64): ...
-        async def resolve_whatsapp(self, phone_number_id):
-            return ResolvedWhatsAppIntegration(
-                merchant_id=uuid.uuid4(),
-                tenant_id=uuid.uuid4(),
-                phone_number_id=phone_number_id,
-                api_key="k",
-                waba_base_url=None,
-                meta={},
-            )
+        async def list_enabled_by_trigger(self, *, merchant_id, trigger_type):
+            assert trigger_type == "lead_dormant"
+            return flows
 
     class FakeLeadRepo:
         def __init__(self, session): ...
-        async def record_reactivation_sent(self, lead_id):
-            records.append(lead_id)
+        async def mark_dormant_fired(self, lead_id, anchor):
+            marks.append((lead_id, anchor))
 
-    class FakeAnalyticsRepo:
+    class FakeAnalytics:
         def __init__(self, session): ...
-        async def emit(self, **kw): ...
-
-    class FakeWAClient:
-        async def send_text(self, *, to_phone, text):
-            sends.append(("text", text))
-            return {"messages": [{"id": "wamid.t"}]}
-
-        async def send_template(self, *, to_phone, template_name, language, components):
-            sends.append(("template", template_name))
-            return {"messages": [{"id": "wamid.tmpl"}]}
-
-        async def close(self): ...
+        async def emit(self, **kw):
+            events.append(kw)
 
     monkeypatch.setattr(reactivation, "tenant_session", fake_tenant_session)
-    monkeypatch.setattr(reactivation, "ConfigResolver", FakeConfig)
-    monkeypatch.setattr(reactivation, "resolve_lifecycle_step", fake_resolve_lifecycle_step)
-    monkeypatch.setattr(reactivation, "resolve_lifecycle_plan", fake_resolve_lifecycle_plan)
-    monkeypatch.setattr(reactivation, "IntegrationRepository", FakeIntegrationRepo)
+    monkeypatch.setattr(reactivation, "AutomationRepository", FakeAutoRepo)
     monkeypatch.setattr(reactivation, "LeadRepository", FakeLeadRepo)
-    monkeypatch.setattr(reactivation, "AnalyticsRepository", FakeAnalyticsRepo)
-    monkeypatch.setattr(reactivation, "ConversationRepository", FakeConvRepo)
-    monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
-    monkeypatch.setattr(reactivation, "build_whatsapp_sender", lambda **kw: FakeWAClient())
+    monkeypatch.setattr(reactivation, "AnalyticsRepository", FakeAnalytics)
 
 
-async def test_reactivation_sends_template_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    step = FakeStep(
-        template_name="reactivation_it",
-        template_approved=True,
-        template_variables=[],
-        variable_mapping={},
-    )
-    records: list = []
-    sends: list = []
-    persisted: list = []
-    _patch(monkeypatch, step=step, records=records, sends=sends, persisted=persisted)
+async def test_emits_when_dormant_past_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(90)], marks=marks, events=events)
+    cand = _candidate()  # dormant 120 days > 90
 
-    sent = await reactivation._maybe_send(
-        _candidate(), now=datetime.now(tz=UTC), redis=FakeRedis(), kek="unused"
-    )
+    ok = await reactivation._maybe_emit(cand, now=datetime.now(tz=UTC))
 
-    assert sent is True
-    assert sends == [("template", "reactivation_it")]
-    assert len(records) == 1
-    # #29: the reactivation is persisted as an outbound Message with its wa id.
-    assert len(persisted) == 1
-    assert persisted[0]["wa_message_id"] == "wamid.tmpl"
-    assert persisted[0]["status"] == "sent"
+    assert ok is True
+    assert marks == [(cand.lead_id, cand.last_interaction_at)]
+    assert events and events[0]["event_type"] == "lead.dormant"
+    assert events[0]["subject_type"] == "lead"
+    assert events[0]["subject_id"] == cand.lead_id
 
 
-async def test_reactivation_skips_outside_window_without_template(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # ADR 0014: no enabled reactivation flow on the canvas (step is None) →
-    # decide_outbound returns SKIP ("no_flow"), nothing sent.
-    records: list = []
-    sends: list = []
-    _patch(monkeypatch, step=None, records=records, sends=sends)
+async def test_skips_when_no_enabled_automation(monkeypatch: pytest.MonkeyPatch) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[], marks=marks, events=events)
 
-    sent = await reactivation._maybe_send(
-        _candidate(), now=datetime.now(tz=UTC), redis=FakeRedis(), kek="unused"
-    )
+    ok = await reactivation._maybe_emit(_candidate(), now=datetime.now(tz=UTC))
 
-    assert sent is False
-    assert sends == []
-    assert records == []
+    assert ok is False
+    assert marks == [] and events == []
+
+
+async def test_skips_when_already_fired_for_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow()], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    anchor = now - timedelta(days=120)
+    cand = _candidate(last_interaction_at=anchor, dormant_fired_for=anchor)
+
+    ok = await reactivation._maybe_emit(cand, now=now)
+
+    assert ok is False
+    assert events == []
+
+
+async def test_skips_when_not_dormant_enough(monkeypatch: pytest.MonkeyPatch) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(90)], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    # Dormant only 40 days < the trigger's 90-day threshold.
+    cand = _candidate(last_interaction_at=now - timedelta(days=40))
+
+    ok = await reactivation._maybe_emit(cand, now=now)
+
+    assert ok is False
+    assert events == []

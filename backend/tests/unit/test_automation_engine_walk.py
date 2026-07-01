@@ -175,6 +175,30 @@ async def test_walk_wait_zero_minutes_does_not_defer() -> None:
     assert sent == 0
 
 
+async def test_walk_wait_honours_unit_days() -> None:
+    """A wait with unit=days defers value*1440 minutes, not the raw value.
+
+    Regression: the engine read `.get("minutes")` raw and ignored `unit`, so a
+    "7 giorni" wait deferred 7 minutes. `wait_minutes` normalises it now.
+    """
+    automation = _automation(
+        nodes=[
+            _node("w", "action", "wait", {"minutes": 7, "unit": "days"}),
+            _node("after", "action", "send_message", {"text": "dopo 7 giorni"}),
+        ],
+        edges=[_edge("w", "after")],
+    )
+    sent, deferrals = await _walk(
+        automation,
+        _run_ctx(within_window=True),
+        start_keys=["w"],
+        sender=_FakeSender(),
+        templates=_FakeTemplates(),
+    )
+    assert deferrals == [(7 * 1440, ["after"])]
+    assert sent == 0
+
+
 # --- _do_action: send_message 24h window ------------------------------------
 
 
@@ -264,9 +288,11 @@ def test_event_to_trigger_mapping_covers_v1_surface() -> None:
     assert EVENT_TO_TRIGGER["message.received"] == "message_received"
     assert EVENT_TO_TRIGGER["booking.created"] == "booking_created"
     assert EVENT_TO_TRIGGER["booking.failed"] == "booking_failed"
-    # The no-answer follow-up firing means the lead stayed silent.
-    assert EVENT_TO_TRIGGER["reminder.sent"] == "no_answer"
-    # The dormant scan firing for a lead maps to lead_dormant.
-    assert EVENT_TO_TRIGGER["lead_reactivation.sent"] == "lead_dormant"
+    # ADR 0015: the schedulers emit dedicated edge-triggered events.
+    assert EVENT_TO_TRIGGER["lead.no_answer"] == "no_answer"
+    assert EVENT_TO_TRIGGER["lead.dormant"] == "lead_dormant"
+    # The old KPI-record events are no longer trigger signals.
+    assert "reminder.sent" not in EVENT_TO_TRIGGER
+    assert "lead_reactivation.sent" not in EVENT_TO_TRIGGER
     # An unmapped event is simply not a key (dispatcher filters via `in`).
     assert "objection.extracted" not in EVENT_TO_TRIGGER

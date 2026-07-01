@@ -19,7 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ai_core.automations import system_flow_timing_errors, validate_graph
+from ai_core.automations import validate_graph
 from api.dependencies.session import CurrentContext, DBSession
 from db import AutomationRepository
 from db.models import AutomationFlow
@@ -77,8 +77,6 @@ class AutomationOut(BaseModel):
     name: str
     description: str | None
     enabled: bool
-    system_key: str | None
-    is_system: bool
     trigger_type: str | None
     trigger_config: dict[str, Any]
     canvas: dict[str, Any]
@@ -96,8 +94,6 @@ class AutomationOut(BaseModel):
             name=f.name,
             description=f.description,
             enabled=f.enabled,
-            system_key=f.system_key,
-            is_system=f.system_key is not None,
             trigger_type=f.trigger_type,
             trigger_config=dict(f.trigger_config or {}),
             canvas=dict(f.canvas or {}),
@@ -145,12 +141,8 @@ async def catalog(ctx: CurrentContext, session: DBSession) -> AutomationCatalogO
 async def list_automations(ctx: CurrentContext, session: DBSession) -> list[AutomationOut]:
     merchant_id = _require_merchant_scope(ctx)
     repo = AutomationRepository(session)
-    # The system lifecycle flows always appear on the canvas (seeded on demand).
-    await repo.ensure_system_automations(merchant_id)
     rows = await repo.list_for_merchant(merchant_id)
-    # `first_contact` is seeded but has no scheduler consumer yet (ADR 0011) —
-    # hide it so we don't expose an editable-but-inert flow on the canvas.
-    return [AutomationOut.from_model(r) for r in rows if r.system_key != "first_contact"]
+    return [AutomationOut.from_model(r) for r in rows]
 
 
 @router.post("", response_model=AutomationOut, status_code=201)
@@ -188,9 +180,8 @@ async def create_automation(
 async def get_automation(
     automation_id: UUID, ctx: CurrentContext, session: DBSession
 ) -> AutomationOut:
-    merchant_id = _require_merchant_scope(ctx)
+    _require_merchant_scope(ctx)
     repo = AutomationRepository(session)
-    await repo.ensure_system_automations(merchant_id)
     flow = await repo.get(automation_id)
     if flow is None:
         raise NotFoundError("Automation not found", automation_id=str(automation_id))
@@ -209,9 +200,6 @@ async def update_automation(
     flow = await repo.get(automation_id)
     if flow is None:
         raise NotFoundError("Automation not found", automation_id=str(automation_id))
-
-    if flow.system_key is not None:
-        _guard_system_flow_edit(flow, payload)
 
     nodes, edges = _graph_dicts(payload)
     trigger_type, trigger_config = _validate_for_save(payload, nodes, edges)
@@ -245,8 +233,6 @@ async def delete_automation(automation_id: UUID, ctx: CurrentContext, session: D
     flow = await repo.get(automation_id)
     if flow is None:
         raise NotFoundError("Automation not found", automation_id=str(automation_id))
-    if flow.system_key is not None:
-        raise HTTPException(status_code=422, detail="system automations cannot be deleted")
     await repo.delete(flow)
 
 
@@ -288,50 +274,3 @@ def _validate_for_save(
             detail={"errors": result.errors, "message": "fix the flow before enabling it"},
         )
     return result.trigger_type, result.trigger_config
-
-
-# Action types a system flow may contain. System flows are resolved SYNCHRONOUSLY
-# by the schedulers (`resolve_send_plan`/`resolve_send_node_at`), so IO-bound nodes
-# (ai_reply, set_lead_field, human_handoff) and the async `ai_check` condition are
-# forbidden — placed here they would fail-closed silently. `send`/`wait`/
-# `wait_until_before` carry the content + timing the schedulers read (ADR 0011).
-_SYSTEM_FLOW_ACTIONS = frozenset({"send", "wait", "wait_until_before"})
-
-
-def _guard_system_flow_edit(flow: AutomationFlow, payload: AutomationUpsertIn) -> None:
-    """System lifecycle flows: the trigger is locked; only send / wait /
-    wait_until_before actions and synchronous conditions are allowed; and the
-    timing must stay within the compliance ranges when the flow is enabled."""
-    triggers = [n for n in payload.nodes if n.kind == "trigger"]
-    if len(triggers) != 1 or triggers[0].type != flow.trigger_type:
-        raise HTTPException(
-            status_code=422, detail="the trigger of a system flow cannot be changed"
-        )
-    for n in payload.nodes:
-        if n.kind == "action" and n.type not in _SYSTEM_FLOW_ACTIONS:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"system flows do not allow the '{n.type}' action "
-                    "(use 'send', 'wait' or 'wait_until_before')"
-                ),
-            )
-        if n.kind == "condition" and n.type == "ai_check":
-            raise HTTPException(
-                status_code=422,
-                detail="system flows cannot use the AI condition (resolved synchronously)",
-            )
-    # Compliance/anti-spam timing ranges: enforced only when ENABLING (a disabled
-    # draft may be saved incomplete, mirroring `_validate_for_save`).
-    if payload.enabled and flow.system_key is not None:
-        nodes = [nn.model_dump() for nn in payload.nodes]
-        edges = [ee.model_dump() for ee in payload.edges]
-        errors = system_flow_timing_errors(flow.system_key, nodes, edges)
-        if errors:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "errors": errors,
-                    "message": "correggi i tempi del flusso prima di attivarlo",
-                },
-            )

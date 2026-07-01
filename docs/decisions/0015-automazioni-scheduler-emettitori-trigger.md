@@ -1,6 +1,6 @@
 # ADR 0015 — Automazioni: lo scheduler è solo un emettitore di trigger (edge-triggered); la lavagnetta possiede cadenza e contenuto
 
-Data: 2026-07-01 · Stato: proposto · Contesto: richiesta owner — «vorrei che la fine del system flow sia il trigger che poi viene usato nelle automazioni».
+Data: 2026-07-01 · Stato: accettato · implementato 2026-07-01 · Contesto: richiesta owner — «vorrei che la fine del system flow sia il trigger che poi viene usato nelle automazioni».
 
 ## Contesto
 
@@ -195,6 +195,47 @@ send, `record_*_sent`, dedup Redis. Tengono **solo** lo scan di detection + l'em
    un trigger dedicato). Fuori dal cuore di questo ADR — oggi `first_contact` è inerte/nascosto.
 3. **Riconciliazione timer lunghi.** Se serve robustezza sui differiti multi-settimana, un cron di
    riconciliazione che ri-arma cadenze perse. Da valutare dopo PR2.
+
+## Implementazione (2026-07-01)
+
+Landato in un unico cambio atomico. **574 unit test verdi**; import worker+API OK; ruff/format
+puliti sui file nuovi (resta solo il debito lint pre-esistente di `lead.py`/`booking.py`).
+
+**Cosa è stato fatto** rispetto al piano:
+- **PR1 (motore):** `wait` onora l'unità via `wait_minutes` (`engine.py`); dedup deterministico sulle
+  continuazioni; test di regressione `test_walk_wait_honours_unit_days`.
+- **D1/D2 (edge-trigger):** ancore `conversation.meta.no_answer_fired_for` /
+  `lead.meta.dormant_fired_for` (repo `conversation.py`/`lead.py`); i 2 scheduler riscritti come
+  **emettitori puri** (`lead.no_answer` / `lead.dormant`), soglia letta dal `trigger_config` del flusso
+  abilitato, **niente emissione se nessuna automazione ascolta**. `EVENT_TO_TRIGGER` rimappato.
+- **D5 (guardia resume):** `episode_anchor` propagato dal dispatch alle continuazioni; `_episode_ended`
+  aborta la cadenza se `last_inbound_at` avanza oltre l'ancora (lead ri-ingaggiato).
+- **D7 (rimozione `system_key`):** colonna+indici droppati (migrazione `0044`), rimossi
+  `SYSTEM_*`/`_DEFAULT_SYSTEM_GRAPH`/`get_by_system_key`/`ensure_system_automations`, eliminato
+  `workers/automation/lifecycle.py`, `is_system` fuori dall'API, tutti i flussi editabili/eliminabili.
+- **Frontend:** de-threading `isSystem` completo (typecheck + eslint verdi).
+
+**Deviazioni dal piano (decise in implementazione):**
+1. **Seeding rimosso, non convertito in template.** `ensure_system_automations` è stato eliminato: i
+   merchant nuovi partono senza automazioni e costruiscono dalla lavagnetta (tutti i trigger
+   disponibili). Le righe di sistema esistenti sopravvivono come automazioni normali (portano già
+   `trigger_type`). Più semplice e senza rischio di re-seeding di righe cancellate. Trade-off: niente
+   flussi starter pre-costruiti (erano comunque OFF+vuoti per ADR 0014).
+2. **`booking_reminder` resta consegnato dallo scheduler dedicato** (`appointment_reminder.py`), NON
+   migrato dentro il motore via `wait_until_before` (D4/D6.2 originali). Motivo: il subsistema
+   promemoria è specializzato (multi-offset, `reminder_schedule`, reschedule-aware, GHL-aware) e
+   riscriverlo nel motore era il pezzo più rischioso e meno testabile. Compromesso adottato:
+   - lo scheduler ora **sorgente il contenuto/offset da un'automazione `booking_created` normale**
+     (`list_enabled_by_trigger`), non più da un system flow → `system_key` sparisce anche qui;
+   - il **motore si ferma sul nodo `wait_until_before`** (non invia): quei send li consegna lo
+     scheduler, evitando la doppia esecuzione ora che `booking.created` dispatcha anche al motore.
+   Conseguenza: `wait_until_before` NON è un deferral ad ancora assoluta nel motore (D6.2 non
+   implementato); è un "branch stop". Se un domani si vuole la piena unificazione booking, va ripreso.
+
+**Non verificato in sandbox (richiede l'ambiente):** test di integrazione (RLS/DB reale), build
+frontend end-to-end, **rigenerazione del client API** (`generate-api-types.sh` — l'`AutomationOut`
+non espone più `is_system`/`system_key`, il `generated.ts` va rigenerato e committato), e
+l'**applicazione della migrazione `0044`** sul DB.
 
 ## Riferimenti
 

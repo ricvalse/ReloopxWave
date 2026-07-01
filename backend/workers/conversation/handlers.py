@@ -39,6 +39,7 @@ from integrations import (
     GHLClient,
     GHLTokenBundle,
     MintedLocationToken,
+    extract_location_name,
     mint_location_token,
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
@@ -673,10 +674,7 @@ async def _fetch_location_name(
         return None
     finally:
         await client.close()
-    raw_loc = resp.get("location")
-    loc = raw_loc if isinstance(raw_loc, dict) else resp
-    name = loc.get("name") if isinstance(loc, dict) else None
-    return str(name) if name else None
+    return extract_location_name(resp)
 
 
 async def send_outbound_whatsapp(ctx: dict[str, Any], message_id: str) -> dict[str, Any]:

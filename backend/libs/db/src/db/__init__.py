@@ -1,9 +1,5 @@
 from db.repositories import (
-    FLOW_BOOKING_REMINDER,
     FLOW_FIRST_CONTACT,
-    FLOW_NO_ANSWER,
-    FLOW_REACTIVATION,
-    LIFECYCLE_FLOW_KEYS,
     ABRepository,
     AnalyticsRepository,
     AppointmentReminderCandidate,
@@ -53,11 +49,7 @@ from db.session import (
 )
 
 __all__ = [
-    "FLOW_BOOKING_REMINDER",
     "FLOW_FIRST_CONTACT",
-    "FLOW_NO_ANSWER",
-    "FLOW_REACTIVATION",
-    "LIFECYCLE_FLOW_KEYS",
     "ABRepository",
     "AnalyticsRepository",
     "AppointmentReminderCandidate",

@@ -239,8 +239,8 @@ async def test_booking_event_carries_variant_id(monkeypatch: pytest.MonkeyPatch)
 
     class FakeAutomationRepo:
         def __init__(self, session): ...
-        async def get_by_system_key(self, merchant_id, system_key):
-            return None
+        async def list_enabled_by_trigger(self, *, merchant_id, trigger_type):
+            return []
 
     client = AsyncMock()
     client.upsert_contact = AsyncMock(return_value={"contact": {"id": "CT-1"}})

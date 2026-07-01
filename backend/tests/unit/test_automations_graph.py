@@ -555,27 +555,6 @@ def test_system_flow_timing_reactivation() -> None:
     assert any("3 e 30 giorni" in e for e in errors)
 
 
-def test_default_system_graphs_are_enableable() -> None:
-    """Fix #1 / ADR 0011: a freshly-seeded system flow must be valid, within the
-    compliance ranges (so it can be enabled), and mirror the config default count."""
-    from db.repositories.automation import _DEFAULT_SYSTEM_GRAPH  # type: ignore[attr-defined]
-
-    expected_sends = {"no_answer": 2, "reactivation": 3, "booking_reminder": 1, "first_contact": 1}
-    for key, spec in _DEFAULT_SYSTEM_GRAPH.items():
-        nodes: list[dict] = []
-        edges: list[dict] = []
-        prev: str | None = None
-        for i, (kind, ntype, config) in enumerate(spec):
-            node_key = "t" if kind == "trigger" else f"n{i}"
-            nodes.append({"node_key": node_key, "kind": kind, "type": ntype, "config": config})
-            if prev is not None:
-                edges.append({"source_key": prev, "target_key": node_key, "branch": "default"})
-            prev = node_key
-        assert validate_graph(nodes, edges).ok, f"{key} graph invalid"
-        assert system_flow_timing_errors(key, nodes, edges) == [], f"{key} out of range"
-        assert resolve_send_plan(nodes, edges, context={}).max_attempts == expected_sends[key], key
-
-
 def test_system_flow_timing_booking() -> None:
     # relative wait not allowed for booking; hours out of range.
     nodes = [

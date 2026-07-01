@@ -46,6 +46,14 @@ DEFAULT_SCOPES = (
     "calendars/events.readonly",
     "calendars/events.write",
     "locations.readonly",
+    # REQUIRED to mint per-location tokens from the agency token via
+    # POST /oauth/locationToken. Without these GHL rejects the mint with
+    # 401 "The token is not authorized for this scope" — the location then
+    # stays pending_link forever (no token → can't promote to active) and its
+    # name never resolves. Must also be enabled on the GHL Marketplace app,
+    # and the agency must re-authorize to obtain a token carrying them.
+    "oauth.readonly",
+    "oauth.write",
     "conversations.readonly",
     "conversations.write",
     "conversations/message.readonly",

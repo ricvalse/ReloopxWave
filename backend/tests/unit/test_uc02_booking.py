@@ -111,10 +111,10 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[d
             }.get(getattr(key, "value", str(key)))
 
     class FakeAutomationRepo:
-        # No enabled booking_reminder system flow → reminder hours come from config.
+        # No enabled booking_created automation → reminder hours come from config.
         def __init__(self, session): ...
-        async def get_by_system_key(self, merchant_id, system_key):
-            return None
+        async def list_enabled_by_trigger(self, *, merchant_id, trigger_type):
+            return []
 
     monkeypatch.setattr(mod, "tenant_session", fake_session)
     monkeypatch.setattr(mod, "IntegrationRepository", FakeIntegrationRepo)
@@ -525,8 +525,8 @@ async def test_booking_reminder_hours_from_graph(monkeypatch: pytest.MonkeyPatch
 
     class FakeAutoRepo:
         def __init__(self, session): ...
-        async def get_by_system_key(self, merchant_id, system_key):
-            return flow
+        async def list_enabled_by_trigger(self, *, merchant_id, trigger_type):
+            return [flow]
 
     class FakeConfig:
         async def resolve(self, key, *, merchant_id):
@@ -548,8 +548,8 @@ async def test_booking_reminder_hours_fallback_when_flow_disabled(
 
     class FakeAutoRepo:
         def __init__(self, session): ...
-        async def get_by_system_key(self, merchant_id, system_key):
-            return None
+        async def list_enabled_by_trigger(self, *, merchant_id, trigger_type):
+            return []
 
     class FakeConfig:
         async def resolve(self, key, *, merchant_id):
