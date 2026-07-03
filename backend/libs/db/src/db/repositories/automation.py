@@ -103,6 +103,11 @@ class AutomationRepository:
         self, flow: AutomationFlow, *, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
     ) -> None:
         """Swap the entire node/edge set. The canvas is authoritative on save."""
+        # Load the collections explicitly: on a freshly-created flow they have
+        # never been loaded, and the implicit sync lazy-load would raise
+        # MissingGreenlet under AsyncSession (the update path arrives here
+        # already eager-loaded via get(); the refresh is a no-op query there).
+        await self._session.refresh(flow, attribute_names=["nodes", "edges"])
         for node in list(flow.nodes):
             await self._session.delete(node)
         for edge in list(flow.edges):
