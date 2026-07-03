@@ -399,6 +399,69 @@ function NodeConfigPanel({
           />
         ))
       )}
+
+      {(data.type === 'send' || data.type === 'send_template') && (
+        <TemplateVariableMapping
+          templateId={String(config.template_id ?? '')}
+          templates={approvedTemplates}
+          value={(config.variable_mapping as Record<string, string> | undefined) ?? {}}
+          onChange={(mapping) => onChange('variable_mapping', mapping)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Sources the engine can resolve at send time (RunContext.as_template_context).
+const MAPPING_SOURCES = [
+  { value: 'lead.first_name', label: 'Nome (di battesimo) del lead' },
+  { value: 'lead.name', label: 'Nome completo del lead' },
+  { value: 'contact.name', label: 'Nome contatto' },
+  { value: 'contact.phone', label: 'Telefono del lead' },
+  { value: 'lead.score', label: 'Punteggio lead' },
+];
+
+// Per-variable mapping for the selected template: without a complete mapping the
+// engine refuses to send (skip `incomplete_template_mapping`), so surface one
+// select per {{n}} placeholder instead of leaving the config invisible.
+function TemplateVariableMapping({
+  templateId,
+  templates,
+  value,
+  onChange,
+}: {
+  templateId: string;
+  templates: Template[];
+  value: Record<string, string>;
+  onChange: (mapping: Record<string, string>) => void;
+}) {
+  const tpl = templates.find((t) => t.id === templateId);
+  const variables = tpl?.variables ?? [];
+  if (!tpl || variables.length === 0) return null;
+  const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm';
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">Variabili del template</Label>
+      {variables.map((v) => (
+        <div key={v} className="flex items-center gap-2">
+          <span className="w-12 shrink-0 text-xs text-muted-foreground">{`{{${v}}}`}</span>
+          <select
+            className={selectClass}
+            value={value[v] ?? ''}
+            onChange={(e) => onChange({ ...value, [v]: e.target.value })}
+          >
+            <option value="">— scegli il valore —</option>
+            {MAPPING_SOURCES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ))}
+      <p className="text-[10px] text-muted-foreground">
+        Ogni variabile deve avere un valore: con il mapping incompleto il template non viene inviato.
+      </p>
     </div>
   );
 }
