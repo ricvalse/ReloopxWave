@@ -37,6 +37,12 @@ TRIGGER_TYPES = (
     "booking_created",  # appointment booked
     "booking_failed",  # booking attempt failed
     "lead_dormant",  # no activity for trigger_config.days
+    # ADR 0016 — CRM-originated, emitted by the GHL marketplace webhook handler:
+    "crm_lead_created",  # a new lead was minted from a GHL ContactCreate/OpportunityCreate
+    # An opportunity entered a GHL pipeline. trigger_config: {"pipeline_id": str?,
+    # "stage_id": str?} — the dispatcher only fires the flow when they match the
+    # event (empty = any pipeline/stage).
+    "crm_opportunity_created",
 )
 CONDITION_TYPES = (
     "lead_temperature",  # cfg: {"op": "==|!=", "value": "hot|warm|cold"}

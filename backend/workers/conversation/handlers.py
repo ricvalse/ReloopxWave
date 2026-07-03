@@ -27,12 +27,14 @@ from sqlalchemy import select, update
 
 from ai_core import ConversationService, RescheduleBy, debounce_decision
 from db import (
+    AnalyticsRepository,
     ConversationRepository,
     GHLMarketplaceRepository,
     LeadRepository,
     ResolvedAgencyInstall,
     session_scope,
 )
+from db.models import Merchant
 from db.models.conversation import Conversation, Message
 from db.repositories.integration import IntegrationRepository
 from integrations import (
@@ -44,7 +46,7 @@ from integrations import (
 )
 from integrations.whatsapp.factory import build_whatsapp_sender
 from integrations.whatsapp.templates import build_send_components
-from shared import IntegrationError, get_logger, get_settings
+from shared import IntegrationError, get_logger, get_settings, normalize_phone
 from workers.outbound import is_within_24h
 from workers.runtime import Runtime
 
@@ -348,8 +350,212 @@ async def _resolve_lead(
     if contact_id:
         lead = await leads.get_by_ghl_contact_id(merchant_id=merchant_id, ghl_contact_id=contact_id)
     if lead is None and phone:
-        lead = await leads.get_by_phone(merchant_id=merchant_id, phone=phone)
+        # WhatsApp-born leads key on the digits-only identity; GHL sends E.164.
+        norm = normalize_phone(phone) or phone
+        lead = await leads.get_by_phone(merchant_id=merchant_id, phone=norm)
     return lead
+
+
+# GHL event types allowed to *originate* platform state (ADR 0016). Exact match,
+# unlike the substring sync routing: a future GHL event type must never mint
+# Lead rows by accident.
+_CRM_CREATE_EVENTS = ("contactcreate", "opportunitycreate")
+
+
+async def _tenant_id_for_merchant(session: Any, merchant_id: UUID) -> UUID | None:
+    stmt = select(Merchant.tenant_id).where(Merchant.id == merchant_id)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    return row if isinstance(row, UUID) else None
+
+
+async def _retry_or_drop_crm_create(
+    ctx: dict[str, Any],
+    mid: UUID,
+    *,
+    location_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    retry: bool,
+) -> dict[str, Any]:
+    """An OpportunityCreate can race ahead of its sibling ContactCreate (two
+    independent webhook deliveries) while carrying no phone of its own. Re-enqueue
+    it once with a short delay so the contact can land; a second miss — or a
+    ContactCreate with no phone at all — is dropped (nothing to key a WhatsApp
+    lead on)."""
+    redis = ctx.get("redis")
+    if retry and redis is not None and not payload.get("_reloop_requeued"):
+        dedup = payload.get("id") or payload.get("contactId") or payload.get("timestamp") or "x"
+        await redis.enqueue_job(
+            "handle_ghl_event",
+            location_id,
+            event_type,
+            {**payload, "_reloop_requeued": True},
+            _job_id=f"ghl:event:retry:{location_id}:{event_type}:{dedup}",
+            _defer_by=timedelta(seconds=45),
+        )
+        logger.info(
+            "ghl.crm_create.requeued",
+            merchant_id=str(mid),
+            event_type=event_type,
+            actor="system:ghl_webhook",
+        )
+        return {
+            "merchant_id": str(mid),
+            "event_type": event_type,
+            "matched": False,
+            "reason": "requeued_no_phone",
+        }
+    logger.info(
+        "ghl.crm_create.no_phone",
+        merchant_id=str(mid),
+        event_type=event_type,
+        actor="system:ghl_webhook",
+    )
+    return {
+        "merchant_id": str(mid),
+        "event_type": event_type,
+        "matched": False,
+        "reason": "no_phone",
+    }
+
+
+async def _handle_crm_create(
+    ctx: dict[str, Any],
+    mid: UUID,
+    *,
+    location_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """ContactCreate / OpportunityCreate — originate the lead and emit the
+    lavagnetta trigger events (ADR 0016).
+
+    Get-or-creates the Lead (phone-normalised so the CRM's E.164 form matches
+    the WhatsApp digits identity), ensures a conversation exists so the
+    automation engine can resolve a send context, then emits:
+      * ``lead.crm_created``    — once, when the Lead row was just created;
+      * ``opportunity.created`` — on every OpportunityCreate that is not the
+        echo of an opportunity the bot itself wrote back (the write-back id is
+        stashed in ``lead.meta.ghl_opportunity_id`` by move_pipeline/booking),
+        carrying pipeline_id/stage_id so the dispatcher can filter per pipeline.
+    Emission is skipped for opted-out leads and when no WhatsApp channel is
+    connected (a flow could never send anyway).
+    """
+    settings = get_settings()
+    is_opportunity = event_type.lower() == "opportunitycreate"
+    contact_id = _opt_str(payload.get("contactId") or payload.get("contact_id"))
+    if not is_opportunity:
+        contact_id = _opt_str(payload.get("id")) or contact_id
+    opp_id = _opt_str(payload.get("id") or payload.get("opportunityId")) if is_opportunity else None
+    pipeline_id = _opt_str(payload.get("pipelineId") or payload.get("pipeline_id"))
+    stage_id = _opt_str(
+        payload.get("pipelineStageId") or payload.get("stageId") or payload.get("pipeline_stage_id")
+    )
+    phone = normalize_phone(_ghl_phone(payload))
+
+    emitted: list[str] = []
+    created = False
+    echo = False
+    async with session_scope() as session:
+        leads = LeadRepository(session)
+        lead = await _resolve_lead(leads, mid, contact_id, phone)
+        if lead is None:
+            if phone is None:
+                return await _retry_or_drop_crm_create(
+                    ctx,
+                    mid,
+                    location_id=location_id,
+                    event_type=event_type,
+                    payload=payload,
+                    retry=is_opportunity,
+                )
+            lead, created = await leads.upsert_by_phone_flagged(
+                merchant_id=mid, phone=phone, campaign="ghl_crm"
+            )
+
+        # Echo guard: the bot's own opportunity write-back must not re-trigger.
+        echo = bool(opp_id) and (lead.meta or {}).get("ghl_opportunity_id") == opp_id
+
+        await leads.update_contact_fields(
+            lead.id, name=_ghl_full_name(payload), email=_opt_str(payload.get("email"))
+        )
+        if contact_id and not lead.ghl_contact_id:
+            lead.ghl_contact_id = contact_id
+        if stage_id:
+            await leads.set_pipeline_stage(lead.id, stage_id=stage_id)
+        if opp_id and not echo:
+            lead.meta = {**(lead.meta or {}), "ghl_opportunity_id": opp_id}
+
+        # A cold CRM lead has no conversation yet, but the automation engine
+        # resolves its send context (wa_phone_number_id) from one — same
+        # provisioning the failed-call takeover does.
+        conv = None
+        conv_phone = lead.phone or phone
+        if conv_phone:
+            convs = ConversationRepository(session)
+            conv = await convs.get_active(merchant_id=mid, wa_contact_phone=conv_phone)
+            if conv is None:
+                integrations = IntegrationRepository(
+                    session, kek_base64=settings.integrations_kek_base64
+                )
+                wa = await integrations.resolve_whatsapp_by_merchant(mid)
+                if wa is not None and wa.phone_number_id:
+                    conv = await convs.create(
+                        merchant_id=mid,
+                        lead_id=lead.id,
+                        wa_phone_number_id=wa.phone_number_id,
+                        wa_contact_phone=conv_phone,
+                    )
+            elif conv.lead_id is None:
+                conv.lead_id = lead.id
+
+        tenant_id = await _tenant_id_for_merchant(session, mid)
+        if tenant_id is not None and conv is not None and lead.opted_out_at is None:
+            analytics = AnalyticsRepository(session)
+            props = {
+                "source": "ghl_webhook",
+                "ghl_contact_id": contact_id,
+                "pipeline_id": pipeline_id,
+                "stage_id": stage_id,
+            }
+            if created:
+                await analytics.emit(
+                    tenant_id=tenant_id,
+                    merchant_id=mid,
+                    event_type="lead.crm_created",
+                    subject_type="lead",
+                    subject_id=lead.id,
+                    properties=props,
+                )
+                emitted.append("lead.crm_created")
+            if opp_id and not echo:
+                await analytics.emit(
+                    tenant_id=tenant_id,
+                    merchant_id=mid,
+                    event_type="opportunity.created",
+                    subject_type="lead",
+                    subject_id=lead.id,
+                    properties={**props, "ghl_opportunity_id": opp_id},
+                )
+                emitted.append("opportunity.created")
+
+    logger.info(
+        "ghl.crm_create.processed",
+        merchant_id=str(mid),
+        location_id=location_id,
+        event_type=event_type,
+        created=created,
+        echo=echo,
+        emitted=emitted,
+        actor="system:ghl_webhook",
+    )
+    return {
+        "merchant_id": str(mid),
+        "event_type": event_type,
+        "matched": True,
+        "created": created,
+        "emitted": emitted,
+    }
 
 
 async def handle_ghl_event(
@@ -388,9 +594,16 @@ async def handle_ghl_event(
         return await handle_call_outcome(
             ctx,
             merchant_id=str(mid),
-            contact_phone=_ghl_phone(payload) or "",
+            contact_phone=normalize_phone(_ghl_phone(payload)) or "",
             outcome=outcome,
             ghl_contact_id=_opt_str(payload.get("contactId") or payload.get("contact_id")),
+        )
+
+    # Creation events (exact match) originate the lead and emit the lavagnetta
+    # trigger events (ADR 0016); everything else below is fill-only sync.
+    if et in _CRM_CREATE_EVENTS:
+        return await _handle_crm_create(
+            ctx, mid, location_id=str(location_id), event_type=event_type, payload=payload
         )
 
     matched = False

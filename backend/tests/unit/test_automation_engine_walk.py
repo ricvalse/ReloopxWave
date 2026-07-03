@@ -18,7 +18,13 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from workers.automation.engine import EVENT_TO_TRIGGER, RunContext, _do_action, _walk
+from workers.automation.engine import (
+    EVENT_TO_TRIGGER,
+    RunContext,
+    _do_action,
+    _trigger_config_match,
+    _walk,
+)
 
 
 def _run_ctx(*, within_window: bool = True, score: int = 50) -> RunContext:
@@ -291,8 +297,38 @@ def test_event_to_trigger_mapping_covers_v1_surface() -> None:
     # ADR 0015: the schedulers emit dedicated edge-triggered events.
     assert EVENT_TO_TRIGGER["lead.no_answer"] == "no_answer"
     assert EVENT_TO_TRIGGER["lead.dormant"] == "lead_dormant"
+    # ADR 0016: CRM-originated events emitted by the GHL webhook handler.
+    assert EVENT_TO_TRIGGER["lead.crm_created"] == "crm_lead_created"
+    assert EVENT_TO_TRIGGER["opportunity.created"] == "crm_opportunity_created"
     # The old KPI-record events are no longer trigger signals.
     assert "reminder.sent" not in EVENT_TO_TRIGGER
     assert "lead_reactivation.sent" not in EVENT_TO_TRIGGER
     # An unmapped event is simply not a key (dispatcher filters via `in`).
     assert "objection.extracted" not in EVENT_TO_TRIGGER
+
+
+def test_trigger_config_match_filters_pipeline_and_stage() -> None:
+    # Empty config (or None) → no filter, any event passes.
+    assert _trigger_config_match(None, {"pipeline_id": "P1"}) is True
+    assert _trigger_config_match({}, None) is True
+    assert _trigger_config_match({"pipeline_id": ""}, {"pipeline_id": "P1"}) is True
+    # A pinned pipeline only fires for its own events.
+    assert _trigger_config_match({"pipeline_id": "P1"}, {"pipeline_id": "P1"}) is True
+    assert _trigger_config_match({"pipeline_id": "P1"}, {"pipeline_id": "P2"}) is False
+    # An event without the property can't satisfy a pinned filter.
+    assert _trigger_config_match({"pipeline_id": "P1"}, {}) is False
+    # Stage filter composes with the pipeline filter (both must match).
+    assert (
+        _trigger_config_match(
+            {"pipeline_id": "P1", "stage_id": "S1"}, {"pipeline_id": "P1", "stage_id": "S1"}
+        )
+        is True
+    )
+    assert (
+        _trigger_config_match(
+            {"pipeline_id": "P1", "stage_id": "S1"}, {"pipeline_id": "P1", "stage_id": "S2"}
+        )
+        is False
+    )
+    # Unrelated trigger_config keys (e.g. no_answer.delay_minutes) never filter.
+    assert _trigger_config_match({"delay_minutes": 120}, {}) is True

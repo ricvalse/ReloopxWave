@@ -9,6 +9,7 @@ from shared.errors import (
 )
 from shared.logging import configure_logging, get_logger
 from shared.observability import init_posthog, init_sentry
+from shared.phone import normalize_phone
 from shared.settings import Settings, get_settings
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "get_settings",
     "init_posthog",
     "init_sentry",
+    "normalize_phone",
 ]

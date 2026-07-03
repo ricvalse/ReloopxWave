@@ -78,6 +78,9 @@ EVENT_TO_TRIGGER: dict[str, str] = {
     "booking.failed": "booking_failed",
     "lead.no_answer": "no_answer",  # the lead went silent past the configured delay
     "lead.dormant": "lead_dormant",  # the lead crossed the dormancy threshold
+    # ADR 0016: emitted by the GHL marketplace webhook handler (CRM-originated).
+    "lead.crm_created": "crm_lead_created",
+    "opportunity.created": "crm_opportunity_created",
 }
 
 _CURSOR_KEY = "automation:dispatch:cursor"
@@ -196,6 +199,8 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
             for auto in await repo.list_enabled_by_trigger(
                 merchant_id=ev.merchant_id, trigger_type=trigger
             ):
+                if not _trigger_config_match(auto.trigger_config, ev.properties):
+                    continue
                 await redis.enqueue_job(
                     "automation_run",
                     automation_id=str(auto.id),
@@ -212,6 +217,20 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
 
     await redis.set(_CURSOR_KEY, max_ts.isoformat())
     return {"events": len(events), "dispatched": dispatched}
+
+
+def _trigger_config_match(trigger_config: dict[str, Any] | None, properties: Any) -> bool:
+    """Per-trigger dispatch filter (ADR 0016): a trigger node may pin the CRM
+    pipeline/stage it listens to (`pipeline_id` / `stage_id` in trigger_config);
+    an event carrying a different value is not for this flow. An empty config
+    value means no filter on that key."""
+    cfg = trigger_config or {}
+    props = properties if isinstance(properties, dict) else {}
+    for key in ("pipeline_id", "stage_id"):
+        wanted = str(cfg.get(key) or "").strip()
+        if wanted and str(props.get(key) or "") != wanted:
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #

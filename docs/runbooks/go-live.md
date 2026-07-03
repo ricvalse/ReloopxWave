@@ -74,6 +74,8 @@ Non c'è IaC: i servizi si creano a mano dalla dashboard (vedi `infra/railway/RE
 2. 🔴 **Redirect URI** = `{PUBLIC_API_BASE_URL}/integrations/crm/oauth/callback` (⚠️ usa `crm`, non `ghl`: GHL rifiuta i redirect URI che contengono "ghl"/"highlevel").
 3. 🔴 **Scope** (da `oauth.py:DEFAULT_SCOPES`): `contacts.readonly`, `contacts.write`, `opportunities.readonly`, `opportunities.write`, `calendars.readonly`, `calendars.write`, `calendars/events.readonly`, `calendars/events.write`.
 4. 🔴 Metti `GHL_CLIENT_ID`/`GHL_CLIENT_SECRET` in env.
+5. 🔴 **Default Webhook URL** = `{PUBLIC_API_BASE_URL}/webhooks/ghl/marketplace` — è l'unico endpoint: riceve INSTALL/UNINSTALL **e** gli eventi dati.
+6. 🔴 **Webhook Events**: sottoscrivi `ContactCreate`, `OpportunityCreate` (trigger CRM della lavagnetta, ADR 0016) + gli eventi di sync (`ContactUpdate`, `OpportunityStatusUpdate`, …). ⚠️ Gli scope OAuth NON bastano: le subscription sono opt-in separati. Procedura completa e verifica: `docs/runbooks/ghl-webhook-events.md`.
 
 ---
 

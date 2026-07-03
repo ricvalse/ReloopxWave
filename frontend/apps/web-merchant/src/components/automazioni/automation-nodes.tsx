@@ -55,6 +55,21 @@ export const TRIGGER_DEFS: TypeDef[] = [
     description: 'Inattivo da tempo.',
     fields: [{ key: 'days', label: 'Giorni di dormienza', kind: 'number', placeholder: '90' }],
   },
+  {
+    type: 'crm_lead_created',
+    label: 'Nuovo lead dal CRM',
+    description: 'Contatto creato in GoHighLevel.',
+    fields: [],
+  },
+  {
+    type: 'crm_opportunity_created',
+    label: 'Nuovo lead in pipeline (CRM)',
+    description: 'Opportunità creata in una pipeline GoHighLevel. Lascia vuoti i filtri per qualsiasi pipeline.',
+    fields: [
+      { key: 'pipeline_id', label: 'ID pipeline (opzionale)', kind: 'text', placeholder: 'qualsiasi pipeline' },
+      { key: 'stage_id', label: 'ID stage (opzionale)', kind: 'text', placeholder: 'qualsiasi stage' },
+    ],
+  },
 ];
 
 export const CONDITION_DEFS: TypeDef[] = [

@@ -51,6 +51,17 @@ class LeadRepository:
         INSERT values, untouched by `on_conflict_do_nothing`), so a lead's
         original attribution is never overwritten by a later organic message.
         """
+        lead, _ = await self.upsert_by_phone_flagged(
+            merchant_id=merchant_id, phone=phone, campaign=campaign
+        )
+        return lead
+
+    async def upsert_by_phone_flagged(
+        self, *, merchant_id: UUID, phone: str, campaign: str | None = None
+    ) -> tuple[Lead, bool]:
+        """`upsert_by_phone` variant that also reports whether the row was just
+        created — the GHL CRM ingestion (ADR 0016) emits its lead-origination
+        trigger event exactly once, on the creating call."""
         stmt = (
             pg_insert(Lead)
             .values(merchant_id=merchant_id, phone=phone, campaign=campaign)
@@ -62,11 +73,11 @@ class LeadRepository:
         if row is not None:
             lead = await self._session.get(Lead, row.id)
             assert lead is not None
-            return lead
+            return lead, True
 
         existing = await self.get_by_phone(merchant_id=merchant_id, phone=phone)
         assert existing is not None, "upsert fell through both branches"
-        return existing
+        return existing, False
 
     async def update_score(self, lead_id: UUID, *, score: int, reasons: list[str]) -> None:
         lead = await self._session.get(Lead, lead_id)
