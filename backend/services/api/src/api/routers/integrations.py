@@ -145,6 +145,21 @@ class CalendarsOut(BaseModel):
     calendars: list[CalendarOut]
 
 
+class PipelineStageOut(BaseModel):
+    id: str
+    name: str | None = None
+
+
+class PipelineOut(BaseModel):
+    id: str
+    name: str | None = None
+    stages: list[PipelineStageOut] = []
+
+
+class PipelinesOut(BaseModel):
+    pipelines: list[PipelineOut]
+
+
 # ---- GHL marketplace (agency OAuth + location linking) ---------------------
 
 
@@ -446,6 +461,71 @@ async def ghl_calendars(
         if isinstance(c, dict) and c.get("id")
     ]
     return CalendarsOut(calendars=calendars)
+
+
+@router.get("/ghl/pipelines", response_model=PipelinesOut)
+async def ghl_pipelines(
+    ctx: CurrentContext,
+    session: DBSession,
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+) -> PipelinesOut:
+    """Opportunity pipelines (with stages) of the merchant's linked GHL location —
+    powers the lavagnetta CRM-trigger pipeline/stage picker (ADR 0016).
+
+    Returns an empty list (not an error) when GHL isn't connected yet, so the
+    editor degrades to the manual id fields.
+    """
+    target = merchant_id or _require_merchant_scope(ctx)
+    settings = get_settings()
+    kek = settings.integrations_kek_base64
+    ghl = await IntegrationRepository(session, kek_base64=kek).resolve_ghl(target)
+    if ghl is None or not ghl.location_id:
+        return PipelinesOut(pipelines=[])
+
+    async def _persist(bundle: GHLTokenBundle) -> None:
+        if not bundle.location_id:
+            return
+        async with session_scope() as token_session:
+            await GHLMarketplaceRepository(token_session, kek_base64=kek).set_location_token(
+                location_id=bundle.location_id,
+                access_token=bundle.access_token,
+                refresh_token=bundle.refresh_token,
+                expires_at=bundle.expires_at,
+            )
+
+    client = GHLClient(
+        token_bundle=GHLTokenBundle(
+            access_token=ghl.access_token,
+            refresh_token=ghl.refresh_token,
+            expires_at=ghl.expires_at,
+            location_id=ghl.location_id,
+        ),
+        client_id=settings.ghl_client_id,
+        client_secret=settings.ghl_client_secret,
+        on_token_refresh=_persist,
+    )
+    try:
+        raw = await client.list_pipelines(ghl.location_id)
+    except IntegrationError as exc:
+        logger.warning("ghl.pipelines.failed", merchant_id=str(target), error_code=exc.error_code)
+        return PipelinesOut(pipelines=[])
+    finally:
+        await client.close()
+
+    pipelines = [
+        PipelineOut(
+            id=str(p["id"]),
+            name=p.get("name"),
+            stages=[
+                PipelineStageOut(id=str(s["id"]), name=s.get("name"))
+                for s in (p.get("stages") or [])
+                if isinstance(s, dict) and s.get("id")
+            ],
+        )
+        for p in raw
+        if isinstance(p, dict) and p.get("id")
+    ]
+    return PipelinesOut(pipelines=pipelines)
 
 
 # ---- WhatsApp router-mediated onboarding ----------------------------------

@@ -1471,6 +1471,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/ghl/pipelines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ghl Pipelines
+         * @description Opportunity pipelines (with stages) of the merchant's linked GHL location —
+         *     powers the lavagnetta CRM-trigger pipeline/stage picker (ADR 0016).
+         *
+         *     Returns an empty list (not an error) when GHL isn't connected yet, so the
+         *     editor degrades to the manual id fields.
+         */
+        get: operations["ghl_pipelines_integrations_ghl_pipelines_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/whatsapp/onboard/start": {
         parameters: {
             query?: never;
@@ -3046,6 +3070,30 @@ export interface components {
             new_stage_id?: string | null;
             /** Qualified Stage Id */
             qualified_stage_id?: string | null;
+        };
+        /** PipelineOut */
+        PipelineOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name?: string | null;
+            /**
+             * Stages
+             * @default []
+             */
+            stages: components["schemas"]["PipelineStageOut"][];
+        };
+        /** PipelineStageOut */
+        PipelineStageOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name?: string | null;
+        };
+        /** PipelinesOut */
+        PipelinesOut: {
+            /** Pipelines */
+            pipelines: components["schemas"]["PipelineOut"][];
         };
         /**
          * PlaygroundApplyIn
@@ -7020,6 +7068,40 @@ export interface operations {
             };
         };
     };
+    ghl_pipelines_integrations_ghl_pipelines_get: {
+        parameters: {
+            query?: {
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelinesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post: {
         parameters: {
             query?: never;
@@ -7929,6 +8011,7 @@ export enum ApiPaths {
     ghl_link_location_integrations_ghl_locations__location_id__link_post = "/integrations/ghl/locations/{location_id}/link",
     ghl_unlink_location_integrations_ghl_locations__location_id__unlink_post = "/integrations/ghl/locations/{location_id}/unlink",
     ghl_calendars_integrations_ghl_calendars_get = "/integrations/ghl/calendars",
+    ghl_pipelines_integrations_ghl_pipelines_get = "/integrations/ghl/pipelines",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     integration_status_integrations_status_get = "/integrations/status",

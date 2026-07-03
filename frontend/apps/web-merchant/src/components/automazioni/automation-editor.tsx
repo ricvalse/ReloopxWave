@@ -35,6 +35,7 @@ import {
 
 type Automation = components['schemas']['AutomationOut'];
 type Template = components['schemas']['WhatsAppTemplateOut'];
+type Pipeline = components['schemas']['PipelineOut'];
 
 const PALETTE: { kind: NodeKind; label: string; defs: typeof TRIGGER_DEFS }[] = [
   { kind: 'trigger', label: 'Trigger', defs: TRIGGER_DEFS },
@@ -141,6 +142,19 @@ export function AutomationEditor({
     () => (templates.data ?? []).filter((t) => t.status === 'approved'),
     [templates.data],
   );
+
+  // GHL pipelines for the CRM-trigger picker; empty when GHL isn't connected,
+  // so the trigger config degrades to the manual id fields.
+  const ghlPipelines = useQuery({
+    queryKey: ['ghl-pipelines'],
+    queryFn: async (): Promise<Pipeline[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/integrations/ghl/pipelines');
+      if (error) throw new Error(apiErrorMessage(error));
+      return (data as { pipelines: Pipeline[] }).pipelines;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -316,6 +330,7 @@ export function AutomationEditor({
                 node={selectedNode}
                 approvedTemplates={approvedTemplates}
                 allTemplates={templates.data ?? []}
+                pipelines={ghlPipelines.data ?? []}
                 onChange={(key, value) => updateConfig(selectedNode.id, key, value)}
                 onDelete={deleteSelected}
               />
@@ -336,18 +351,26 @@ function NodeConfigPanel({
   node,
   approvedTemplates,
   allTemplates,
+  pipelines,
   onChange,
   onDelete,
 }: {
   node: Node;
   approvedTemplates: Template[];
   allTemplates: Template[];
+  pipelines: Pipeline[];
   onChange: (key: string, value: unknown) => void;
   onDelete: () => void;
 }) {
   const data = node.data as AutomationNodeData;
   const def = findDef(data.kind, data.type);
   const config = data.config || {};
+  // With the GHL pipelines loaded, the CRM trigger's manual id fields are
+  // replaced by the dropdown picker below (fallback: manual fields).
+  const usePipelinePicker = data.type === 'crm_opportunity_created' && pipelines.length > 0;
+  const visibleFields = (def?.fields ?? []).filter(
+    (f) => !(usePipelinePicker && (f.key === 'pipeline_id' || f.key === 'stage_id')),
+  );
 
   return (
     <div className="space-y-3 rounded-md border border-input p-3">
@@ -386,10 +409,19 @@ function NodeConfigPanel({
         </div>
       )}
 
-      {def?.fields.length === 0 ? (
+      {usePipelinePicker && (
+        <PipelineFilterPicker
+          pipelines={pipelines}
+          pipelineId={String(config.pipeline_id ?? '')}
+          stageId={String(config.stage_id ?? '')}
+          onChange={onChange}
+        />
+      )}
+
+      {visibleFields.length === 0 && !usePipelinePicker ? (
         <p className="text-xs text-muted-foreground">Nessun parametro da configurare.</p>
       ) : (
-        def?.fields.map((field) => (
+        visibleFields.map((field) => (
           <ConfigField
             key={field.key}
             field={field}
@@ -409,6 +441,65 @@ function NodeConfigPanel({
         />
       )}
     </div>
+  );
+}
+
+// Pipeline/stage filter for the CRM trigger, fed by GET /integrations/ghl/pipelines.
+// Empty selection = any pipeline / any stage (the dispatcher only filters on
+// non-empty trigger_config values).
+function PipelineFilterPicker({
+  pipelines,
+  pipelineId,
+  stageId,
+  onChange,
+}: {
+  pipelines: Pipeline[];
+  pipelineId: string;
+  stageId: string;
+  onChange: (key: string, value: unknown) => void;
+}) {
+  const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm';
+  const selected = pipelines.find((p) => p.id === pipelineId);
+  return (
+    <>
+      <div className="space-y-1">
+        <Label className="text-xs">Pipeline</Label>
+        <select
+          className={selectClass}
+          value={pipelineId}
+          onChange={(e) => {
+            onChange('pipeline_id', e.target.value);
+            onChange('stage_id', ''); // stages belong to a pipeline: reset on switch
+          }}
+        >
+          <option value="">Qualsiasi pipeline</option>
+          {pipelines.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name ?? p.id}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <Label className="text-xs">Stage d&apos;ingresso</Label>
+        <select
+          className={selectClass}
+          value={stageId}
+          disabled={!selected}
+          onChange={(e) => onChange('stage_id', e.target.value)}
+        >
+          <option value="">Qualsiasi stage</option>
+          {(selected?.stages ?? []).map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name ?? s.id}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-muted-foreground">
+          L&apos;automazione parte solo per opportunity create nella pipeline/stage scelti.
+        </p>
+      </div>
+    </>
   );
 }
 
