@@ -317,6 +317,27 @@ async def test_opportunity_create_without_phone_requeues_once(
     assert len(capture["enqueued"]) == 1
 
 
+async def test_delete_events_are_explicit_noops(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ContactDelete/OpportunityDelete must not fall into the substring sync:
+    # they'd fill a to-be-erased lead / mirror a dead opportunity's stage.
+    lead = FakeLead(ghl_contact_id="C1", phone="393330000000", meta={})
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, capture=capture)
+
+    res = await handle_ghl_event_call(
+        "ContactDelete", {"id": "C1", "firstName": "Anna", "email": "a@x.it"}
+    )
+    assert res["reason"] == "delete_ignored"
+    assert "contact_fields" not in capture
+
+    res2 = await handle_ghl_event_call(
+        "OpportunityDelete", {"id": "OPP-1", "contactId": "C1", "pipelineStageId": "S9"}
+    )
+    assert res2["reason"] == "delete_ignored"
+    assert "stage_id" not in capture
+    assert lead.meta == {}
+
+
 async def test_crm_create_skips_emit_for_opted_out_lead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

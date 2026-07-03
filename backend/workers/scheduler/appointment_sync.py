@@ -1,12 +1,15 @@
 """Appointment reconcile poll (UC-02).
 
-GHL sends no appointment webhooks, so write-through alone only mirrors the
-bot's own bookings — a reschedule/cancel/new appointment made directly inside
-GHL would never reach us. This job closes that gap: every linked merchant's
-calendar is polled over a rolling window and each event is upserted into the
-local `appointments` mirror, keyed idempotently on (merchant_id,
-ghl_appointment_id). That makes the mirror a faithful COPY of GHL (the user's
-ask), eventually-consistent within the poll interval.
+AppointmentCreate/Update/Delete marketplace webhooks DO exist (see
+docs/runbooks/ghl-webhook-events.md — subscribed, but still an explicit no-op
+in handle_ghl_event in V1), so this poll is the source of truth: write-through
+alone only mirrors the bot's own bookings — a reschedule/cancel/new appointment
+made directly inside GHL would otherwise reach us with up to a poll-interval
+delay or not at all. Every linked merchant's calendar is polled over a rolling
+window and each event is upserted into the local `appointments` mirror, keyed
+idempotently on (merchant_id, ghl_appointment_id). That makes the mirror a
+faithful COPY of GHL (the user's ask), eventually-consistent within the poll
+interval; wiring the webhooks into real-time updates is the V2 upgrade path.
 
 Runs without a JWT under the service-role `session_scope()`, scoped per
 merchant — modeled on `integration_health_check`. The cadence and window are

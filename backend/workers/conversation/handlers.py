@@ -288,9 +288,14 @@ async def handle_phone_app_echo(
     }
 
 
-# Failed-call outcomes that should trigger the AI WhatsApp takeover (UC-03). GHL
-# delivers call results via a workflow webhook whose payload the agency shapes,
-# so we match defensively on normalised tokens rather than one canonical value.
+# Failed-call outcomes that should trigger the AI WhatsApp takeover (UC-03).
+# GHL has no dedicated call-outcome marketplace event: calls travel inside
+# InboundMessage/OutboundMessage payloads (messageType CALL + callStatus), and
+# an agency-shaped Workflow webhook would be unsigned → rejected 401 upstream.
+# So we match defensively on normalised tokens rather than one canonical value.
+# NOTE: the Message events are not subscribed in V1 (high volume + their payload
+# carries no phone, see docs/runbooks/ghl-webhook-events.md) — this branch is
+# reachable today only via manual enqueue (ISTRUZIONI.md Appendice B).
 _CALL_FAILED_TOKENS = (
     "no_answer",
     "noanswer",
@@ -609,6 +614,24 @@ async def handle_ghl_event(
         return await _handle_crm_create(
             ctx, mid, location_id=str(location_id), event_type=event_type, payload=payload
         )
+
+    # Deletion events must NOT fall into the substring sync below: ContactDelete
+    # would fill-only a lead with data being erased in the CRM, OpportunityDelete
+    # would mirror a dead opportunity's stage/id. Explicit no-op until a real
+    # erasure mirror lands (GDPR, V2).
+    if et in ("contactdelete", "opportunitydelete"):
+        logger.info(
+            "ghl.event.delete_ignored",
+            merchant_id=str(mid),
+            event_type=event_type,
+            actor="system:ghl_webhook",
+        )
+        return {
+            "merchant_id": str(mid),
+            "event_type": event_type,
+            "matched": False,
+            "reason": "delete_ignored",
+        }
 
     matched = False
     async with session_scope() as session:
