@@ -236,6 +236,7 @@ async def test_opportunity_create_new_lead_emits_both(
         "OpportunityCreate",
         {
             "id": "OPP-1",
+            "name": "Preventivo cucina",  # the opportunity TITLE, not the contact name
             "contactId": "C1",
             "pipelineId": "P1",
             "pipelineStageId": "S1",
@@ -246,6 +247,8 @@ async def test_opportunity_create_new_lead_emits_both(
     assert res["matched"] is True
     assert res["emitted"] == ["lead.crm_created", "opportunity.created"]
     assert capture["stage_id"] == "S1"
+    # The opportunity title must never be synced into the lead's identity.
+    assert "contact_fields" not in capture
     new_lead = capture["upserted_lead"]
     assert new_lead.meta["ghl_opportunity_id"] == "OPP-1"
     opp_event = capture["emitted"][1]

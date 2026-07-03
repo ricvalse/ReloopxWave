@@ -476,9 +476,13 @@ async def _handle_crm_create(
         # Echo guard: the bot's own opportunity write-back must not re-trigger.
         echo = bool(opp_id) and (lead.meta or {}).get("ghl_opportunity_id") == opp_id
 
-        await leads.update_contact_fields(
-            lead.id, name=_ghl_full_name(payload), email=_opt_str(payload.get("email"))
-        )
+        # Identity sync only from ContactCreate: in an OpportunityCreate payload
+        # `name` is the opportunity TITLE, not the contact's name (and
+        # update_contact_fields is fill-only, so a wrong write would stick).
+        if not is_opportunity:
+            await leads.update_contact_fields(
+                lead.id, name=_ghl_full_name(payload), email=_opt_str(payload.get("email"))
+            )
         if contact_id and not lead.ghl_contact_id:
             lead.ghl_contact_id = contact_id
         if stage_id:

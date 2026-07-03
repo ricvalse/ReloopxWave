@@ -86,6 +86,13 @@ EVENT_TO_TRIGGER: dict[str, str] = {
 _CURSOR_KEY = "automation:dispatch:cursor"
 _DISPATCH_LIMIT = 1000
 _DEDUP_TTL = 60 * 60 * 24  # 24h — bounds duplicate runs for the same (flow, event)
+# `occurred_at` is the emitting transaction's START (Postgres now() default) but
+# the row only becomes visible at COMMIT: a long emitter transaction (e.g. the
+# GHL crm-create handler) can land *behind* a cursor another event already
+# advanced, and a strict `> cursor` scan would then never see it. Re-scanning a
+# lookback window heals that: duplicate dispatches are suppressed by the
+# per-(flow, event) Redis dedup in `automation_run`.
+_DISPATCH_LOOKBACK_S = 120
 _HOT_SCORE = 80
 _WARM_SCORE = 40
 # V1 default pipeline-advance threshold surfaced to the AI in `ai_reply` (the
@@ -173,13 +180,14 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
     dispatched = 0
     max_ts = cursor
 
+    scan_from = cursor - timedelta(seconds=_DISPATCH_LOOKBACK_S)
     async with session_scope() as session:
         events = (
             (
                 await session.execute(
                     select(AnalyticsEvent)
                     .where(
-                        AnalyticsEvent.occurred_at > cursor,
+                        AnalyticsEvent.occurred_at > scan_from,
                         AnalyticsEvent.event_type.in_(list(EVENT_TO_TRIGGER)),
                     )
                     .order_by(AnalyticsEvent.occurred_at)
