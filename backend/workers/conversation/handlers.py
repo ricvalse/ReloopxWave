@@ -488,7 +488,11 @@ async def _handle_crm_create(
             await leads.update_contact_fields(
                 lead.id, name=_ghl_full_name(payload), email=_opt_str(payload.get("email"))
             )
-        if contact_id and not lead.ghl_contact_id:
+        # ContactCreate is authoritative for the phone-matched lead: a deleted-and-
+        # recreated CRM contact gets a fresh id, and keeping the stale one would
+        # orphan every future OpportunityCreate (they carry only contactId, no
+        # phone). The opportunity's contactId stays fill-only.
+        if contact_id and (not is_opportunity or not lead.ghl_contact_id):
             lead.ghl_contact_id = contact_id
         if stage_id:
             await leads.set_pipeline_stage(lead.id, stage_id=stage_id)

@@ -317,6 +317,40 @@ async def test_opportunity_create_without_phone_requeues_once(
     assert len(capture["enqueued"]) == 1
 
 
+async def test_contact_create_overwrites_stale_ghl_contact_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Delete-and-recreate in GHL mints a fresh contact id: ContactCreate must
+    # re-point the phone-matched lead, or future OpportunityCreate (contactId
+    # only, no phone) would never resolve it again.
+    lead = FakeLead(ghl_contact_id="C-OLD", phone="393330000000", meta={})
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, capture=capture)
+
+    res = await handle_ghl_event_call(
+        "ContactCreate", {"id": "C-NEW", "firstName": "Anna", "phone": "+393330000000"}
+    )
+
+    assert res["matched"] is True
+    assert lead.ghl_contact_id == "C-NEW"
+
+
+async def test_opportunity_create_keeps_existing_ghl_contact_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lead = FakeLead(ghl_contact_id="C-OLD", phone="393330000000", meta={})
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, capture=capture)
+
+    res = await handle_ghl_event_call(
+        "OpportunityCreate",
+        {"id": "OPP-3", "contactId": "C-OTHER", "pipelineId": "P1", "phone": "+393330000000"},
+    )
+
+    assert res["matched"] is True
+    assert lead.ghl_contact_id == "C-OLD"  # fill-only from the opportunity side
+
+
 async def test_delete_events_are_explicit_noops(monkeypatch: pytest.MonkeyPatch) -> None:
     # ContactDelete/OpportunityDelete must not fall into the substring sync:
     # they'd fill a to-be-erased lead / mirror a dead opportunity's stage.
