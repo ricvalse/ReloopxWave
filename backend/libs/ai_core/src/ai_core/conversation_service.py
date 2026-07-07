@@ -773,26 +773,34 @@ class ConversationService:
 
             # Unsupported media the bot can't act on (video/document): hand off to
             # a human instead of replying. Persist the inbound, flip the thread to
-            # needs-human, and notify — no LLM turn.
+            # needs-human, and notify — no LLM turn. Exactly-once: a burst of
+            # media must not re-stamp the handoff nor re-notify the operator on
+            # every file — only the first one flips the thread.
             if force_handoff_reason:
-                conv.auto_reply = False
-                conv.handoff_at = datetime.now(UTC)
-                conv.handoff_reason = force_handoff_reason
-                conv.handoff_resolved_at = None
                 auto_reply_on = False
-                await analytics.emit(
-                    tenant_id=resolved.tenant_id,
-                    merchant_id=resolved.merchant_id,
-                    event_type="conversation.escalated",
-                    subject_type="conversation",
-                    subject_id=conv.id,
-                    variant_id=conv.variant_id,
-                    properties={
-                        "lead_id": str(lead.id),
-                        "reason": force_handoff_reason,
-                        "conversation_id": str(conv.id),
-                    },
+                handoff_already_pending = (
+                    not conv.auto_reply
+                    and conv.handoff_at is not None
+                    and conv.handoff_resolved_at is None
                 )
+                if not handoff_already_pending:
+                    conv.auto_reply = False
+                    conv.handoff_at = datetime.now(UTC)
+                    conv.handoff_reason = force_handoff_reason
+                    conv.handoff_resolved_at = None
+                    await analytics.emit(
+                        tenant_id=resolved.tenant_id,
+                        merchant_id=resolved.merchant_id,
+                        event_type="conversation.escalated",
+                        subject_type="conversation",
+                        subject_id=conv.id,
+                        variant_id=conv.variant_id,
+                        properties={
+                            "lead_id": str(lead.id),
+                            "reason": force_handoff_reason,
+                            "conversation_id": str(conv.id),
+                        },
+                    )
 
             if already_persisted is None:
                 await msgs.persist_user_message(
@@ -1289,24 +1297,55 @@ class ConversationService:
             # Handoff reply policy: when the bot escalates to a human the merchant
             # can force a fixed message (handoff_message) or hand off silently
             # (no customer-facing reply). State/scoring/dispatch still run.
-            # On a hard LLM failure we never suppress — the customer must get a
-            # reply even if silent-handoff is configured.
+            # The handoff message goes out EXACTLY ONCE per handoff: concurrent
+            # turns (es. un album di foto fanned out to parallel jobs) race on an
+            # atomic claim, and only the winner speaks. On a hard LLM failure we
+            # never suppress the winning reply — the customer must get a reply
+            # even if silent-handoff is configured.
             suppress_reply = False
-            if any(a.kind == "escalate_human" for a in response.actions):
-                silent = await self._resolve_bool(
-                    session,
-                    resolved.merchant_id,
-                    ConfigKey.ESCALATION_SILENT_HANDOFF,
-                    default=False,
+            escalate_action = next(
+                (a for a in response.actions if a.kind == "escalate_human"), None
+            )
+            if escalate_action is not None:
+                escalation_enabled = await self._resolve_bool(
+                    session, resolved.merchant_id, ConfigKey.ESCALATION_ENABLED, default=True
                 )
-                if silent and not llm_failed:
+                if not escalation_enabled and not llm_failed:
+                    # Escalation locked off by the agency: the thread stays on the
+                    # bot (the handler would skip the takeover anyway), so sending
+                    # the handoff copy would promise an operator who never comes —
+                    # and would repeat on every following inbound. Drop the action
+                    # and let the LLM's own reply go out.
+                    response.actions = [
+                        a for a in response.actions if a.kind != "escalate_human"
+                    ]
+                elif not await convs.claim_handoff(
+                    rc.conv_id,
+                    reason=escalate_action.payload.get("reason"),
+                    summary=escalate_action.payload.get("customer_message_summary"),
+                ):
+                    # Lost the claim: another turn already handed this thread off
+                    # and the customer already received the handoff message. Stay
+                    # silent and drop the action so the operator isn't re-notified.
                     suppress_reply = True
-                elif not llm_failed:
-                    handoff_message = await self._resolve_optional_str(
-                        session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                    response.actions = [
+                        a for a in response.actions if a.kind != "escalate_human"
+                    ]
+                else:
+                    silent = await self._resolve_bool(
+                        session,
+                        resolved.merchant_id,
+                        ConfigKey.ESCALATION_SILENT_HANDOFF,
+                        default=False,
                     )
-                    if handoff_message:
-                        response.reply_text = handoff_message
+                    if silent and not llm_failed:
+                        suppress_reply = True
+                    elif not llm_failed:
+                        handoff_message = await self._resolve_optional_str(
+                            session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                        )
+                        if handoff_message:
+                            response.reply_text = handoff_message
 
             # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
             # inbound text. Best-effort — never blocks the reply. Updates the lead

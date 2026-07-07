@@ -39,6 +39,9 @@ class ResolvedFlowStep:
     template_language: str | None
     template_variables: list[str] = field(default_factory=list)
     template_approved: bool = False
+    # Raw template body ({{1}}..{{n}} placeholders) — lets the dispatcher persist
+    # a human-readable copy of a template send in the inbox Message row.
+    template_body: str | None = None
     # Public signed URL for an IMAGE-header template (None for text/none headers).
     # Re-supplied as the runtime header parameter on every send.
     template_header_image_url: str | None = None
@@ -148,6 +151,7 @@ class FlowRepository:
             template_language=template.language if template else None,
             template_variables=list(template.variables) if template else [],
             template_approved=bool(template and template.status == "approved"),
+            template_body=template.body if template else None,
             template_header_image_url=(
                 template.header_image_url if template and template.header_type == "IMAGE" else None
             ),

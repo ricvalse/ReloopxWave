@@ -4,7 +4,7 @@ import { Avatar, AvatarFallback, Badge, cn } from '@reloop/ui';
 import { memo } from 'react';
 import { contactDisplayName, contactInitials } from '../lib/initials';
 import { formatThreadTime } from '../lib/time';
-import type { Conversation } from '../types';
+import { isAutomationSender, type Conversation } from '../types';
 
 interface ThreadListItemProps {
   conversation: Conversation;
@@ -19,12 +19,17 @@ function ThreadListItemImpl({ conversation, active, onSelect }: ThreadListItemPr
   const initials = contactInitials(name, phone);
   const role = conversation.last_message_role;
   const rawPreview = conversation.last_message_preview ?? null;
+  // Automation/scheduler sends carry role 'agent' (like a human reply) — the
+  // sender_type is what distinguishes them, so label those "Automazione:".
+  const isAutomation = isAutomationSender(conversation.last_message_sender_type);
   const previewPrefix = rawPreview
-    ? role === 'agent'
-      ? 'Tu: '
-      : role === 'assistant'
-        ? 'Bot: '
-        : ''
+    ? isAutomation
+      ? 'Automazione: '
+      : role === 'agent'
+        ? 'Tu: '
+        : role === 'assistant'
+          ? 'Bot: '
+          : ''
     : '';
   const time = formatThreadTime(conversation.last_message_at);
   const unread = conversation.unread_count ?? 0;

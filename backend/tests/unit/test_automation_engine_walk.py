@@ -241,6 +241,7 @@ async def test_send_template_skipped_when_not_approved() -> None:
         status="pending",
         language="it",
         variables=[],
+        body="Promo del mese",
         header_type="NONE",
         header_image_url=None,
     )
@@ -273,6 +274,7 @@ async def test_send_template_sent_when_approved() -> None:
         status="approved",
         language="it",
         variables=[],
+        body="Promo del mese",
         header_type="NONE",
         header_image_url=None,
     )

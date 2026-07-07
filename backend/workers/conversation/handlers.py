@@ -21,7 +21,7 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 
@@ -54,7 +54,13 @@ logger = get_logger(__name__)
 
 
 def _debounce_keys(merchant_id: str, from_phone: str) -> tuple[str, str, str]:
-    """Buffer list key, due-epoch key, and the stable per-peer flush job id."""
+    """Buffer list key, due-epoch key, and the per-peer flush job id BASE.
+
+    The base is never used as a job id by itself: arq refuses to enqueue an id
+    whose job OR result key still exists (`keep_result`, default 1h), so a
+    stable reused id silently drops every flush after the first completed one.
+    Callers suffix the base with the due epoch (one deferred job per inbound).
+    """
     buf = f"debounce:wa:buf:{merchant_id}:{from_phone}"
     due = f"debounce:wa:due:{merchant_id}:{from_phone}"
     job = f"wa:flush:{merchant_id}:{from_phone}"
@@ -133,14 +139,19 @@ async def handle_inbound_message(
                 .set(due_key, due, ex=window + 60)
                 .execute()
             )
-        # Stable job id → a pending flush is reused; the flush self-reschedules
-        # off the due epoch above until the peer goes quiet for `window`.
+        # One deferred flush per inbound, id keyed on THIS message's due epoch.
+        # Not a stable reused id: arq refuses an id whose job or result key
+        # still exists (see _debounce_keys), which would silently drop every
+        # flush after the first completed one — buffered messages would never
+        # be answered. Extra jobs are harmless: the drain is atomic, so early
+        # or duplicate jobs find the deadline still in the future or an empty
+        # buffer and no-op.
         await arq.enqueue_job(
             "flush_inbound_reply",
             merchant_id,
             from_phone,
             phone_number_id,
-            _job_id=job_id,
+            _job_id=f"{job_id}:{int(due * 1000)}",
             _defer_by=timedelta(seconds=window),
         )
         logger.info(
@@ -187,9 +198,11 @@ async def flush_inbound_reply(
     """Debounce flush: once a peer has been quiet for the window, drain the
     buffered inbound fragments and generate ONE reply covering them all.
 
-    Self-reschedules while a newer inbound keeps pushing the due epoch out, so
-    the reply always lands after the LAST message. Idempotent: the buffer is
-    drained-and-deleted, so a re-run finds it empty and no-ops (no double reply).
+    Every inbound enqueues its own deferred flush (unique job id), so the job
+    belonging to the LAST message of a burst lands after the quiet period and
+    drains everything; earlier jobs find the due epoch still in the future and
+    step aside. Idempotent: the buffer is drained-and-deleted atomically, so a
+    concurrent or re-run flush finds it empty and no-ops (no double reply).
     """
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
@@ -201,7 +214,11 @@ async def flush_inbound_reply(
 
     buf_key, due_key, job_id = _debounce_keys(merchant_id, from_phone)
 
-    # 1. Reschedule if a newer message pushed the deadline into the future.
+    # 1. A newer inbound pushed the deadline into the future: its own deferred
+    #    job will normally land after the new due, so this early job steps
+    #    aside. The re-enqueue is clock-skew insurance for multi-instance
+    #    workers, with a fresh unique id — arq would silently refuse a reused
+    #    one (see _debounce_keys) and the buffer would be stranded.
     due = _to_epoch(await config_redis.get(due_key))
     decision = debounce_decision(time.time(), due)
     if isinstance(decision, RescheduleBy):
@@ -211,7 +228,7 @@ async def flush_inbound_reply(
                 merchant_id,
                 from_phone,
                 phone_number_id,
-                _job_id=job_id,
+                _job_id=f"{job_id}:{int(due * 1000)}:{uuid4().hex[:8]}",
                 _defer_by=timedelta(seconds=max(decision.seconds, 0.1)),
             )
         return {"flushed": False, "reason": "rescheduled"}

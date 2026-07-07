@@ -40,14 +40,17 @@ export { DsarActions } from './components/detail/dsar-actions';
 export type {
   Conversation,
   Message,
+  MessageMeta,
   MessageStatus,
   MessageDirection,
   MessageRole,
+  SenderType,
   ThreadFilters,
   InboxFilter,
   Lead,
   Objection,
 } from './types';
+export { isAutomationSender } from './types';
 
 // Lib utils
 export {

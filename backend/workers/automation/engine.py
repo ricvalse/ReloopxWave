@@ -55,10 +55,17 @@ from db.models import AnalyticsEvent, Conversation, Lead, Message
 from db.models.automation import AutomationFlow
 from integrations.ghl.client import GHLClient, GHLTokenBundle
 from integrations.whatsapp.factory import build_whatsapp_sender
-from integrations.whatsapp.templates import build_send_components, resolve_body_params
+from integrations.whatsapp.templates import (
+    build_send_components,
+    render_body_preview,
+    resolve_body_params,
+)
 from shared import get_logger
 from workers.outbound import (
     MODE_SKIP,
+    MODE_TEMPLATE,
+    MODE_TEXT,
+    OutboundDecision,
     decide_outbound,
     is_within_24h,
     send_and_persist_decision,
@@ -515,6 +522,7 @@ async def _do_action(
             template_language=template.language if template else None,
             template_variables=list(template.variables) if template else [],
             template_approved=bool(template and template.status == "approved"),
+            template_body=template.body if template else None,
         )
         decision = decide_outbound(
             within_window=run_ctx.within_window,
@@ -543,7 +551,15 @@ async def _do_action(
             )
             return False
         text = text.replace("{name}", run_ctx.name or "")
-        await sender.send_text(to_phone=run_ctx.phone, text=text)
+        # Through _send_proactive so the Message row lands in the inbox too —
+        # a raw sender.send_text left this node's sends invisible in the UI.
+        await _send_proactive(
+            sender,
+            run_ctx=run_ctx,
+            decision=OutboundDecision(mode=MODE_TEXT, text=text),
+            session=session,
+            sender_type="automation",
+        )
         return True
 
     if node.type == "send_template":
@@ -566,14 +582,25 @@ async def _do_action(
                 "automation.action.skipped", node=node.node_key, reason="incomplete_mapping"
             )
             return False
-        await sender.send_template(
-            to_phone=run_ctx.phone,
+        # Through _send_proactive so the Message row lands in the inbox too — a
+        # raw sender.send_template left this node's sends invisible in the UI.
+        # `text` is the rendered body (human-readable copy for the bubble).
+        decision = OutboundDecision(
+            mode=MODE_TEMPLATE,
+            text=render_body_preview(tpl.body or "", body_params).strip() or None,
             template_name=tpl.name,
-            language=tpl.language or "it",
+            template_language=tpl.language or "it",
             components=build_send_components(
                 body_params=body_params,
                 header_image_url=tpl.header_image_url if tpl.header_type == "IMAGE" else None,
             ),
+        )
+        await _send_proactive(
+            sender,
+            run_ctx=run_ctx,
+            decision=decision,
+            session=session,
+            sender_type="automation",
         )
         return True
 
@@ -639,6 +666,7 @@ async def _do_ai_reply(
         template_language=template.language if template else None,
         template_variables=list(template.variables) if template else [],
         template_approved=bool(template and template.status == "approved"),
+        template_body=template.body if template else None,
     )
     decision = decide_outbound(
         within_window=run_ctx.within_window,

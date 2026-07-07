@@ -189,6 +189,17 @@ def service(
         async def save_context_summary(self, conversation_id, summary):
             return None
 
+        async def claim_handoff(self, conversation_id, *, reason=None, summary=None):
+            # Mirrors the repo's conditional UPDATE: only the first caller on a
+            # bot-owned thread wins the takeover.
+            if not conv.auto_reply:
+                return False
+            conv.auto_reply = False
+            conv.handoff_at = datetime.now(UTC)
+            conv.handoff_reason = reason
+            conv.handoff_resolved_at = None
+            return True
+
     class FakeMsgRepo:
         def __init__(self, session):
             self.user_calls: list = []
@@ -399,6 +410,15 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         async def save_context_summary(self, conversation_id, summary):
             return None
 
+        async def claim_handoff(self, conversation_id, *, reason=None, summary=None):
+            if not conv.auto_reply:
+                return False
+            conv.auto_reply = False
+            conv.handoff_at = datetime.now(UTC)
+            conv.handoff_reason = reason
+            conv.handoff_resolved_at = None
+            return True
+
     class FakeMsgRepo:
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
@@ -529,6 +549,15 @@ async def test_inbound_idempotent_on_redelivery(
         async def save_context_summary(self, conversation_id, summary):
             return None
 
+        async def claim_handoff(self, conversation_id, *, reason=None, summary=None):
+            if not conv.auto_reply:
+                return False
+            conv.auto_reply = False
+            conv.handoff_at = datetime.now(UTC)
+            conv.handoff_reason = reason
+            conv.handoff_resolved_at = None
+            return True
+
     class FakeMsgRepo:
         def __init__(self, session): ...
         async def find_by_wa_message_id(self, wa_message_id):
@@ -627,3 +656,273 @@ async def test_force_handoff_media_marks_needs_human(service) -> None:
     assert conv.auto_reply is False
     assert conv.handoff_reason == "video_message"
     assert conv.handoff_at is not None
+
+
+# ---- Handoff exactly-once (regression: 10 foto → 10 messaggi di handoff) ---
+
+
+def _escalate_response(reply_text: str = "Ti passo un collega.") -> OrchestratorResponse:
+    return OrchestratorResponse(
+        reply_text=reply_text,
+        actions=[
+            OrchestratorAction(
+                kind="escalate_human",
+                payload={"reason": "media", "customer_message_summary": "Ha inviato foto."},
+            )
+        ],
+        model="gpt-5-mini",
+        tokens_in=10,
+        tokens_out=5,
+        latency_ms=10,
+    )
+
+
+async def test_handoff_message_sent_once_for_media_burst(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Una raffica di foto produce UN solo messaggio di handoff, poi il bot tace.
+
+    Il primo turno che escala vince il claim atomico (auto_reply → False); gli
+    inbound successivi trovano il thread in mano all'operatore e vengono solo
+    persistiti, senza risposta."""
+    from ai_core import conversation_service as cs
+    from config_resolver import ConfigKey
+
+    svc, sender, _dispatcher, conv, _lead = service
+
+    async def per_key_bool(self, session, merchant_id, key, *, default):
+        return key is not ConfigKey.ESCALATION_SILENT_HANDOFF
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
+
+    async def per_key_str(self, session, merchant_id, key):
+        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+            return "Ti metto in contatto con un operatore."
+        return None
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_optional_str", per_key_str)
+
+    svc._orchestrator.run = AsyncMock(return_value=_escalate_response())
+
+    for i in range(3):
+        await svc.handle_inbound(
+            phone_number_id="PNID-1",
+            from_phone="39333000000",
+            text="[Il cliente ha inviato un'immagine]",
+            wa_message_id=f"wamid.photo.{i}",
+        )
+
+    # Un solo messaggio sul filo: il messaggio di handoff configurato.
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Ti metto in contatto con un operatore."
+    assert conv.auto_reply is False
+    assert conv.handoff_at is not None
+
+
+async def test_lost_handoff_claim_suppresses_reply_and_action(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved_integration: ResolvedWhatsAppIntegration,
+) -> None:
+    """Race di turni concorrenti: chi perde il claim non invia nulla, non
+    persiste il messaggio assistant e non ri-dispatcha escalate_human (niente
+    doppie notifiche all'operatore)."""
+    from ai_core import conversation_service as cs
+
+    assistant_calls: list = []
+    claim_calls: list = []
+
+    async def fake_resolve(self, phone_number_id):
+        return resolved_integration
+
+    async def fake_resolve_int(self, session, merchant_id, key, *, default):
+        return 80
+
+    async def fake_resolve_bool(self, session, merchant_id, key, *, default):
+        return True
+
+    async def fake_resolve_prompt(
+        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
+    ):
+        return "system prompt"
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_integration", fake_resolve)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_int", fake_resolve_int)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", fake_resolve_bool)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_system_prompt", fake_resolve_prompt)
+
+    lead = FakeLead()
+    conv = FakeConversation()  # auto_reply=True: il gate d'ingresso è passato
+
+    @asynccontextmanager
+    async def fake_tenant_session(ctx):
+        yield FakeSession()
+
+    monkeypatch.setattr(cs, "tenant_session", fake_tenant_session)
+
+    class FakeLeadRepo:
+        def __init__(self, session): ...
+        async def upsert_by_phone(self, *, merchant_id, phone, campaign=None):
+            return lead
+
+        async def update_behavioral_signals(self, lead_id, **kw):
+            return None
+
+        async def update_intake_score(self, lead_id, **kw):
+            return None
+
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def get_active(self, *, merchant_id, wa_contact_phone):
+            return conv
+
+        async def get_active_or_reopen_latest(self, *, merchant_id, wa_contact_phone):
+            return conv
+
+        async def touch_last_message(self, conversation_id):
+            return None
+
+        async def touch_last_inbound(self, conversation_id):
+            return None
+
+        async def update_state(self, conversation_id, state):
+            return None
+
+        async def save_context_summary(self, conversation_id, summary):
+            return None
+
+        async def claim_handoff(self, conversation_id, *, reason=None, summary=None):
+            # Un turno concorrente ha già preso il takeover tra il gate e qui.
+            claim_calls.append(conversation_id)
+            return False
+
+    class FakeMsgRepo:
+        def __init__(self, session): ...
+        async def find_by_wa_message_id(self, wa_message_id):
+            return None
+
+        async def list_history(self, conversation_id, *, limit=30):
+            return []
+
+        async def persist_user_message(self, **kw):
+            return None
+
+        async def persist_assistant_message(self, **kw):
+            assistant_calls.append(kw)
+
+    class FakeAnalyticsRepo:
+        def __init__(self, session): ...
+        async def emit(self, **kw):
+            return None
+
+    monkeypatch.setattr(cs, "LeadRepository", FakeLeadRepo)
+    monkeypatch.setattr(cs, "ConversationRepository", FakeConvRepo)
+    monkeypatch.setattr(cs, "MessageRepository", FakeMsgRepo)
+    monkeypatch.setattr(cs, "AnalyticsRepository", FakeAnalyticsRepo)
+
+    orch = AsyncMock()
+    orch.run = AsyncMock(return_value=_escalate_response())
+
+    dispatcher = ActionDispatcher()
+    escalate_dispatched: list = []
+
+    async def spy_escalate(action, ctx):
+        escalate_dispatched.append(action)
+
+    dispatcher.register("escalate_human", spy_escalate)
+
+    sender = FakeSender()
+    svc = ConversationService(
+        orchestrator=orch,
+        action_dispatcher=dispatcher,
+        reply_sender=sender,
+        embedder=None,
+        kek_base64="unused",
+    )
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="[Il cliente ha inviato un'immagine]",
+        wa_message_id="wamid.race.2",
+    )
+
+    assert result.handled is True
+    assert claim_calls  # il claim è stato tentato…
+    assert sender.calls == []  # …ma perso: niente messaggio al cliente
+    assert assistant_calls == []  # niente riga assistant persistita
+    assert escalate_dispatched == []  # niente seconda notifica all'operatore
+
+
+async def test_escalation_disabled_keeps_bot_reply_no_handoff_message(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Con escalation.enabled=False il thread resta al bot: esce la risposta
+    del LLM, NON il messaggio di handoff (che prometterebbe un operatore che
+    non arriva, ripetendosi a ogni inbound)."""
+    from ai_core import conversation_service as cs
+    from config_resolver import ConfigKey
+
+    svc, sender, _dispatcher, conv, _lead = service
+
+    async def per_key_bool(self, session, merchant_id, key, *, default):
+        return key not in (ConfigKey.ESCALATION_ENABLED, ConfigKey.ESCALATION_SILENT_HANDOFF)
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
+
+    async def per_key_str(self, session, merchant_id, key):
+        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+            return "Ti metto in contatto con un operatore."
+        return None
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_optional_str", per_key_str)
+
+    svc._orchestrator.run = AsyncMock(
+        return_value=_escalate_response(reply_text="Un attimo, verifico e ti aggiorno.")
+    )
+
+    await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="[Il cliente ha inviato un'immagine]",
+        wa_message_id="wamid.disabled.1",
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Un attimo, verifico e ti aggiorno."
+    # Nessun takeover: il bot resta sul thread.
+    assert conv.auto_reply is True
+    assert conv.handoff_at is None
+
+
+async def test_force_handoff_media_burst_emits_single_escalation_event(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Una raffica di video/documenti stampa l'handoff e notifica l'operatore
+    una volta sola; i file successivi vengono solo persistiti."""
+    from ai_core import conversation_service as cs
+
+    events: list = []
+
+    class SharedAnalyticsRepo:
+        def __init__(self, session): ...
+        async def emit(self, **kw):
+            events.append(kw)
+
+    monkeypatch.setattr(cs, "AnalyticsRepository", SharedAnalyticsRepo)
+
+    svc, _sender, _dispatcher, conv, _lead = service
+
+    for i in range(3):
+        outcome = await svc.handle_inbound_persist(
+            phone_number_id="PNID-1",
+            from_phone="39333000000",
+            text="[Il cliente ha inviato un video]",
+            wa_message_id=f"wamid.mediaburst.{i}",
+            force_handoff_reason="video_message",
+        )
+        assert outcome.auto_reply_on is False
+
+    escalated = [e for e in events if e["event_type"] == "conversation.escalated"]
+    assert len(escalated) == 1
+    assert conv.auto_reply is False
+    assert conv.handoff_reason == "video_message"

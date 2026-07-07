@@ -167,7 +167,10 @@ async def test_debounce_buffers_then_flushes_once(monkeypatch: pytest.MonkeyPatc
     assert service.reply_calls == []  # nothing sent yet
     buf_key, due_key, job_id = wh._debounce_keys(str(mid), "39333")
     assert len(redis.lists[buf_key]) == 2
-    assert [j["job_id"] for j in arq.jobs] == [job_id, job_id]  # stable supersede id
+    # One deferred flush per inbound, id suffixed with that message's due epoch
+    # (a stable reused id would be silently refused by arq once a job/result
+    # key exists — see _debounce_keys).
+    assert [j["job_id"] for j in arq.jobs] == [f"{job_id}:1005000", f"{job_id}:1007000"]
     assert redis.strings[due_key] == 1007.0  # pushed out by message 2 (1002 + 5)
 
     clock.now = 1008.0  # quiet period elapsed
@@ -217,4 +220,12 @@ async def test_flush_reschedules_when_not_quiet(monkeypatch: pytest.MonkeyPatch)
     res = await wh.flush_inbound_reply(ctx, str(mid), "39333", "PNID")
     assert res["reason"] == "rescheduled"
     assert service.reply_calls == []
-    assert any(j["name"] == "flush_inbound_reply" for j in arq.jobs)
+    _buf, _due, job_id = wh._debounce_keys(str(mid), "39333")
+    reschedules = [
+        j
+        for j in arq.jobs
+        if j["name"] == "flush_inbound_reply" and str(j["job_id"]).startswith(f"{job_id}:1005000:")
+    ]
+    # Fresh unique id (uuid suffix): re-using the running job's own id would be
+    # silently refused by arq and strand the buffer.
+    assert len(reschedules) == 1

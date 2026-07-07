@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Message
+from db.models import Conversation, Message
 
 
 class MessageRepository:
@@ -102,6 +103,12 @@ class MessageRepository:
         so `update_outbound_status` can attach delivery callbacks via
         `wa_message_id` (otherwise the callback is dropped as `row_missing`).
         Defaults to `role='agent'`; pass `role='system'` for system-driven copy.
+
+        Also bumps the conversation's `last_message_at`/`message_count` (same
+        semantics as `ConversationRepository.touch_last_message`): the inbox rail
+        is ordered by `last_message_at`, so without the bump a proactive send
+        never surfaces the thread — and an automation-opened conversation
+        (`last_message_at` NULL) sorts to the very bottom.
         """
         msg = Message(
             conversation_id=conversation_id,
@@ -114,6 +121,14 @@ class MessageRepository:
             meta=meta or {},
         )
         self._session.add(msg)
+        await self._session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                last_message_at=datetime.now(tz=UTC),
+                message_count=Conversation.message_count + 1,
+            )
+        )
         await self._session.flush()
         return msg
 

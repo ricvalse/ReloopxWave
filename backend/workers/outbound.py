@@ -23,7 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import MessageRepository, ResolvedFlowStep
 from integrations.whatsapp.factory import WhatsAppSender
-from integrations.whatsapp.templates import build_send_components, resolve_body_params
+from integrations.whatsapp.templates import (
+    build_send_components,
+    render_body_preview,
+    resolve_body_params,
+)
 
 WINDOW = timedelta(hours=24)
 
@@ -67,6 +71,9 @@ def render_free_text(text: str, context: dict[str, str]) -> str:
 @dataclass(slots=True, frozen=True)
 class OutboundDecision:
     mode: str  # text | template | skip
+    # For MODE_TEXT: the message to send. For MODE_TEMPLATE: the human-readable
+    # rendered body (params substituted) — NOT sent on the wire (the template is),
+    # but persisted as the inbox Message content so the send is visible.
     text: str | None = None
     template_name: str | None = None
     template_language: str | None = None
@@ -126,8 +133,14 @@ def decide_outbound(
             body_params=body_params,
             header_image_url=step.template_header_image_url,
         )
+        # Human-readable copy for the inbox row: the rendered template body
+        # (what the customer actually reads); the node's free text as fallback.
+        preview = render_body_preview(step.template_body or "", body_params).strip() or (
+            text if has_text else ""
+        )
         return OutboundDecision(
             mode=MODE_TEMPLATE,
+            text=preview or None,
             template_name=step.template_name,
             template_language=step.template_language or "it",
             components=components,
@@ -203,9 +216,12 @@ async def send_and_persist_decision(
     wa_message_id = await send_decision(sender, to_phone=to_phone, decision=decision)
 
     # Inbox content: the free text for text sends; for templates the rendered
-    # fallback/free text (the human-readable copy) with the template payload kept
-    # in meta so the UI can render it as a template message.
+    # body (the human-readable copy) with the template payload kept in meta so
+    # the UI can render it as a template message. Never persist "" — an empty
+    # bubble/preview makes the send invisible in the inbox.
     content = decision.text or ""
+    if not content and decision.mode == MODE_TEMPLATE:
+        content = f"Template «{decision.template_name}»"
     meta: dict[str, object] = {"sender_type": sender_type}
     if decision.mode == MODE_TEMPLATE:
         meta["kind"] = "template"

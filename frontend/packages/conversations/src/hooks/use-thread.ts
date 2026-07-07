@@ -26,6 +26,7 @@ function hydrateListPreview(
   const preview = last.content.length > PREVIEW_MAX_CHARS
     ? `${last.content.slice(0, PREVIEW_MAX_CHARS - 1).trimEnd()}…`
     : last.content;
+  const senderType = last.meta?.sender_type ?? null;
 
   queryClient.setQueriesData<Conversation[]>(
     { queryKey: CONV_LIST_KEY },
@@ -37,6 +38,7 @@ function hydrateListPreview(
         if (
           c.last_message_preview === preview &&
           c.last_message_role === last.role &&
+          c.last_message_sender_type === senderType &&
           c.last_message_at === last.created_at
         ) {
           return c;
@@ -46,6 +48,7 @@ function hydrateListPreview(
           ...c,
           last_message_preview: preview,
           last_message_role: last.role,
+          last_message_sender_type: senderType,
           last_message_at: last.created_at,
         };
       });

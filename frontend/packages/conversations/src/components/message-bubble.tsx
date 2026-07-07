@@ -3,7 +3,7 @@
 import { cn } from '@reloop/ui';
 import { memo } from 'react';
 import { formatBubbleTime } from '../lib/time';
-import type { Message } from '../types';
+import { isAutomationSender, type Message } from '../types';
 import { StatusTicks } from './status-ticks';
 
 interface MessageBubbleProps {
@@ -24,6 +24,8 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   const isOut = message.direction === 'out';
   const isFailed = message.status === 'failed';
   const isFromPhone = message.meta?.sender_type === 'phone';
+  const isFromAutomation = isAutomationSender(message.meta?.sender_type);
+  const originLabel = isFromPhone ? 'Da telefono' : isFromAutomation ? 'Automazione' : null;
   const showTicks = isOut;
   const spacer = showTicks ? META_SPACER_WIDTH : META_SPACER_WIDTH_NO_TICKS;
 
@@ -60,14 +62,14 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
           isFailed && 'opacity-80',
         )}
       >
-        {isFromPhone && (
+        {originLabel && (
           <span
             className={cn(
               'mb-0.5 block text-[10px] font-medium uppercase tracking-wide',
               metaColor,
             )}
           >
-            Da telefono
+            {originLabel}
           </span>
         )}
         <span className="whitespace-pre-wrap break-words leading-relaxed">

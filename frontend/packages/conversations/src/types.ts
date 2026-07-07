@@ -33,16 +33,35 @@ export interface Conversation {
   // Hydrated client-side from the latest message in the thread
   last_message_preview?: string | null;
   last_message_role?: MessageRole | null;
+  last_message_sender_type?: SenderType | null;
   unread_count?: number;
 }
 
 /**
  * `phone` — message originated from the merchant's WhatsApp Business App on
  * their handset (360dialog Coexistence echo). `human` — composer-typed reply
- * via the web UI. `ai` — assistant turn. Other backends may omit `meta` or
- * `sender_type` entirely, hence both are optional.
+ * via the web UI. `ai` — assistant turn. `automation` / `automation_ai` /
+ * `appointment_reminder` — proactive sends fired by the lavagnetta automations
+ * and schedulers. Other backends may omit `meta` or `sender_type` entirely,
+ * hence both are optional.
  */
-export type SenderType = 'phone' | 'human' | 'ai';
+export type SenderType =
+  | 'phone'
+  | 'human'
+  | 'ai'
+  | 'automation'
+  | 'automation_ai'
+  | 'appointment_reminder';
+
+/** True when the message was sent by an automation/scheduler, not a person or
+ *  the inbound-reply bot — drives the "Automazione" labeling in the inbox. */
+export function isAutomationSender(senderType: SenderType | null | undefined): boolean {
+  return (
+    senderType === 'automation' ||
+    senderType === 'automation_ai' ||
+    senderType === 'appointment_reminder'
+  );
+}
 
 export interface MessageMeta {
   sender_type?: SenderType;

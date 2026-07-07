@@ -651,3 +651,19 @@ def resolve_body_params(
         value = context.get(source, "")
         params.append("" if value is None else str(value))
     return params
+
+
+def render_body_preview(body: str, params: list[str]) -> str:
+    """Substitute positional params into a template body, for human-readable copy.
+
+    Produces the text the customer actually receives (as WhatsApp renders it),
+    so a template send can be persisted with real content in the inbox instead
+    of an empty bubble. Out-of-range placeholders resolve to "" — same policy as
+    `render_free_text` (raw braces read as broken copy).
+    """
+
+    def _sub(m: re.Match[str]) -> str:
+        idx = int(m.group(1)) - 1
+        return params[idx] if 0 <= idx < len(params) else ""
+
+    return _VAR_RE.sub(_sub, body)

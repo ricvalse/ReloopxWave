@@ -214,6 +214,12 @@ async def send_message(
     )
     session.add(msg)
 
+    # Bump the rail-ordering fields (same as ConversationRepository.touch_last_message):
+    # the inbox lists threads by last_message_at, so a composer send must surface
+    # the thread for every viewer, not just the sender's optimistic cache.
+    conv.last_message_at = datetime.now(UTC)
+    conv.message_count = conv.message_count + 1
+
     # Auto-takeover: a human replying to a bot-active thread takes it over
     # (Amalia pattern — sending IS taking over). The idempotent path above
     # already returned, so this only runs on a genuinely new human message.

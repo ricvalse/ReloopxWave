@@ -334,6 +334,49 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
         )
 
+    async def claim_handoff(
+        self,
+        conversation_id: UUID,
+        *,
+        reason: str | None = None,
+        summary: str | None = None,
+    ) -> bool:
+        """Atomic exactly-once variant of `mark_escalated`: takes the bot off the
+        thread only if the bot still owns it (`auto_reply = true`).
+
+        A burst of inbounds (es. un album di 10 foto) fans out to concurrent
+        turns that can all decide to escalate before the first flip commits; the
+        row lock serializes them and only one UPDATE matches. Returns True when
+        this caller won the claim — losers must NOT send another handoff message
+        (the customer already got one) nor re-notify the operator.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET auto_reply = false,
+                    handoff_at = now(),
+                    handoff_resolved_at = NULL,
+                    handoff_reason = :reason,
+                    handoff_summary = coalesce(:summary, handoff_summary),
+                    meta = jsonb_set(
+                        jsonb_set(
+                            jsonb_set(
+                                coalesce(meta, '{}'::jsonb),
+                                '{escalated}', 'true'::jsonb
+                            ),
+                            '{escalated_at}', to_jsonb(now()::text)
+                        ),
+                        '{escalation_reason}', to_jsonb(:reason::text)
+                    )
+                WHERE id = :conversation_id AND auto_reply = true
+                RETURNING id
+                """
+            ),
+            {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
+        )
+        return result.scalar_one_or_none() is not None
+
     async def record_reminder_sent(self, conversation_id: UUID) -> None:
         """Atomically increment reminders_sent and stamp last_reminder_at in conversation.meta.
 
