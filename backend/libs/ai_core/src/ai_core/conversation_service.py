@@ -505,7 +505,11 @@ async def build_cascade_system_prompt(
     # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
     tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
     style_bits = [
-        f"Rispondi sempre in lingua {language}.",
+        # Istruzione forte e prioritaria: senza enfasi il modello tende a
+        # rispecchiare la lingua del cliente ignorando questa direttiva.
+        f"REGOLA ASSOLUTA DI LINGUA: scrivi OGNI risposta esclusivamente in "
+        f"lingua «{language}», qualunque sia la lingua usata dal cliente. Non "
+        f"cambiare mai lingua, nemmeno se il cliente scrive in un'altra.",
         tone_clause,
         _VERBOSITY_FRAGMENTS.get(verbosity, _VERBOSITY_FRAGMENTS["equilibrato"]),
         _EMOJI_FRAGMENTS.get(emoji_policy, _EMOJI_FRAGMENTS["sobrio"]),

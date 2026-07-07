@@ -42,6 +42,14 @@ def _model_locks_temperature(model: str) -> bool:
     return bare.startswith("gpt-5")
 
 
+def _model_uses_completion_tokens(model: str) -> bool:
+    """GPT-5 / reasoning models reject `max_tokens` (400) and require
+    `max_completion_tokens` instead. Same family as the temperature lock
+    (incl. fine-tunes `ft:gpt-5-…`), so match the prefix permissively."""
+    bare = model[3:] if model.startswith("ft:") else model
+    return bare.startswith("gpt-5")
+
+
 class OpenAIClient:
     """Wraps `openai` SDK. Supports fine-tuned models by passing their id as `model`."""
 
@@ -80,7 +88,12 @@ class OpenAIClient:
         if not _model_locks_temperature(self.model):
             payload["temperature"] = temperature
         if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+            # GPT-5 / reasoning models renamed this param; sending the old
+            # `max_tokens` to them is a hard 400. Pick the right key per model.
+            if _model_uses_completion_tokens(self.model):
+                payload["max_completion_tokens"] = max_tokens
+            else:
+                payload["max_tokens"] = max_tokens
         if response_format is not None:
             payload["response_format"] = response_format
 

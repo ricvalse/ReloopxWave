@@ -61,7 +61,7 @@ class RAGEngine:
         *,
         merchant_id: UUID,
         top_k: int = 5,
-        min_score: float = 0.7,
+        min_score: float = 0.6,
         hyde_enabled: bool = True,
         rerank_enabled: bool = True,
         rerank_top_k: int = 5,
@@ -225,7 +225,12 @@ class RAGEngine:
             return candidates[:top_k]
 
     async def _log_gap(self, merchant_id: UUID, question: str) -> None:
-        """Upsert a kb_gap row: increment frequency if same question seen before."""
+        """Upsert a kb_gap row: increment frequency if same question seen before.
+
+        The conflict target is the expression unique index
+        `(merchant_id, md5(question_text))` (migration 0045) — `DO NOTHING`
+        never incremented because there was no unique constraint to conflict on.
+        """
         try:
             async with self._session.begin_nested():
                 await self._session.execute(
@@ -233,7 +238,9 @@ class RAGEngine:
                         """
                         INSERT INTO kb_gaps (merchant_id, question_text, frequency, last_seen_at)
                         VALUES (:merchant_id, :question, 1, now())
-                        ON CONFLICT DO NOTHING
+                        ON CONFLICT (merchant_id, md5(question_text))
+                        DO UPDATE SET frequency = kb_gaps.frequency + 1,
+                                      last_seen_at = now()
                         """
                     ),
                     {"merchant_id": str(merchant_id), "question": question[:1000]},

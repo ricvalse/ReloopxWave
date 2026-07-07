@@ -333,7 +333,10 @@ class ScheduleConfig(_StrictModel):
 
 class RagConfig(_StrictModel):
     top_k: int = Field(5, ge=3, le=10)
-    min_score: float = Field(0.7, ge=0.5, le=0.9)
+    # 0.7 era irraggiungibile dalla query grezza su text-embedding-3-small
+    # (una domanda quasi-verbatim scora ~0.66); con HyDE attivo lo score sale
+    # ~0.85, ma 0.6 tiene comunque un margine ampio sull'off-topic (~0.17).
+    min_score: float = Field(0.6, ge=0.4, le=0.9)
     hyde_enabled: bool = True
     rerank_enabled: bool = True
     rerank_top_k: int = Field(5, ge=1, le=20)

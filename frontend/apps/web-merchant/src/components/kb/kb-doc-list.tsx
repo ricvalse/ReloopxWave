@@ -41,8 +41,11 @@ export function KnowledgeBaseDocList() {
       if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
       return (data as Doc[]) ?? [];
     },
-    refetchInterval: (data) =>
-      Array.isArray(data) && data.some((d) => d.status === 'pending' || d.status === 'indexing')
+    // TanStack Query v5: il callback riceve il Query, non i dati — vanno letti
+    // da query.state.data. La firma v4 `(data) => Array.isArray(data)` era sempre
+    // false, quindi il polling non partiva mai e lo stato restava "pending" in UI.
+    refetchInterval: (query) =>
+      query.state.data?.some((d) => d.status === 'pending' || d.status === 'indexing')
         ? 3000
         : false,
   });
