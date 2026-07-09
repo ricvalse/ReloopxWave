@@ -199,7 +199,11 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCHEDULE_TIMEZONE: "Europe/Rome",
     ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
-    ConfigKey.RAG_MIN_SCORE: 0.7,
+    # 0.7 era irraggiungibile dalla query grezza su text-embedding-3-small
+    # (~0.66) → il retrieval tornava sempre vuoto. Il resolver legge QUESTO
+    # dict (non il Field Pydantic di BotConfigSchema), quindi il valore va
+    # abbassato qui perché il fix abbia effetto a runtime.
+    ConfigKey.RAG_MIN_SCORE: 0.6,
     ConfigKey.RAG_HYDE_ENABLED: True,
     ConfigKey.RAG_RERANK_ENABLED: True,
     ConfigKey.RAG_RERANK_TOP_K: 5,

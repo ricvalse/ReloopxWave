@@ -94,6 +94,31 @@ class PlaygroundRunner:
         self._orchestrator = orchestrator
         self._embedder = embedder
         self._sentiment = sentiment
+        # Cached nano LLM client for RAG HyDE + re-ranking, mirroring the live
+        # pipeline (`ConversationService._rag_llm_client`). Without it the
+        # playground would embed the RAW query — whose cosine tops out ~0.66 on
+        # text-embedding-3-small — so the preview retrieved nothing the live bot
+        # (HyDE on) would have found. Lazily built from the orchestrator router.
+        self._rag_nano_client: Any = None
+
+    def _rag_llm_client(self) -> Any:
+        """Cheap nano client for RAG HyDE + re-ranking (None-safe).
+
+        Returns None if the router doesn't expose an API key/model — RAGEngine
+        then degrades to the raw query, exactly as before this wiring existed.
+        """
+        if self._rag_nano_client is not None:
+            return self._rag_nano_client
+        try:
+            from ai_core.llm import OpenAIClient
+            from ai_core.router import ModelRouter
+
+            router: ModelRouter = self._orchestrator._router
+            client = OpenAIClient(model="gpt-4.1-nano", api_key=router._settings.openai_api_key)
+            self._rag_nano_client = client
+            return client
+        except Exception:
+            return None
 
     async def run(self, req: PlaygroundRequest) -> PlaygroundResponse:
         ctx = TenantContext(
@@ -152,18 +177,31 @@ class PlaygroundRunner:
                     )
                 )
 
-            # RAG retrieval — always on when an embedder is configured.
+            # RAG retrieval — always on when an embedder is configured. Uses the
+            # exact same HyDE + re-ranking pipeline as the live turn (via the
+            # nano llm_client) so the preview retrieves what production would
+            # (ADR 0009 — faithful preview). `log_gaps=False`: the playground is
+            # a dry-run and must not write to kb_gaps.
             kb_chunks = []
             if self._embedder is not None:
                 try:
                     top_k = _int(ConfigKey.RAG_TOP_K, 5)
-                    min_score = _float(ConfigKey.RAG_MIN_SCORE, 0.7)
-                    rag = RAGEngine(session, self._embedder)
+                    min_score = _float(ConfigKey.RAG_MIN_SCORE, 0.6)
+                    hyde_enabled = _bool(ConfigKey.RAG_HYDE_ENABLED, True)
+                    rerank_enabled = _bool(ConfigKey.RAG_RERANK_ENABLED, True)
+                    rerank_top_k = _int(ConfigKey.RAG_RERANK_TOP_K, 5)
+                    freshness_decay = _float(ConfigKey.RAG_FRESHNESS_DECAY, 0.01)
+                    rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
                     kb_chunks = await rag.retrieve(
                         req.user_message,
                         merchant_id=req.merchant_id,
                         top_k=top_k,
                         min_score=min_score,
+                        hyde_enabled=hyde_enabled,
+                        rerank_enabled=rerank_enabled,
+                        rerank_top_k=rerank_top_k,
+                        freshness_decay=freshness_decay,
+                        log_gaps=False,
                     )
                     retrieved = [
                         {"chunk_id": str(c.chunk_id), "score": c.score, "snippet": c.content[:280]}

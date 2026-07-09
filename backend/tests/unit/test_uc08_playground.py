@@ -214,3 +214,81 @@ async def test_playground_records_turn_sentiment_in_returned_state(wiring) -> No
 
     # This turn's sentiment is stored for the NEXT turn's adaptation.
     assert out.state["lead_sentiment"] == "negative"
+
+
+async def test_playground_rag_uses_hyde_rerank_and_skips_gap_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preview must run the SAME RAG pipeline as the live turn: an llm_client
+    (HyDE + re-ranking) and the merchant's RAG config — but never log kb_gaps,
+    since the playground is a dry-run."""
+    sentinel_session = object()
+    monkeypatch.setattr(pg, "tenant_session", lambda ctx: _FakeSessionCtx(sentinel_session))
+    monkeypatch.setattr(
+        pg,
+        "ConfigResolver",
+        _fake_resolver(
+            {
+                ConfigKey.SCORING_HOT_THRESHOLD: 65,
+                ConfigKey.RAG_TOP_K: 4,
+                ConfigKey.RAG_MIN_SCORE: 0.6,
+                ConfigKey.RAG_HYDE_ENABLED: True,
+                ConfigKey.RAG_RERANK_ENABLED: True,
+                ConfigKey.RAG_RERANK_TOP_K: 3,
+                ConfigKey.RAG_FRESHNESS_DECAY: 0.02,
+            }
+        ),
+    )
+
+    async def _fake_build(
+        *, session, merchant_id, prior_sentiment=None, customer_message=None
+    ) -> str:
+        return "PROMPT"
+
+    monkeypatch.setattr(pg, "build_cascade_system_prompt", _fake_build)
+
+    captured: dict = {}
+
+    class _FakeRAG:
+        def __init__(self, session, embedder, *, llm_client=None) -> None:
+            captured["llm_client"] = llm_client
+
+        async def retrieve(self, query, *, merchant_id, **kwargs):
+            captured["query"] = query
+            captured["kwargs"] = kwargs
+            return [SimpleNamespace(chunk_id=uuid.uuid4(), score=0.72, content="chunk body")]
+
+    monkeypatch.setattr(pg, "RAGEngine", _FakeRAG)
+
+    orch = AsyncMock()
+    orch._router = SimpleNamespace(_settings=SimpleNamespace(openai_api_key="sk-test"))
+    orch.run.return_value = SimpleNamespace(
+        reply_text="ok", actions=[], model="gpt-5-mini", tokens_in=1, tokens_out=1, latency_ms=1
+    )
+
+    runner = PlaygroundRunner(orchestrator=orch, embedder=object())  # non-None → RAG runs
+
+    out = await runner.run(
+        PlaygroundRequest(
+            tenant_id=uuid.uuid4(),
+            merchant_id=uuid.uuid4(),
+            history=[],
+            user_message="come funziona la candidatura?",
+        )
+    )
+
+    # HyDE/re-ranking client is wired (raw-query-only retrieval was the bug).
+    assert captured["llm_client"] is not None
+    kw = captured["kwargs"]
+    assert kw["hyde_enabled"] is True
+    assert kw["rerank_enabled"] is True
+    assert kw["top_k"] == 4
+    assert kw["min_score"] == 0.6
+    assert kw["rerank_top_k"] == 3
+    assert kw["freshness_decay"] == 0.02
+    # Dry-run invariant: the playground must not write to kb_gaps.
+    assert kw["log_gaps"] is False
+    # The retrieved chunk is surfaced to the UI and injected into the orchestrator ctx.
+    assert out.retrieved_chunks and out.retrieved_chunks[0]["score"] == 0.72
+    ctx, _ = orch.run.call_args.args
+    assert ctx.kb_chunks and ctx.kb_chunks[0].content == "chunk body"

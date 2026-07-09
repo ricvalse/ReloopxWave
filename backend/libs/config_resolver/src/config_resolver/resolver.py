@@ -204,11 +204,21 @@ class ConfigResolver:
 
 
 def _lookup(bag: dict[str, Any], dotted_key: str) -> Any:
-    """Walks a dotted key (`a.b.c`) through a nested JSON bag."""
+    """Resolve a dotted key (`a.b.c`) from a config bag.
+
+    Primary shape is a NESTED bag (`{"a": {"b": {"c": v}}}`) — the convention
+    written by `_dotted_set` in the bot-config router. As a backward-compatible
+    fallback we also accept the FLAT shape (`{"a.b.c": v}`): some write paths
+    stored the whole dotted string as a single top-level key (notably the
+    playground `/apply` endpoint, which wrote `bot.system_prompt_additions`
+    flat), and the nested walk alone would never find those — the value was
+    silently dropped from the resolved config. Nested wins when both exist.
+    """
     node: Any = bag
     for part in dotted_key.split("."):
         if not isinstance(node, dict) or part not in node:
-            return None
+            # Nested walk missed — fall back to the flat dotted key, if present.
+            return bag.get(dotted_key)
         node = node[part]
     return node
 
