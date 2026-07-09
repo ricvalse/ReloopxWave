@@ -38,7 +38,13 @@ from ai_core.playground_sim import (
     apply_playground_rule_overrides,
     simulate_turn,
 )
-from ai_core.rag import Embedder, RAGEngine
+from ai_core.rag import (
+    KB_INLINE_MAX_TOKENS,
+    Embedder,
+    RAGEngine,
+    kb_all_chunks,
+    kb_estimated_tokens,
+)
 from ai_core.sentiment import SentimentAnalyzer
 from config_resolver import ConfigKey, ConfigResolver
 from db import TenantContext, tenant_session
@@ -177,14 +183,17 @@ class PlaygroundRunner:
                     )
                 )
 
-            # RAG retrieval — always on when an embedder is configured. Uses the
-            # exact same HyDE + re-ranking pipeline as the live turn (via the
-            # nano llm_client) so the preview retrieves what production would
-            # (ADR 0009 — faithful preview). `log_gaps=False`: the playground is
-            # a dry-run and must not write to kb_gaps.
+            # KB context, mirroring the live turn exactly (ADR 0009 — faithful
+            # preview). Small KB → inject the whole thing (no retrieval miss);
+            # large KB → same HyDE + re-ranking pipeline as production (via the
+            # nano llm_client). `log_gaps=False`: the playground is a dry-run and
+            # must not write to kb_gaps.
             kb_chunks = []
-            if self._embedder is not None:
-                try:
+            try:
+                kb_tokens = await kb_estimated_tokens(session, req.merchant_id)
+                if 0 < kb_tokens < KB_INLINE_MAX_TOKENS:
+                    kb_chunks = await kb_all_chunks(session, req.merchant_id)
+                elif self._embedder is not None:
                     top_k = _int(ConfigKey.RAG_TOP_K, 5)
                     min_score = _float(ConfigKey.RAG_MIN_SCORE, 0.6)
                     hyde_enabled = _bool(ConfigKey.RAG_HYDE_ENABLED, True)
@@ -203,12 +212,12 @@ class PlaygroundRunner:
                         freshness_decay=freshness_decay,
                         log_gaps=False,
                     )
-                    retrieved = [
-                        {"chunk_id": str(c.chunk_id), "score": c.score, "snippet": c.content[:280]}
-                        for c in kb_chunks
-                    ]
-                except Exception as e:
-                    logger.warning("uc08.rag_failed", error=str(e))
+                retrieved = [
+                    {"chunk_id": str(c.chunk_id), "score": c.score, "snippet": c.content[:280]}
+                    for c in kb_chunks
+                ]
+            except Exception as e:
+                logger.warning("uc08.rag_failed", error=str(e))
 
             # Exact same system prompt as the live turn, adapted to the prior
             # turn's sentiment (no conversation = no A/B variant).

@@ -1,12 +1,11 @@
 """Unit tests for S-02 RAG intelligence (HyDE, re-ranking, gap detection)."""
+
 from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from ai_core.rag.retriever import RAGEngine, RetrievedChunk
 
@@ -142,7 +141,7 @@ class TestReranking:
         session = FakeSession(chunks)
         embedder = FakeEmbedder()
         # LLM says: prefer index 2, then 0, then 1
-        llm = FakeLLM('[2, 0, 1]')
+        llm = FakeLLM("[2, 0, 1]")
         engine = RAGEngine(session, embedder, llm_client=llm)  # type: ignore[arg-type]
 
         result = await engine.retrieve(
@@ -210,3 +209,44 @@ class TestGapDetection:
             log_gaps=False,
         )
         assert len(session.gap_inserts) == 0
+
+
+class TestKbInlineHelpers:
+    async def test_estimated_tokens_is_chars_over_four(self):
+        from ai_core.rag.retriever import kb_estimated_tokens
+
+        class _S:
+            async def execute(self, stmt, params=None):
+                r = MagicMock()
+                r.scalar.return_value = 4000  # total chars
+                return r
+
+        assert await kb_estimated_tokens(_S(), uuid.uuid4()) == 1000
+
+    async def test_estimated_tokens_zero_when_empty(self):
+        from ai_core.rag.retriever import kb_estimated_tokens
+
+        class _S:
+            async def execute(self, stmt, params=None):
+                r = MagicMock()
+                r.scalar.return_value = 0
+                return r
+
+        assert await kb_estimated_tokens(_S(), uuid.uuid4()) == 0
+
+    async def test_all_chunks_returns_every_chunk_with_score_one(self):
+        from ai_core.rag.retriever import kb_all_chunks
+
+        chunks = [
+            RetrievedChunk(
+                chunk_id=uuid.uuid4(), doc_id=uuid.uuid4(), content="a", score=0.3, meta={}
+            ),
+            RetrievedChunk(
+                chunk_id=uuid.uuid4(), doc_id=uuid.uuid4(), content="b", score=0.9, meta={"k": 1}
+            ),
+        ]
+        out = await kb_all_chunks(FakeSession(chunks), uuid.uuid4())
+        assert [c.content for c in out] == ["a", "b"]
+        # Nothing is ranked on the inline path — score is fixed at 1.0.
+        assert all(c.score == 1.0 for c in out)
+        assert out[1].meta == {"k": 1}

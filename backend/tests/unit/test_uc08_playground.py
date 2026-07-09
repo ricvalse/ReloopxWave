@@ -53,6 +53,9 @@ def wiring(monkeypatch: pytest.MonkeyPatch):
     sentinel_session = object()
     monkeypatch.setattr(pg, "tenant_session", lambda ctx: _FakeSessionCtx(sentinel_session))
     monkeypatch.setattr(pg, "ConfigResolver", _fake_resolver({ConfigKey.SCORING_HOT_THRESHOLD: 65}))
+    # No KB by default → neither inline injection nor RAG (keeps these tests
+    # focused on the prompt/orchestrator wiring).
+    monkeypatch.setattr(pg, "kb_estimated_tokens", AsyncMock(return_value=0))
 
     async def _fake_build(
         *, session, merchant_id, prior_sentiment=None, customer_message=None
@@ -224,6 +227,10 @@ async def test_playground_rag_uses_hyde_rerank_and_skips_gap_logging(
     since the playground is a dry-run."""
     sentinel_session = object()
     monkeypatch.setattr(pg, "tenant_session", lambda ctx: _FakeSessionCtx(sentinel_session))
+    # Large KB (> inline threshold) → the RAG path, not inline injection.
+    monkeypatch.setattr(
+        pg, "kb_estimated_tokens", AsyncMock(return_value=pg.KB_INLINE_MAX_TOKENS + 1)
+    )
     monkeypatch.setattr(
         pg,
         "ConfigResolver",
@@ -292,3 +299,56 @@ async def test_playground_rag_uses_hyde_rerank_and_skips_gap_logging(
     assert out.retrieved_chunks and out.retrieved_chunks[0]["score"] == 0.72
     ctx, _ = orch.run.call_args.args
     assert ctx.kb_chunks and ctx.kb_chunks[0].content == "chunk body"
+
+
+async def test_playground_small_kb_is_injected_whole_no_rag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the whole KB is under the inline threshold, every chunk is injected
+    into the prompt and RAG (vector search) is skipped entirely — so no
+    retrieval miss can drop a fact that is in the KB."""
+    sentinel_session = object()
+    monkeypatch.setattr(pg, "tenant_session", lambda ctx: _FakeSessionCtx(sentinel_session))
+    monkeypatch.setattr(pg, "ConfigResolver", _fake_resolver({ConfigKey.SCORING_HOT_THRESHOLD: 65}))
+
+    async def _fake_build(
+        *, session, merchant_id, prior_sentiment=None, customer_message=None
+    ) -> str:
+        return "PROMPT"
+
+    monkeypatch.setattr(pg, "build_cascade_system_prompt", _fake_build)
+
+    # Small KB → inline path.
+    monkeypatch.setattr(pg, "kb_estimated_tokens", AsyncMock(return_value=500))
+    all_chunks = [
+        SimpleNamespace(chunk_id=uuid.uuid4(), score=1.0, content="Domanda: X / Risposta: Y"),
+        SimpleNamespace(chunk_id=uuid.uuid4(), score=1.0, content="Documento: Z"),
+    ]
+    monkeypatch.setattr(pg, "kb_all_chunks", AsyncMock(return_value=all_chunks))
+
+    # RAGEngine must NOT be constructed on the inline path.
+    def _boom(*a, **k):  # pragma: no cover - asserts it's never called
+        raise AssertionError("RAGEngine must not be used when the KB is injected whole")
+
+    monkeypatch.setattr(pg, "RAGEngine", _boom)
+
+    orch = AsyncMock()
+    orch.run.return_value = SimpleNamespace(
+        reply_text="ok", actions=[], model="gpt-5-mini", tokens_in=1, tokens_out=1, latency_ms=1
+    )
+    runner = PlaygroundRunner(orchestrator=orch, embedder=object())
+
+    out = await runner.run(
+        PlaygroundRequest(
+            tenant_id=uuid.uuid4(),
+            merchant_id=uuid.uuid4(),
+            history=[],
+            user_message="qualsiasi domanda",
+        )
+    )
+
+    # All chunks reach the orchestrator context and the UI, verbatim.
+    ctx, _ = orch.run.call_args.args
+    assert [c.content for c in ctx.kb_chunks] == [c.content for c in all_chunks]
+    assert len(out.retrieved_chunks) == 2
+    assert all(rc["score"] == 1.0 for rc in out.retrieved_chunks)

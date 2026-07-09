@@ -32,7 +32,13 @@ from ai_core.orchestrator import (
     OrchestratorResponse,
     ToolExecutor,
 )
-from ai_core.rag import Embedder, RAGEngine
+from ai_core.rag import (
+    KB_INLINE_MAX_TOKENS,
+    Embedder,
+    RAGEngine,
+    kb_all_chunks,
+    kb_estimated_tokens,
+)
 from ai_core.scheduling import is_within_active_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
@@ -1099,8 +1105,17 @@ class ConversationService:
                 )
 
             kb_chunks = []
-            if self._embedder is not None:
-                try:
+            try:
+                # Small KB → inject the whole thing into the prompt (no retrieval,
+                # so no min_score/embedding miss can hide a fact that IS in the KB).
+                # Large KB → fall back to RAG. Threshold is a token estimate.
+                kb_tokens = await kb_estimated_tokens(session, resolved.merchant_id)
+                if 0 < kb_tokens < KB_INLINE_MAX_TOKENS:
+                    kb_chunks = await kb_all_chunks(session, resolved.merchant_id)
+                    logger.info(
+                        "uc01.kb_inline", merchant_id=str(resolved.merchant_id), tokens=kb_tokens
+                    )
+                elif self._embedder is not None:
                     async with session.begin_nested():
                         top_k = await self._resolve_int(
                             session, resolved.merchant_id, ConfigKey.RAG_TOP_K, default=5
@@ -1131,8 +1146,8 @@ class ConversationService:
                             rerank_top_k=rerank_top_k,
                             freshness_decay=freshness_decay,
                         )
-                except Exception as e:
-                    logger.warning("uc01.rag_failed", error=str(e))
+            except Exception as e:
+                logger.warning("uc01.rag_failed", error=str(e))
 
             hot_threshold = await self._resolve_int(
                 session, resolved.merchant_id, ConfigKey.SCORING_HOT_THRESHOLD, default=80

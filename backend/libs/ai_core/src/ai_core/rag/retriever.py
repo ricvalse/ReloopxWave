@@ -25,6 +25,14 @@ logger = get_logger(__name__)
 # for gap detection (the KB has no good answer for this question).
 _GAP_SCORE_THRESHOLD = 0.72
 
+# When a merchant's ENTIRE knowledge base is small enough to sit comfortably in
+# the prompt, we inject every chunk verbatim instead of running vector search —
+# the model then always sees the answer, so no retrieval miss (min_score /
+# embedding mismatch) can hide a fact that is actually in the KB. Above this
+# budget we fall back to RAG. Tokens are estimated as chars/4, the same basis
+# the indexer uses for `kb_chunks.tokens`.
+KB_INLINE_MAX_TOKENS = 10_000
+
 
 @dataclass(slots=True, frozen=True)
 class RetrievedChunk:
@@ -200,7 +208,8 @@ class RAGEngine:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
                 indices = next(
-                    (v for v in parsed.values() if isinstance(v, list)), list(range(len(candidates)))
+                    (v for v in parsed.values() if isinstance(v, list)),
+                    list(range(len(candidates))),
                 )
             else:
                 indices = parsed
@@ -280,3 +289,38 @@ class Embedder:
 def _vector_literal(embedding: list[float]) -> str:
     """pgvector accepts a '[x,y,z]' string cast to ::vector."""
     return "[" + ",".join(f"{v:.7f}" for v in embedding) + "]"
+
+
+async def kb_estimated_tokens(session: AsyncSession, merchant_id: UUID) -> int:
+    """Rough token size of a merchant's WHOLE KB (sum of chars / 4).
+
+    Char-based so it doesn't depend on the `tokens` column being populated;
+    used only to pick the inline-injection vs RAG path, so an estimate is fine.
+    """
+    result = await session.execute(
+        text("SELECT COALESCE(SUM(char_length(content)), 0) FROM kb_chunks WHERE merchant_id = :m"),
+        {"m": str(merchant_id)},
+    )
+    return int(result.scalar() or 0) // 4
+
+
+async def kb_all_chunks(session: AsyncSession, merchant_id: UUID) -> list[RetrievedChunk]:
+    """Every KB chunk for a merchant in document order (score fixed at 1.0).
+
+    The inline-injection path: when the KB is small the whole thing is dropped
+    into the prompt rather than retrieved, so there is nothing to rank. Needs no
+    embedder, so it works even when OpenAI is unavailable.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT id, doc_id, content, meta FROM kb_chunks "
+            "WHERE merchant_id = :m ORDER BY doc_id, chunk_index"
+        ),
+        {"m": str(merchant_id)},
+    )
+    return [
+        RetrievedChunk(
+            chunk_id=row.id, doc_id=row.doc_id, content=row.content, score=1.0, meta=row.meta or {}
+        )
+        for row in rows.mappings()
+    ]
