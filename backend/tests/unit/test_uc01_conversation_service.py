@@ -335,6 +335,45 @@ def test_to_chat_history_folds_agent_into_assistant() -> None:
     assert out[2].content == "Rispondo io dal telefono"
 
 
+def test_trailing_proactive_text_detects_automation_reply() -> None:
+    """When the customer's turn replies to a proactive/automation send, the
+    automation message text is surfaced so the reply can continue that thread.
+    Fires only when the LAST stored turn is proactive (automation/automation_ai);
+    once the bot has answered, the customer is replying to the bot."""
+    from types import SimpleNamespace
+
+    from ai_core.conversation_service import _trailing_proactive_text
+
+    def msg(role: str, content: str, sender_type: str | None = None):
+        meta = {"sender_type": sender_type} if sender_type else {}
+        return SimpleNamespace(role=role, content=content, meta=meta)
+
+    # Last turn is the automation send → return its text.
+    hist = [msg("agent", "Per completare la candidatura compila il questionario", "automation")]
+    assert _trailing_proactive_text(hist) == "Per completare la candidatura compila il questionario"
+
+    # ai_reply node send (automation_ai) also counts as proactive.
+    assert (
+        _trailing_proactive_text([msg("agent", "Ciao, ci sei?", "automation_ai")])
+        == "Ciao, ci sei?"
+    )
+
+    # A normal AI reply is NOT proactive continuity context.
+    assert _trailing_proactive_text([msg("assistant", "Come posso aiutarti?", "ai")]) is None
+
+    # Bot has already taken over (last turn is an AI reply) → no directive.
+    hist2 = [
+        msg("agent", "Per completare la candidatura...", "automation"),
+        msg("user", "Appena inviato"),
+        msg("assistant", "Perfetto, grazie", "ai"),
+    ]
+    assert _trailing_proactive_text(hist2) is None
+
+    # Empty / plain user tail → None.
+    assert _trailing_proactive_text([]) is None
+    assert _trailing_proactive_text([msg("user", "Ciao")]) is None
+
+
 async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
     monkeypatch: pytest.MonkeyPatch,
     resolved_integration: ResolvedWhatsAppIntegration,

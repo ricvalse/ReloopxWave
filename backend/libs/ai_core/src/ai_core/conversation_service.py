@@ -90,6 +90,42 @@ def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
     ]
 
 
+# Proactive / automation sends are persisted with these `meta.sender_type`
+# markers (see MessageRepository.persist_outbound_message / send_and_persist_decision).
+_PROACTIVE_SENDERS = {"automation", "automation_ai"}
+
+# Cap on the proactive message text re-injected into the system prompt — an
+# approved template can be long; the intent is enough context to give continuity,
+# not to duplicate the whole body.
+_PROACTIVE_CONTEXT_MAX_CHARS = 600
+
+
+def _trailing_proactive_text(history: list[Any]) -> str | None:
+    """Text of the last turn IFF it was a proactive/automation send.
+
+    When an automation (first-contact, no-answer reminder, reactivation, …)
+    delivers a message and then the customer replies, that message IS already in
+    the LLM history — but folded to a bare `assistant` turn by `_to_chat_history`,
+    it gets steam-rolled by the merchant's generic persona: the bot restarts with
+    a generic greeting / pivots to unrelated topics (prenotazioni, servizi)
+    instead of continuing what the automation set up. This surfaced as "l'AI non
+    prende in considerazione i messaggi dell'automazione".
+
+    Returning the text here lets `_generate_and_deliver` re-inject it as an
+    explicit, authoritative continuity directive. Only fires when the LAST stored
+    turn (i.e. the one the customer is replying to) is proactive — once the bot
+    has answered, the customer is replying to the bot, not the automation.
+    """
+    if not history:
+        return None
+    last = history[-1]
+    sender = (getattr(last, "meta", None) or {}).get("sender_type")
+    if sender in _PROACTIVE_SENDERS:
+        text = (getattr(last, "content", "") or "").strip()
+        return text or None
+    return None
+
+
 # ---- Action dispatcher ----------------------------------------------------
 
 
@@ -232,6 +268,11 @@ class _ReplyContext:
     responded_within_10min: bool = False
     # S-09: behavioral latency signal (EMA from LeadRepository).
     lead_avg_latency_seconds: int | None = None
+    # Text of the proactive/automation message the customer is replying to, when
+    # the immediately-preceding turn was such a send. Injected as an authoritative
+    # continuity directive in `_generate_and_deliver` so the bot continues the
+    # automation's thread instead of restarting generically. None otherwise.
+    proactive_reply_to: str | None = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -910,6 +951,7 @@ class ConversationService:
                 text=text,
                 conv_current_state=conv_current_state,
                 latest_wa_message_id=wa_message_id,
+                proactive_reply_to=_trailing_proactive_text(history),
             )
 
         return PersistOutcome(
@@ -1012,6 +1054,7 @@ class ConversationService:
                 conv_current_state=conv.current_state,
                 latest_wa_message_id=wa_message_id,
                 lead_avg_latency_seconds=lead.avg_response_latency_seconds,
+                proactive_reply_to=_trailing_proactive_text(history),
             )
         return await self._generate_and_deliver(rc)
 
@@ -1104,9 +1147,18 @@ class ConversationService:
                 session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
 
-            # FSM: load current state, inject hint into system prompt
+            # FSM: load current state, inject hint into system prompt. Suppress the
+            # GREETING "accogli il lead per la prima volta / presentati" hint when the
+            # customer is actually replying to a proactive/automation message: the lead
+            # was already engaged by the business, so a from-scratch greeting is wrong —
+            # it was the main driver of the bot ignoring the automation's thread and
+            # pivoting to a generic "come posso aiutarti".
             fsm_state = ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
-            fsm_hint = state_system_hint(fsm_state)
+            fsm_hint = (
+                ""
+                if (rc.proactive_reply_to and fsm_state == ConvState.GREETING)
+                else state_system_hint(fsm_state)
+            )
             if fsm_hint:
                 system_prompt = system_prompt + "\n\n" + fsm_hint
 
@@ -1153,6 +1205,31 @@ class ConversationService:
                         subject_id=rc.conv_id,
                         properties={"risk_score": esc_risk.score, "factors": esc_risk.factors},
                     )
+
+            # Continuity with proactive/automation sends. The message the customer is
+            # replying to is already in the LLM history as an `assistant` turn, but a
+            # bare assistant turn gets steam-rolled by the merchant's generic persona
+            # (and, at GREETING, by the "presentati" FSM hint): the bot restarts
+            # generically instead of continuing what the automation set up — reported
+            # as "l'AI non considera i messaggi dell'automazione". Re-inject that
+            # message as an explicit, AUTHORITATIVE continuity directive. Injected LAST
+            # (after the persona, FSM and escalation hints) so it wins on salience.
+            if rc.proactive_reply_to:
+                proactive_text = rc.proactive_reply_to[:_PROACTIVE_CONTEXT_MAX_CHARS]
+                system_prompt += (
+                    "\n\nCONTINUITÀ CON L'AUTOMAZIONE (istruzione prioritaria): questo "
+                    "NON è un primo contatto. L'ultimo messaggio ricevuto da questo "
+                    "contatto è stato inviato automaticamente dall'attività ed è il "
+                    f"seguente:\n«{proactive_text}»\n"
+                    "Il cliente sta rispondendo proprio a QUESTO messaggio. NON "
+                    "presentarti da capo, NON ripartire con una presentazione generica o "
+                    "un «come posso aiutarti», NON cambiare argomento e NON proporre temi "
+                    "non attinenti (es. prenotazioni o servizi) se quel messaggio "
+                    "riguardava altro. Dai continuità a ciò che vi è stato chiesto o "
+                    "proposto: interpreta la sua risposta in quel contesto (es. «appena "
+                    "inviato», «fatto», «ok» si riferiscono all'azione richiesta lì) e "
+                    "prosegui il flusso già avviato."
+                )
 
             # S-04: context compression — keep a running summary of the turns that
             # have scrolled out of the verbatim window so long/resumed threads
@@ -1551,8 +1628,11 @@ class ConversationService:
             from ai_core.llm import OpenAIClient
             from ai_core.router import ModelRouter
 
-            router: ModelRouter = self._orchestrator._router  # type: ignore[attr-defined]
-            client = OpenAIClient(model="gpt-4.1-nano", api_key=router._api_key)  # type: ignore[attr-defined]
+            router: ModelRouter = self._orchestrator._router
+            # ModelRouter has no `_api_key`; the key lives on its Settings. Using
+            # the wrong attr made this raise AttributeError → caught below → None,
+            # so HyDE + re-ranking silently never ran (raw-query retrieval only).
+            client = OpenAIClient(model="gpt-4.1-nano", api_key=router._settings.openai_api_key)
             self._rag_nano_client = client
             return client
         except Exception:
