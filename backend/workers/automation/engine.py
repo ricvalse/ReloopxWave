@@ -20,7 +20,7 @@ inside it, ``send_template`` (approved template) anywhere — mirroring
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -35,6 +35,7 @@ from ai_core.automations import (
     wait_minutes,
 )
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
+from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
 from ai_core.router import RoutingRequest
@@ -165,6 +166,11 @@ class AiReplyDeps:
     system_prompt: str
     hot_threshold: int
     advance_threshold: int
+    # Playbook runtime (ADR 0018) — gates the proactive prompt/actions the same
+    # way the inbound turn does, so an automation reminder respects the tenant's
+    # use-case (e.g. a recruiting reminder never interviews). Defaults to today's
+    # sales behavior when unset.
+    playbook: PlaybookRuntime = field(default_factory=PlaybookRuntime)
 
 
 # --------------------------------------------------------------------------- #
@@ -628,6 +634,11 @@ async def _do_ai_reply(
     # Conservative default: no `allowed_actions` selected → the AI may reply but
     # dispatches no CRM side effects. The merchant opts in per node via the UI.
     allowed = set(cfg.get("allowed_actions") or [])
+    # Playbook caps (ADR 0018) gate the proactive prompt just like the inbound
+    # turn: reduced schema hint, dropped qualification context and authoritative
+    # directives. The effective action set is the intersection of the node's
+    # `allowed` and the playbook allowlist (computed inside run_proactive).
+    pb = ai_deps.playbook
     conv_ctx = ConversationContext(
         merchant_id=run_ctx.merchant_id,
         tenant_id=run_ctx.tenant_id,
@@ -638,6 +649,10 @@ async def _do_ai_reply(
         history=ai_deps.history,
         kb_chunks=[],
         advance_threshold=ai_deps.advance_threshold,
+        allowed_actions=pb.allowed_actions,
+        scoring_enabled=pb.scoring_enabled,
+        directives=pb.directives,
+        critical_keywords=pb.critical_keywords,
     )
     response = await ai_deps.orchestrator.run_proactive(
         conv_ctx,
@@ -722,6 +737,7 @@ async def _build_ai_reply_deps(
         return None
     messages = await MessageRepository(session).list_history(run_ctx.conversation_id, limit=30)
     system_prompt = await build_cascade_system_prompt(session=session, merchant_id=merchant_id)
+    playbook = await resolve_playbook_runtime(session, merchant_id)
     return AiReplyDeps(
         orchestrator=runtime.orchestrator,
         dispatcher=runtime.action_dispatcher,
@@ -729,6 +745,7 @@ async def _build_ai_reply_deps(
         system_prompt=system_prompt,
         hot_threshold=_HOT_SCORE,
         advance_threshold=_ADVANCE_SCORE,
+        playbook=playbook,
     )
 
 

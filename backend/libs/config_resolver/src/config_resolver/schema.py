@@ -39,10 +39,18 @@ class ConfigKey(StrEnum):
     PIPELINE_DEFAULT_PIPELINE_ID = "pipeline.default_pipeline_id"
     PIPELINE_NEW_STAGE_ID = "pipeline.new_stage_id"
     PIPELINE_QUALIFIED_STAGE_ID = "pipeline.qualified_stage_id"
+    # When false, the deterministic move_pipeline injection (UC-04) is skipped —
+    # the bot never auto-advances the lead in the CRM pipeline. Use-case agnostic
+    # gate (a pure info/reminder bot has no sales pipeline). Default True = today.
+    PIPELINE_AUTO_ADVANCE = "pipeline.auto_advance"
 
     # UC-05 Scoring
     SCORING_HOT_THRESHOLD = "scoring.hot_threshold"
     SCORING_COLD_THRESHOLD = "scoring.cold_threshold"
+    # Master switch for the always-on cumulative lead scoring (UC-05). When false
+    # no update_score is synthesized and the qualification context is dropped from
+    # the prompt — for bots that don't qualify leads. Default True = today.
+    SCORING_ENABLED = "scoring.enabled"
 
     # UC-09 A/B
     AB_DEFAULT_SPLIT = "ab_test.default_split"
@@ -74,6 +82,10 @@ class ConfigKey(StrEnum):
     ESCALATION_ENABLED = "escalation.enabled"
     ESCALATION_HANDOFF_MESSAGE = "escalation.handoff_message"
     ESCALATION_SILENT_HANDOFF = "escalation.silent_handoff"
+    # Keywords that force the escalation-model route (spec 6.7). None = use the
+    # code default vocabulary (CRITICAL_KEYWORDS). A tenant whose domain reuses a
+    # default word innocently (e.g. "concorrenza" in recruiting) can override it.
+    ESCALATION_CRITICAL_KEYWORDS = "escalation.critical_keywords"
 
     # Privacy
     PRIVACY_RETENTION_MONTHS = "privacy.retention_months"
@@ -85,6 +97,14 @@ class ConfigKey(StrEnum):
     # Lista di ore di anticipo per i promemoria WhatsApp dell'appuntamento.
     # Es.: [24] → un solo reminder 24h prima; [48, 24] → due reminder.
     BOOKING_REMINDER_SCHEDULE = "booking.reminder_schedule"
+    # When false the bot never offers/handles appointments: the "Servizi
+    # prenotabili" block is dropped from the prompt and booking actions are not
+    # advertised. Use-case agnostic gate. Default True = today's behavior.
+    BOOKING_ENABLED = "booking.enabled"
+
+    # Lead capture — whether the bot proactively asks for the lead's identity
+    # (name/email/need). Off = a pure info/reminder bot that never interviews.
+    LEAD_CAPTURE_ENABLED = "lead_capture.enabled"
 
     # Business profile — fed into the system prompt so the bot knows who it
     # represents. Leaving any field empty is fine; the prompt builder simply
@@ -163,6 +183,15 @@ class ConfigKey(StrEnum):
 
     # Conversation lifecycle — idle close drives the objection-extraction sweep.
     CONVERSATION_IDLE_CLOSE_MINUTES = "conversation.idle_close_minutes"
+    # Conversation playbook (ADR 0018) — the per-tenant, use-case-agnostic knobs
+    # that govern the conversation's SHAPE. Resolved PER-LEAF through the cascade
+    # (like every other key) so a merchant can override the mode while inheriting
+    # the agency's directives. Default = today's sales FSM (mode fsm_legacy, no
+    # directives, all actions allowed).
+    CONVERSATION_PLAYBOOK_MODE = "conversation.playbook.mode"
+    CONVERSATION_PLAYBOOK_GOAL = "conversation.playbook.goal"
+    CONVERSATION_PLAYBOOK_DIRECTIVES = "conversation.playbook.directives"
+    CONVERSATION_PLAYBOOK_ACTIONS_ENABLED = "conversation.playbook.actions.enabled"
 
 
 # Default objection vocabulary (UC-13); merchants can override per-tenant.
@@ -190,8 +219,10 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.PIPELINE_DEFAULT_PIPELINE_ID: None,
     ConfigKey.PIPELINE_NEW_STAGE_ID: None,
     ConfigKey.PIPELINE_QUALIFIED_STAGE_ID: None,
+    ConfigKey.PIPELINE_AUTO_ADVANCE: True,
     ConfigKey.SCORING_HOT_THRESHOLD: 80,
     ConfigKey.SCORING_COLD_THRESHOLD: 30,
+    ConfigKey.SCORING_ENABLED: True,
     ConfigKey.AB_DEFAULT_SPLIT: [50, 50],
     ConfigKey.AB_MIN_SAMPLE: 100,
     ConfigKey.SCHEDULE_ACTIVE_HOURS: "24/7",
@@ -213,11 +244,14 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.ESCALATION_ENABLED: True,
     ConfigKey.ESCALATION_HANDOFF_MESSAGE: None,
     ConfigKey.ESCALATION_SILENT_HANDOFF: False,
+    ConfigKey.ESCALATION_CRITICAL_KEYWORDS: None,
     ConfigKey.PRIVACY_RETENTION_MONTHS: 24,
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
     ConfigKey.BOOKING_LOOKAHEAD_DAYS: 14,
     ConfigKey.BOOKING_REMINDER_SCHEDULE: [24],
+    ConfigKey.BOOKING_ENABLED: True,
+    ConfigKey.LEAD_CAPTURE_ENABLED: True,
     ConfigKey.BUSINESS_NAME: None,
     ConfigKey.BUSINESS_INDUSTRY: None,
     ConfigKey.BUSINESS_DESCRIPTION: None,
@@ -264,6 +298,10 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.GHL_CONTACT_DEFAULT_TAGS: [],
     ConfigKey.OBJECTION_CATEGORIES: _DEFAULT_OBJECTION_CATEGORIES,
     ConfigKey.CONVERSATION_IDLE_CLOSE_MINUTES: 120,
+    ConfigKey.CONVERSATION_PLAYBOOK_MODE: "fsm_legacy",
+    ConfigKey.CONVERSATION_PLAYBOOK_GOAL: None,
+    ConfigKey.CONVERSATION_PLAYBOOK_DIRECTIVES: [],
+    ConfigKey.CONVERSATION_PLAYBOOK_ACTIONS_ENABLED: None,
 }
 
 
@@ -281,6 +319,7 @@ class BotConfigSchema(_StrictModel):
     escalation: EscalationConfig = Field(default_factory=lambda: EscalationConfig())
     privacy: PrivacyConfig = Field(default_factory=lambda: PrivacyConfig())
     booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
+    lead_capture: LeadCaptureConfig = Field(default_factory=lambda: LeadCaptureConfig())
     business: BusinessConfig = Field(default_factory=lambda: BusinessConfig())
     delivery: DeliveryConfig = Field(default_factory=lambda: DeliveryConfig())
     agent: AgentConfig = Field(default_factory=lambda: AgentConfig())
@@ -312,11 +351,22 @@ class PipelineConfig(_StrictModel):
     default_pipeline_id: str | None = None
     new_stage_id: str | None = None
     qualified_stage_id: str | None = None
+    # Deterministic pipeline advancement (UC-04). False = never auto-advance.
+    auto_advance: bool = True
 
 
 class ScoringConfig(_StrictModel):
     hot_threshold: int = Field(80, ge=50, le=100)
     cold_threshold: int = Field(30, ge=0, le=50)
+    # Always-on cumulative lead scoring (UC-05). False disables it entirely.
+    enabled: bool = True
+
+
+class LeadCaptureConfig(_StrictModel):
+    """Whether the bot proactively collects the lead's identity (name/email/
+    need). Off = a pure info/reminder bot that never interviews the contact."""
+
+    enabled: bool = True
 
 
 class ABTestConfig(_StrictModel):
@@ -397,6 +447,9 @@ class EscalationConfig(_StrictModel):
     handoff_message: str | None = Field(default=None, max_length=1000)
     # When true, hand off silently (no customer-facing message at all).
     silent_handoff: bool = False
+    # Keywords that force the escalation model route. None = code default
+    # vocabulary (CRITICAL_KEYWORDS). [] = disable keyword-forced escalation.
+    critical_keywords: list[str] | None = Field(default=None, max_length=40)
 
 
 class PrivacyConfig(_StrictModel):
@@ -410,6 +463,9 @@ class BookingConfig(_StrictModel):
     # Ore di anticipo per ogni promemoria WhatsApp. Es.: [48, 24] → due reminder.
     # Max 5 voci; valori in ore (1-168). Duplicati vengono ignorati.
     reminder_schedule: list[int] = Field(default_factory=lambda: [24], max_length=5)
+    # Whether the bot offers/handles appointments at all. False drops the
+    # "Servizi prenotabili" block and hides booking actions from the model.
+    enabled: bool = True
 
 
 class ObjectionsConfig(_StrictModel):
@@ -419,10 +475,40 @@ class ObjectionsConfig(_StrictModel):
     )
 
 
+class PlaybookActionsConfig(_StrictModel):
+    """Action allowlist for the conversation. `enabled` lists the orchestrator
+    action kinds the AI may emit this conversation; None = all actions allowed
+    (today's behavior). Values are `ActionKind` strings (e.g. "book_slot",
+    "escalate_human", "none")."""
+
+    enabled: list[str] | None = Field(default=None, max_length=12)
+
+
+class PlaybookConfig(_StrictModel):
+    """Conversation playbook (ADR 0018) — the use-case-agnostic doc that governs
+    the conversation's shape. Default = today's sales FSM behavior.
+
+    - `mode`: "fsm_legacy" (default) runs the built-in sales FSM hints;
+      "off" runs NO per-turn state hint (pure directive-driven bot);
+      "data" (Fase 1, not yet consumed by the engine) will drive a data-defined
+      state machine — treated as fsm_legacy until then.
+    - `goal`: optional north-star, folded into the directives block.
+    - `directives`: authoritative behavioral rules, injected high-salience.
+    - `actions`: the action allowlist.
+    """
+
+    mode: Literal["fsm_legacy", "off", "data"] = "fsm_legacy"
+    goal: str | None = Field(default=None, max_length=2000)
+    directives: list[str] = Field(default_factory=list, max_length=25)
+    actions: PlaybookActionsConfig = Field(default_factory=lambda: PlaybookActionsConfig())
+
+
 class ConversationConfig(_StrictModel):
     # Minutes of inactivity after which a conversation is auto-closed and its
     # objections extracted (UC-13 sweep).
     idle_close_minutes: int = Field(120, ge=15, le=10080)
+    # Conversation playbook (ADR 0018) — resolved as one atomic doc.
+    playbook: PlaybookConfig = Field(default_factory=lambda: PlaybookConfig())
 
 
 class GHLConfig(_StrictModel):

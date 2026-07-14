@@ -33,6 +33,7 @@ from ai_core.conversation_service import _to_chat_history as to_chat_history
 from ai_core.conversation_service import build_cascade_system_prompt
 from ai_core.delivery import compute_typing_delay_s, split_into_bubbles
 from ai_core.orchestrator import ConversationContext, ConversationOrchestrator, OrchestratorResponse
+from ai_core.playbook import resolve_playbook_runtime
 from ai_core.playground_sim import (
     PlaygroundLeadState,
     apply_playground_rule_overrides,
@@ -236,6 +237,11 @@ class PlaygroundRunner:
             advance_threshold = _int(ConfigKey.PIPELINE_ADVANCE_THRESHOLD, 60)
             qualified_stage = _str(ConfigKey.PIPELINE_QUALIFIED_STAGE_ID)
 
+            # Playbook caps (ADR 0018) — apply the same gating the live turn does
+            # so the preview is faithful (reduced action schema, dropped
+            # qualification context, injected directives).
+            playbook = await resolve_playbook_runtime(session, req.merchant_id)
+
             orchestrator_ctx = ConversationContext(
                 merchant_id=req.merchant_id,
                 tenant_id=req.tenant_id,
@@ -249,6 +255,10 @@ class PlaygroundRunner:
                 kb_chunks=kb_chunks,
                 variant_id=None,
                 advance_threshold=advance_threshold,
+                allowed_actions=playbook.allowed_actions,
+                scoring_enabled=playbook.scoring_enabled,
+                directives=playbook.directives,
+                critical_keywords=playbook.critical_keywords,
             )
 
             try:

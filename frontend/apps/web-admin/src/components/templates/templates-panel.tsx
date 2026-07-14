@@ -15,7 +15,7 @@ type TemplateIn = components['schemas']['TemplateIn'];
 // typed control and toggles a per-key lock (locked_keys). Keys map 1:1 to
 // `BotConfigSchema` dotted paths; the backend still validates on write.
 
-type TKind = 'text' | 'int' | 'float' | 'bool' | 'select';
+type TKind = 'text' | 'int' | 'float' | 'bool' | 'select' | 'tags' | 'multiselect';
 type TField = {
   key: string; // dotted path, e.g. "scoring.hot_threshold"
   label: string;
@@ -28,7 +28,56 @@ type TField = {
 };
 type TSection = { title: string; fields: TField[] };
 
+// Orchestrator action kinds for the "Azioni permesse" multiselect. "none" is
+// always implicitly allowed by the backend, so it's not listed here.
+const ACTION_OPTIONS: { value: string; label: string }[] = [
+  { value: 'check_availability', label: 'Verifica disponibilità' },
+  { value: 'lookup_appointment', label: 'Cerca appuntamento' },
+  { value: 'propose_slots', label: 'Proponi disponibilità' },
+  { value: 'book_slot', label: 'Prenota appuntamento' },
+  { value: 'reschedule_slot', label: 'Sposta appuntamento' },
+  { value: 'cancel_slot', label: 'Annulla appuntamento' },
+  { value: 'move_pipeline', label: 'Avanza in pipeline' },
+  { value: 'update_score', label: 'Aggiorna scoring' },
+  { value: 'escalate_human', label: 'Passa a operatore' },
+];
+
 const TEMPLATE_SECTIONS: TSection[] = [
+  {
+    title: 'Obiettivo & modalità conversazione (ADR 0018)',
+    fields: [
+      {
+        key: 'conversation.playbook.mode',
+        label: 'Modalità',
+        kind: 'select',
+        options: [
+          { value: 'fsm_legacy', label: 'Vendita (FSM)' },
+          { value: 'off', label: 'Solo direttive' },
+        ],
+      },
+      {
+        key: 'conversation.playbook.goal',
+        label: 'Obiettivo',
+        kind: 'text',
+        placeholder: 'es. Ricordare il questionario e dare info sulla procedura',
+      },
+      {
+        key: 'conversation.playbook.directives',
+        label: 'Regole (una per riga)',
+        kind: 'tags',
+      },
+      {
+        key: 'conversation.playbook.actions.enabled',
+        label: 'Azioni permesse',
+        kind: 'multiselect',
+        options: ACTION_OPTIONS,
+      },
+      { key: 'lead_capture.enabled', label: 'Raccolta dati contatto', kind: 'bool' },
+      { key: 'scoring.enabled', label: 'Scoring attivo', kind: 'bool' },
+      { key: 'pipeline.auto_advance', label: 'Avanzamento pipeline', kind: 'bool' },
+      { key: 'booking.enabled', label: 'Prenotazioni attive', kind: 'bool' },
+    ],
+  },
   {
     title: 'Scoring (UC-05)',
     fields: [
@@ -124,6 +173,11 @@ const TEMPLATE_SECTIONS: TSection[] = [
     title: 'Escalation / Privacy',
     fields: [
       { key: 'escalation.enabled', label: 'Escalation attiva', kind: 'bool' },
+      {
+        key: 'escalation.critical_keywords',
+        label: 'Parole chiave critiche (una per riga)',
+        kind: 'tags',
+      },
       { key: 'privacy.retention_months', label: 'Retention (mesi)', kind: 'int', min: 6, max: 60 },
     ],
   },
@@ -512,6 +566,52 @@ function TemplateFieldInput({
         className={cls}
         placeholder="Eredita"
       />
+    );
+  }
+  if (field.kind === 'tags') {
+    // string[] as one item per line. Empty → undefined (inherit / omit on save).
+    const arr = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+    return (
+      <textarea
+        id={`f-${field.key}`}
+        value={arr.join('\n')}
+        onChange={(e) => {
+          const lines = e.target.value
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          onChange(lines.length ? lines : undefined);
+        }}
+        rows={3}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        placeholder="Eredita (una voce per riga)"
+      />
+    );
+  }
+  if (field.kind === 'multiselect') {
+    // string[] allowlist. Nothing selected → undefined (inherit = all allowed).
+    const selected = new Set(Array.isArray(value) ? (value as unknown[]).map(String) : []);
+    const toggle = (opt: string, on: boolean) => {
+      const next = new Set(selected);
+      if (on) next.add(opt);
+      else next.delete(opt);
+      const arr = Array.from(next);
+      onChange(arr.length ? arr : undefined);
+    };
+    return (
+      <div className="flex flex-col gap-1.5 rounded-md border border-input bg-background p-2">
+        {field.options?.map((o) => (
+          <label key={o.value} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={selected.has(o.value)}
+              onChange={(e) => toggle(o.value, e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span>{o.label}</span>
+          </label>
+        ))}
+      </div>
     );
   }
   return (

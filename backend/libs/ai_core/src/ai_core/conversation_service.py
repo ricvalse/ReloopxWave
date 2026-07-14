@@ -32,6 +32,7 @@ from ai_core.orchestrator import (
     OrchestratorResponse,
     ToolExecutor,
 )
+from ai_core.playbook import resolve_playbook_runtime
 from ai_core.rag import (
     KB_INLINE_MAX_TOKENS,
     Embedder,
@@ -289,6 +290,36 @@ DEFAULT_SYSTEM_PROMPT = (
     "se non sai qualcosa, dillo e offri di far contattare una persona."
 )
 
+
+def _default_system_prompt(*, booking_enabled: bool, lead_capture_enabled: bool) -> str:
+    """The generic fallback prompt for a profile-less merchant, with the booking
+    and lead-capture clauses gated by the playbook (ADR 0018). With both enabled
+    (the default) it reproduces `DEFAULT_SYSTEM_PROMPT` byte-for-byte."""
+    parts = [
+        "Sei un assistente conversazionale italiano per l'azienda. Rispondi in modo "
+        "cortese, breve e professionale."
+    ]
+    if booking_enabled:
+        parts.append("Se la richiesta riguarda prenotazioni, proponi di prenotare.")
+    if lead_capture_enabled:
+        parts.append(
+            "Se mancano informazioni critiche (nome, email, esigenza), chiedile in "
+            "modo naturale, una alla volta."
+        )
+    parts.append(
+        "Non inventare fatti sull'azienda: se non sai qualcosa, dillo e offri di far "
+        "contattare una persona."
+    )
+    return " ".join(parts)
+
+
+# Sentiment "positive" fragment without the booking upsell — used when the
+# merchant has booking disabled (a pure info/reminder bot shouldn't push slots).
+_SENTIMENT_POSITIVE_NO_BOOKING = (
+    "Nota: il cliente sembra ben disposto e soddisfatto. Mantieni l'entusiasmo e "
+    "asseconda l'apertura."
+)
+
 # Fail-safe reply: when the LLM turn errors out hard (both the primary model and
 # the fallback failed, or any unexpected exception), the customer must still get
 # something rather than silence — we send this and hand the thread to a human.
@@ -426,6 +457,9 @@ async def build_cascade_system_prompt(
     dont_phrases = await _list(ConfigKey.BOT_DONT_PHRASES)
     examples = await _examples(ConfigKey.BOT_EXAMPLES)
     sentiment_adaptation = await _bool(ConfigKey.BOT_SENTIMENT_ADAPTATION_ENABLED, default=True)
+    # Playbook capability gates (ADR 0018) — default True keeps today's prompt.
+    booking_enabled = await _bool(ConfigKey.BOOKING_ENABLED, default=True)
+    lead_capture_enabled = await _bool(ConfigKey.LEAD_CAPTURE_ENABLED, default=True)
 
     # Store policies — short, always-relevant facts injected straight into
     # the prompt (no RAG). Best-effort: a missing row / error yields no lines.
@@ -489,7 +523,9 @@ async def build_cascade_system_prompt(
         ]
     )
     if not has_profile:
-        return DEFAULT_SYSTEM_PROMPT
+        return _default_system_prompt(
+            booking_enabled=booking_enabled, lead_capture_enabled=lead_capture_enabled
+        )
 
     lines: list[str] = []
     if business_name and industry:
@@ -512,7 +548,7 @@ async def build_cascade_system_prompt(
         lines.append(f"Note sui prezzi: {pricing_notes}")
     if hours:
         lines.append(f"Orari: {hours}")
-    if bookable_services:
+    if bookable_services and booking_enabled:
         svc_lines = ["Servizi prenotabili (usa il campo service_id nell'azione book_slot):"]
         for svc in bookable_services:
             price_str = (
@@ -551,6 +587,17 @@ async def build_cascade_system_prompt(
 
     # Tone-of-address: structured formality wins; "auto" keeps the legacy tone.
     tone_clause = _FORMALITY_FRAGMENTS.get(formality) or f"Mantieni un tono {tone}."
+    # Lead-capture sentence gated by the playbook (ADR 0018). With capture on
+    # (default) the concrete clause is byte-identical to today's.
+    lead_capture_sentence = (
+        " Se mancano informazioni critiche (nome, email, esigenza), chiedile una alla volta."
+        if lead_capture_enabled
+        else ""
+    )
+    concrete_clause = (
+        "Sii breve, cortese e concreto." + lead_capture_sentence + " Non inventare fatti "
+        "sull'attività: se non sai qualcosa, dillo e offri di far contattare una persona."
+    )
     style_bits = [
         # Istruzione forte e prioritaria: senza enfasi il modello tende a
         # rispecchiare la lingua del cliente ignorando questa direttiva.
@@ -560,9 +607,7 @@ async def build_cascade_system_prompt(
         tone_clause,
         _VERBOSITY_FRAGMENTS.get(verbosity, _VERBOSITY_FRAGMENTS["equilibrato"]),
         _EMOJI_FRAGMENTS.get(emoji_policy, _EMOJI_FRAGMENTS["sobrio"]),
-        "Sii breve, cortese e concreto. Se mancano informazioni critiche "
-        "(nome, email, esigenza), chiedile una alla volta. Non inventare fatti "
-        "sull'attività: se non sai qualcosa, dillo e offri di far contattare una persona.",
+        concrete_clause,
     ]
     lines.append(" ".join(style_bits))
 
@@ -585,9 +630,13 @@ async def build_cascade_system_prompt(
         lines.append("\n".join(ex_lines))
 
     # Sentiment adaptation — uses the PRIOR turn's sentiment (zero added
-    # latency). neutral/None inject nothing.
+    # latency). neutral/None inject nothing. The "positive" fragment's booking
+    # upsell is dropped when booking is disabled (ADR 0018).
     if sentiment_adaptation and prior_sentiment in _SENTIMENT_FRAGMENTS:
-        lines.append(_SENTIMENT_FRAGMENTS[prior_sentiment])
+        frag = _SENTIMENT_FRAGMENTS[prior_sentiment]
+        if prior_sentiment == "positive" and not booking_enabled:
+            frag = _SENTIMENT_POSITIVE_NO_BOOKING
+        lines.append(frag)
 
     if extras:
         lines.append("Istruzioni aggiuntive dal merchant:")
@@ -1162,18 +1211,27 @@ class ConversationService:
                 session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
 
+            # Playbook runtime (ADR 0018) — resolved once; gates the FSM hint,
+            # scoring/pipeline side effects, action allowlist and directives.
+            # Defaults reproduce today's sales behavior.
+            caps = await resolve_playbook_runtime(session, resolved.merchant_id)
+
             # FSM: load current state, inject hint into system prompt. Suppress the
             # GREETING "accogli il lead per la prima volta / presentati" hint when the
             # customer is actually replying to a proactive/automation message: the lead
             # was already engaged by the business, so a from-scratch greeting is wrong —
             # it was the main driver of the bot ignoring the automation's thread and
-            # pivoting to a generic "come posso aiutarti".
+            # pivoting to a generic "come posso aiutarti". When the playbook disables
+            # the FSM (mode "off") no per-turn state hint is injected at all.
             fsm_state = ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
-            fsm_hint = (
-                ""
-                if (rc.proactive_reply_to and fsm_state == ConvState.GREETING)
-                else state_system_hint(fsm_state)
-            )
+            if not caps.fsm_enabled:
+                fsm_hint = ""
+            else:
+                fsm_hint = (
+                    ""
+                    if (rc.proactive_reply_to and fsm_state == ConvState.GREETING)
+                    else state_system_hint(fsm_state)
+                )
             if fsm_hint:
                 system_prompt = system_prompt + "\n\n" + fsm_hint
 
@@ -1313,6 +1371,10 @@ class ConversationService:
                 kb_chunks=kb_chunks,
                 variant_id=rc.conv_variant_id,
                 advance_threshold=advance_threshold,
+                allowed_actions=caps.allowed_actions,
+                scoring_enabled=caps.scoring_enabled,
+                directives=caps.directives,
+                critical_keywords=caps.critical_keywords,
             )
 
             # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
@@ -1452,10 +1514,14 @@ class ConversationService:
                 if rc.lead_id is not None and sentiment:
                     await LeadRepository(session).update_sentiment(rc.lead_id, sentiment=sentiment)
 
-            # FSM: transition and persist new state
-            new_fsm_state = next_state(fsm_state, response.actions, turn_count=len(rc.chat_history))
-            if new_fsm_state != fsm_state:
-                await convs.update_state(rc.conv_id, new_fsm_state.value)
+            # FSM: transition and persist new state. Skipped when the playbook
+            # disables the FSM (mode "off") — the state column is left untouched.
+            if caps.fsm_enabled:
+                new_fsm_state = next_state(
+                    fsm_state, response.actions, turn_count=len(rc.chat_history)
+                )
+                if new_fsm_state != fsm_state:
+                    await convs.update_state(rc.conv_id, new_fsm_state.value)
 
             _out_msg = None
             if not suppress_reply:
@@ -1591,35 +1657,43 @@ class ConversationService:
         # accumulated state (name/email on file, engagement, sentiment, booking
         # intent) and merge with any content signals the LLM reported this turn,
         # then ensure exactly one update_score action carries the merged set.
-        from ai_core.actions.scoring import derive_signals_from_llm_payload
+        # Skipped entirely when the playbook disables scoring (ADR 0018): no
+        # update_score is synthesized (the bot doesn't qualify leads).
+        merged_signals: dict[str, bool] = {}
+        if caps.scoring_enabled:
+            from ai_core.actions.scoring import derive_signals_from_llm_payload
 
-        llm_signals: dict[str, bool] = {}
-        for a in response.actions:
-            if a.kind == "update_score":
-                llm_signals.update(derive_signals_from_llm_payload(a.payload))
-        merged_signals = derive_conversation_signals(
-            has_name=bool(rc.lead_name),
-            has_email=bool(rc.lead_email),
-            turn_count=len(rc.chat_history) + 1,
-            sentiment=sentiment,
-            asked_for_booking=any(a.kind == "book_slot" for a in response.actions),
-            responded_within_10min=rc.responded_within_10min,
-            llm_signals=llm_signals,
-        )
-        actions = _with_score_action(response.actions, merged_signals)
+            llm_signals: dict[str, bool] = {}
+            for a in response.actions:
+                if a.kind == "update_score":
+                    llm_signals.update(derive_signals_from_llm_payload(a.payload))
+            merged_signals = derive_conversation_signals(
+                has_name=bool(rc.lead_name),
+                has_email=bool(rc.lead_email),
+                turn_count=len(rc.chat_history) + 1,
+                sentiment=sentiment,
+                asked_for_booking=any(a.kind == "book_slot" for a in response.actions),
+                responded_within_10min=rc.responded_within_10min,
+                llm_signals=llm_signals,
+            )
+            actions = _with_score_action(response.actions, merged_signals)
+        else:
+            actions = list(response.actions)
 
         # UC-04 — deterministic pipeline advancement. The LLM may optionally emit
         # move_pipeline, but we don't rely on it: if the (this-turn) score crosses
         # the merchant's advance_threshold and the lead isn't already in the
         # qualified stage, inject a move_pipeline action ourselves so the
-        # advancement is repeatable and not at the model's discretion.
-        actions = _with_pipeline_advance_action(
-            actions,
-            merged_signals,
-            advance_threshold=advance_threshold,
-            qualified_stage_id=qualified_stage_id,
-            current_stage_id=rc.lead_pipeline_stage_id,
-        )
+        # advancement is repeatable and not at the model's discretion. Gated off
+        # by the playbook (pipeline.auto_advance) for non-sales bots.
+        if caps.pipeline_auto_advance:
+            actions = _with_pipeline_advance_action(
+                actions,
+                merged_signals,
+                advance_threshold=advance_threshold,
+                qualified_stage_id=qualified_stage_id,
+                current_stage_id=rc.lead_pipeline_stage_id,
+            )
 
         # Action handlers run after the turn is durable and the reply is out.
         # Each handler manages its own session/transaction.

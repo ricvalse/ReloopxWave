@@ -2173,6 +2173,11 @@ export interface components {
             lookahead_days: number;
             /** Reminder Schedule */
             reminder_schedule?: number[];
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
         };
         /** BootstrapOut */
         BootstrapOut: {
@@ -2213,6 +2218,7 @@ export interface components {
             escalation?: components["schemas"]["EscalationConfig"];
             privacy?: components["schemas"]["PrivacyConfig"];
             booking?: components["schemas"]["BookingConfig"];
+            lead_capture?: components["schemas"]["LeadCaptureConfig"];
             business?: components["schemas"]["BusinessConfig"];
             delivery?: components["schemas"]["DeliveryConfig"];
             agent?: components["schemas"]["AgentConfig"];
@@ -2428,6 +2434,7 @@ export interface components {
              * @default 120
              */
             idle_close_minutes: number;
+            playbook?: components["schemas"]["PlaybookConfig"];
         };
         /** ConversationNoteOut */
         ConversationNoteOut: {
@@ -2554,6 +2561,8 @@ export interface components {
              * @default false
              */
             silent_handoff: boolean;
+            /** Critical Keywords */
+            critical_keywords?: string[] | null;
         };
         /** ExperimentIn */
         ExperimentIn: {
@@ -2829,6 +2838,18 @@ export interface components {
             /** Last Error */
             last_error?: string | null;
         };
+        /**
+         * LeadCaptureConfig
+         * @description Whether the bot proactively collects the lead's identity (name/email/
+         *     need). Off = a pure info/reminder bot that never interviews the contact.
+         */
+        LeadCaptureConfig: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+        };
         /** LinkLocationIn */
         LinkLocationIn: {
             /**
@@ -3070,6 +3091,11 @@ export interface components {
             new_stage_id?: string | null;
             /** Qualified Stage Id */
             qualified_stage_id?: string | null;
+            /**
+             * Auto Advance
+             * @default true
+             */
+            auto_advance: boolean;
         };
         /** PipelineOut */
         PipelineOut: {
@@ -3094,6 +3120,43 @@ export interface components {
         PipelinesOut: {
             /** Pipelines */
             pipelines: components["schemas"]["PipelineOut"][];
+        };
+        /**
+         * PlaybookActionsConfig
+         * @description Action allowlist for the conversation. `enabled` lists the orchestrator
+         *     action kinds the AI may emit this conversation; None = all actions allowed
+         *     (today's behavior). Values are `ActionKind` strings (e.g. "book_slot",
+         *     "escalate_human", "none").
+         */
+        PlaybookActionsConfig: {
+            /** Enabled */
+            enabled?: string[] | null;
+        };
+        /**
+         * PlaybookConfig
+         * @description Conversation playbook (ADR 0018) — the use-case-agnostic doc that governs
+         *     the conversation's shape. Default = today's sales FSM behavior.
+         *
+         *     - `mode`: "fsm_legacy" (default) runs the built-in sales FSM hints;
+         *       "off" runs NO per-turn state hint (pure directive-driven bot);
+         *       "data" (Fase 1, not yet consumed by the engine) will drive a data-defined
+         *       state machine — treated as fsm_legacy until then.
+         *     - `goal`: optional north-star, folded into the directives block.
+         *     - `directives`: authoritative behavioral rules, injected high-salience.
+         *     - `actions`: the action allowlist.
+         */
+        PlaybookConfig: {
+            /**
+             * Mode
+             * @default fsm_legacy
+             * @enum {string}
+             */
+            mode: "fsm_legacy" | "off" | "data";
+            /** Goal */
+            goal?: string | null;
+            /** Directives */
+            directives?: string[];
+            actions?: components["schemas"]["PlaybookActionsConfig"];
         };
         /**
          * PlaygroundApplyIn
@@ -3280,7 +3343,7 @@ export interface components {
             top_k: number;
             /**
              * Min Score
-             * @default 0.7
+             * @default 0.6
              */
             min_score: number;
             /**
@@ -3398,6 +3461,11 @@ export interface components {
              * @default 30
              */
             cold_threshold: number;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
         };
         /** SendMessageIn */
         SendMessageIn: {

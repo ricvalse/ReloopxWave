@@ -25,7 +25,31 @@ type OverridesOut = components['schemas']['OverridesOut'];
 type OverrideBag = Record<string, Record<string, unknown>>;
 type FormState = Record<string, unknown>; // flat, dotted keys
 
-type FieldKind = 'int' | 'float' | 'text' | 'bool' | 'textarea' | 'select' | 'tags' | 'calendar';
+type FieldKind =
+  | 'int'
+  | 'float'
+  | 'text'
+  | 'bool'
+  | 'textarea'
+  | 'select'
+  | 'tags'
+  | 'multiselect'
+  | 'calendar';
+
+// Azioni che il bot può eseguire (ActionKind del backend). Usate dal
+// multiselect "Azioni permesse" del playbook. "none" è sempre implicitamente
+// permessa lato backend, quindi non compare qui.
+const ACTION_OPTIONS: { value: string; label: string }[] = [
+  { value: 'check_availability', label: 'Verifica disponibilità' },
+  { value: 'lookup_appointment', label: 'Cerca appuntamento' },
+  { value: 'propose_slots', label: 'Proponi disponibilità' },
+  { value: 'book_slot', label: 'Prenota appuntamento' },
+  { value: 'reschedule_slot', label: 'Sposta appuntamento' },
+  { value: 'cancel_slot', label: 'Annulla appuntamento' },
+  { value: 'move_pipeline', label: 'Avanza in pipeline' },
+  { value: 'update_score', label: 'Aggiorna scoring' },
+  { value: 'escalate_human', label: 'Passa a operatore' },
+];
 
 type BadgeKind = 'inherited' | 'customized' | 'locked' | 'lock-override';
 
@@ -86,9 +110,68 @@ const SECTIONS: SectionDef[] = [
   },
 
   {
+    section: 'conversation',
+    title: 'Obiettivo & modalità conversazione',
+    description:
+      'Definisce cosa deve fare il bot. “Vendita” è il comportamento predefinito (qualifica → offerta → prenotazione). Scegli “Solo direttive” per un bot informativo/promemoria che NON qualifica e NON fa domande da colloquio: seguirà solo le regole che scrivi qui sotto.',
+    fields: [
+      {
+        key: 'conversation.playbook.mode',
+        label: 'Modalità',
+        kind: 'select',
+        options: [
+          { value: 'fsm_legacy', label: 'Vendita (qualifica → offerta → prenotazione)' },
+          { value: 'off', label: 'Solo direttive (nessuna qualifica, guidato dalle regole)' },
+        ],
+        help: '“Solo direttive” disattiva gli hint di vendita per-turno: il bot segue solo l’obiettivo e le regole qui sotto.',
+      },
+      {
+        key: 'conversation.playbook.goal',
+        label: 'Obiettivo',
+        kind: 'textarea',
+        rows: 2,
+        placeholder:
+          'es. Ricordare al candidato di compilare il questionario e dare SOLO info su procedura e step della selezione.',
+      },
+      {
+        key: 'conversation.playbook.directives',
+        label: 'Regole della conversazione',
+        kind: 'tags',
+        rows: 5,
+        help: 'Regole vincolanti (hanno priorità su tutto), una per riga. Es. “Non fare mai domande da colloquio”, “Quando il candidato dice di aver inviato il questionario, rispondi «Ok grazie, perfetto» e chiudi”.',
+      },
+      {
+        key: 'conversation.playbook.actions.enabled',
+        label: 'Azioni permesse',
+        kind: 'multiselect',
+        options: ACTION_OPTIONS,
+        help: 'Cosa può fare il bot oltre a rispondere. Nessuna selezione = tutte permesse (comportamento vendita). Per un bot informativo lascia solo “Passa a operatore”.',
+      },
+      {
+        key: 'lead_capture.enabled',
+        label: 'Raccogli dati del contatto (nome / email / esigenza)',
+        kind: 'bool',
+        help: 'Disattiva per un bot che non deve chiedere dati né intervistare il contatto.',
+      },
+      { key: 'scoring.enabled', label: 'Scoring del lead attivo', kind: 'bool' },
+      {
+        key: 'pipeline.auto_advance',
+        label: 'Avanzamento automatico in pipeline',
+        kind: 'bool',
+        help: 'Quando attivo, il bot promuove il lead nella pipeline CRM al superamento della soglia.',
+      },
+      {
+        key: 'booking.enabled',
+        label: 'Prenotazioni attive',
+        kind: 'bool',
+        help: 'Quando disattivo, il bot non propone né gestisce appuntamenti.',
+      },
+    ],
+  },
+  {
     section: 'scoring',
     title: 'Scoring (UC-05)',
-    description: 'Soglie per classificare hot / cold.',
+    description: 'Soglie per classificare hot / cold (quando lo scoring è attivo).',
     fields: [
       { key: 'scoring.hot_threshold', label: 'Hot threshold', kind: 'int', min: 50, max: 100 },
       { key: 'scoring.cold_threshold', label: 'Cold threshold', kind: 'int', min: 0, max: 50 },
@@ -334,6 +417,13 @@ const SECTIONS: SectionDef[] = [
         placeholder: 'es. “Ti metto subito in contatto con un nostro operatore.” (vuoto = lascia scrivere al bot)',
       },
       { key: 'escalation.silent_handoff', label: 'Passaggio silenzioso (nessun messaggio al cliente)', kind: 'bool' },
+      {
+        key: 'escalation.critical_keywords',
+        label: 'Parole chiave critiche',
+        kind: 'tags',
+        rows: 3,
+        help: 'Parole che forzano il passaggio al modello di escalation, una per riga. Vuoto = vocabolario predefinito. Utile se una parola predefinita (es. “concorrenza”) è normale nel tuo settore.',
+      },
     ],
   },
   {
@@ -793,6 +883,34 @@ function FieldInput({
         rows={field.rows ?? 3}
         className="w-full min-w-[18rem] max-w-xl rounded-md border border-input bg-background px-3 py-2 text-sm md:w-[32rem]"
       />
+    );
+  }
+  if (field.kind === 'multiselect') {
+    // Value is a string[] allowlist. Nothing selected → emit null so the field
+    // reads as Inherited (backend: null = all actions allowed).
+    const selected = new Set(Array.isArray(value) ? (value as unknown[]).map(String) : []);
+    const toggle = (opt: string, on: boolean) => {
+      const next = new Set(selected);
+      if (on) next.add(opt);
+      else next.delete(opt);
+      const arr = Array.from(next);
+      onChange(arr.length ? arr : null);
+    };
+    return (
+      <div className="flex flex-col gap-1.5">
+        {field.options?.map((o) => (
+          <label key={o.value} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              disabled={disabled}
+              checked={selected.has(o.value)}
+              onChange={(e) => toggle(o.value, e.target.checked)}
+              className="h-4 w-4 rounded border-input"
+            />
+            <span>{o.label}</span>
+          </label>
+        ))}
+      </div>
     );
   }
   return (
