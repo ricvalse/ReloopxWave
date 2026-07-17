@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     supabase_exports_bucket: str = "analytics-exports"
     # Image bucket reused for WhatsApp template header images (logos/branding).
     supabase_branding_bucket: str = "branding-assets"
+    # Private bucket for inbound WhatsApp media (image/audio/video/document).
+    supabase_media_bucket: str = "whatsapp-media"
 
     redis_url: str = "redis://localhost:6379/0"
 

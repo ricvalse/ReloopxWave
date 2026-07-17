@@ -4,7 +4,19 @@ import { cn } from '@reloop/ui';
 import { memo } from 'react';
 import { formatBubbleTime } from '../lib/time';
 import { isAutomationSender, type Message } from '../types';
+import { MessageMedia } from './message-media';
 import { StatusTicks } from './status-ticks';
+
+// The synthesized placeholders the backend writes as `content` for uncaptioned
+// media (mirror of `webhooks.py:_MEDIA_PLACEHOLDER`). When the real attachment
+// renders, the placeholder text is redundant, so we suppress it.
+const MEDIA_PLACEHOLDERS = new Set([
+  "[Il cliente ha inviato un'immagine]",
+  '[Il cliente ha inviato un messaggio vocale]',
+  '[Il cliente ha inviato un video]',
+  '[Il cliente ha inviato un documento]',
+  '[Il cliente ha inviato uno sticker]',
+]);
 
 interface MessageBubbleProps {
   message: Message;
@@ -32,6 +44,11 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   // WhatsApp palette: green bubbles outbound, white bubbles inbound.
   // Meta (timestamp/ticks/"Da telefono") inverts so it stays readable on green.
   const metaColor = isOut ? 'text-white/75' : 'text-black/45 dark:text-white/55';
+
+  const media = message.meta?.media ?? null;
+  // Hide the synthesized placeholder text once the real attachment is showing;
+  // a real caption (anything not in the placeholder set) is always kept.
+  const showText = !(media && MEDIA_PLACEHOLDERS.has(message.content));
 
   return (
     <div
@@ -72,8 +89,9 @@ function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
             {originLabel}
           </span>
         )}
+        {media && <MessageMedia message={message} metaColor={metaColor} />}
         <span className="whitespace-pre-wrap break-words leading-relaxed">
-          {message.content}
+          {showText && message.content}
           {/* Last-line meta spacer: invisible inline block reserving room
               for the absolutely-positioned timestamp+ticks. */}
           <span
@@ -112,6 +130,12 @@ export const MessageBubble = memo(MessageBubbleImpl, (prev, next) => {
     prev.message.read_at === next.message.read_at &&
     prev.message.delivered_at === next.message.delivered_at &&
     prev.message.meta?.sender_type === next.message.meta?.sender_type &&
+    // The two-phase media write lands `storage_path` (and maybe `error` /
+    // `transcription`) via a Realtime UPDATE — without these the bubble would
+    // never re-render to swap the "Caricamento…" placeholder for the image.
+    prev.message.meta?.media?.storage_path === next.message.meta?.media?.storage_path &&
+    prev.message.meta?.media?.error === next.message.meta?.media?.error &&
+    prev.message.meta?.media?.transcription === next.message.meta?.media?.transcription &&
     prev.grouped === next.grouped
   );
 });

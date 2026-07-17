@@ -63,8 +63,29 @@ export function isAutomationSender(senderType: SenderType | null | undefined): b
   );
 }
 
+/** Inbound media kinds a message can carry (image/audio/video/document/sticker). */
+export type MediaKind = 'image' | 'audio' | 'video' | 'document' | 'sticker';
+
+/**
+ * Attachment descriptor written by the worker under `meta.media`. `storage_path`
+ * is null until the download lands (two-phase write) — the bubble shows a
+ * "non disponibile" placeholder until then. `error` is set when the download or
+ * store failed; `transcription` carries the Whisper text for voice notes.
+ */
+export interface MessageMediaMeta {
+  kind?: MediaKind;
+  mime?: string | null;
+  wa_media_id?: string | null;
+  storage_path?: string | null;
+  size_bytes?: number | null;
+  caption?: string | null;
+  transcription?: string | null;
+  error?: string | null;
+}
+
 export interface MessageMeta {
   sender_type?: SenderType;
+  media?: MessageMediaMeta | null;
   [key: string]: unknown;
 }
 

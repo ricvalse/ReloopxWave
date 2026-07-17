@@ -87,6 +87,7 @@ async def handle_inbound_message(
     campaign: str | None = None,
     force_handoff_reason: str | None = None,
     wa_timestamp_unix: int | None = None,
+    media: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
@@ -96,6 +97,8 @@ async def handle_inbound_message(
     # `force_handoff_reason` (unsupported media) flips the thread to needs-human
     # so the gate returns auto_reply_on=False and we skip the orchestrator.
     # `wa_timestamp_unix` drives the inbound-staleness gate (skip a stale backlog).
+    # `media` (image/audio/video/document/sticker) is downloaded + stored during
+    # persist so it shows in the inbox and an image reaches the model as vision.
     outcome = await service.handle_inbound_persist(
         phone_number_id=phone_number_id,
         from_phone=from_phone,
@@ -104,6 +107,7 @@ async def handle_inbound_message(
         campaign=campaign,
         force_handoff_reason=force_handoff_reason,
         wa_timestamp_unix=wa_timestamp_unix,
+        media=media,
     )
 
     if not (outcome.handled and outcome.auto_reply_on):
@@ -275,11 +279,14 @@ async def handle_phone_app_echo(
     customer_phone: str,
     text: str,
     wa_message_id: str,
+    media: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Mirror a phone-app-typed message into the conversations DB.
 
     Only emitted by 360dialog Coexistence channels. The orchestrator is
     deliberately skipped — the customer already saw the reply on WhatsApp.
+    `media` (a photo sent from the handset) is downloaded + stored so it shows
+    in the inbox.
     """
     runtime: Runtime = ctx["runtime"]
     service: ConversationService = runtime.conversation_service
@@ -289,6 +296,7 @@ async def handle_phone_app_echo(
         customer_phone=customer_phone,
         text=text,
         wa_message_id=wa_message_id,
+        media=media,
     )
     logger.info(
         "wa.phone_echo.handled",

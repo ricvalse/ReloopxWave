@@ -23,6 +23,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from integrations.ghl.marketplace_signatures import verify_ghl_marketplace_webhook
 from integrations.router import SIGNATURE_HEADER, verify_router_signature
+from integrations.whatsapp.media import HANDOFF_KINDS, MEDIA_KINDS
 from integrations.whatsapp.webhook import (
     parse_inbound_payload,
     parse_message_echo_payload,
@@ -34,10 +35,11 @@ from shared import get_logger, get_settings
 router = APIRouter()
 logger = get_logger(__name__)
 
-# Non-text inbound: instead of dropping it silently (the customer would get no
-# reply at all), synthesize a short placeholder so the bot can respond
-# gracefully ("ricevo solo messaggi di testo, puoi descrivermi…"). V1 does not
-# transcribe/OCR media — this just avoids a dead end.
+# Non-text inbound WITHOUT a caption: synthesize a short placeholder as the turn
+# text so the row still renders and the bot can respond gracefully. Media with a
+# caption uses the caption instead (it reaches the LLM). Images additionally get
+# a real vision turn once downloaded (worker), and audio gets transcribed —
+# these placeholders are the degradation, not the default.
 _MEDIA_PLACEHOLDER = {
     "image": "[Il cliente ha inviato un'immagine]",
     "audio": "[Il cliente ha inviato un messaggio vocale]",
@@ -49,9 +51,10 @@ _MEDIA_PLACEHOLDER = {
 }
 
 # Media the bot can't meaningfully act on → hand straight to a human (Amalia
-# pattern) instead of replying with a placeholder. Lighter media (image/audio/
-# location/…) still get a graceful bot reply via `_MEDIA_PLACEHOLDER`.
-_HANDOFF_MEDIA = {"video", "document"}
+# pattern) instead of replying with a placeholder. The file is still downloaded
+# and shown in the inbox; lighter media (image/audio/location/…) still get a
+# graceful bot reply / vision turn.
+_HANDOFF_MEDIA = HANDOFF_KINDS
 
 _CAMPAIGN_MAX_LEN = 200
 
@@ -115,11 +118,18 @@ async def whatsapp_inbound(
     for ev in events:
         if not ev.phone_number_id or not ev.message_id:
             continue
-        # Text-bearing turns go straight to the orchestrator; media turns get a
-        # synthesized placeholder so the customer still gets a graceful reply.
+        # Text-bearing turns go straight to the orchestrator; captioned media uses
+        # its caption; uncaptioned media gets a synthesized placeholder so the
+        # customer still gets a graceful reply.
         text = ev.text if ev.text is not None else _MEDIA_PLACEHOLDER.get(ev.kind)
         if text is None:
             continue  # unknown/empty event with no text and no known media kind
+        # Media descriptor for the worker to download + store + (image) vision.
+        media = (
+            {"kind": ev.kind, "id": ev.media_id, "mime": ev.media_mime, "caption": ev.caption}
+            if ev.kind in MEDIA_KINDS and ev.media_id
+            else None
+        )
         # Rich media (video/document) the bot can't act on → hand off to a human.
         handoff_reason = f"{ev.kind}_message" if ev.kind in _HANDOFF_MEDIA else None
         await arq.enqueue_job(
@@ -131,6 +141,7 @@ async def whatsapp_inbound(
             _extract_campaign(ev.raw),  # UC-11 click-to-WhatsApp ad attribution
             handoff_reason,
             ev.timestamp_unix,  # inbound-staleness gate (None = no check)
+            media,  # media descriptor (None for text/interactive)
             _job_id=f"wa:msg:{ev.message_id}",  # dedup if the router retries
         )
         enqueued_msgs += 1
@@ -142,16 +153,30 @@ async def whatsapp_inbound(
     echoes = parse_message_echo_payload(payload)
     enqueued_echoes = 0
     for echo in echoes:
-        if echo.text is None or not echo.phone_number_id:
+        if not echo.phone_number_id or not echo.message_id or not echo.customer_phone:
             continue
-        if not echo.message_id or not echo.customer_phone:
-            continue
+        media = (
+            {
+                "kind": echo.kind,
+                "id": echo.media_id,
+                "mime": echo.media_mime,
+                "caption": echo.caption,
+            }
+            if echo.kind in MEDIA_KINDS and echo.media_id
+            else None
+        )
+        # A media echo with no caption still needs a row: fall back to the
+        # placeholder so the merchant's phone-sent photo shows in the inbox.
+        text = echo.text if echo.text is not None else _MEDIA_PLACEHOLDER.get(echo.kind)
+        if text is None:
+            continue  # non-media echo with no text (e.g. location) — nothing to mirror
         await arq.enqueue_job(
             "handle_phone_app_echo",
             echo.phone_number_id,
             echo.customer_phone,
-            echo.text,
+            text,
             echo.message_id,
+            media,  # media descriptor (None for text)
             _job_id=f"wa:echo:{echo.message_id}",
         )
         enqueued_echoes += 1

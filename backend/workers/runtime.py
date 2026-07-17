@@ -30,6 +30,7 @@ from ai_core.actions import (
 from ai_core.rag import Embedder
 from integrations import build_whatsapp_sender
 from shared import Settings, get_logger
+from workers.conversation.media_pipeline import WhatsAppMediaPipeline
 
 logger = get_logger(__name__)
 
@@ -183,6 +184,7 @@ def build_runtime(settings: Settings) -> Runtime:
         embedder=embedder,
         sentiment=sentiment,
         tool_executor=tool_executor,
+        media_pipeline=WhatsAppMediaPipeline(settings),
         kek_base64=settings.integrations_kek_base64,
     )
     return Runtime(

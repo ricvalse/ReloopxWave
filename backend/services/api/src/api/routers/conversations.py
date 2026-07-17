@@ -21,7 +21,12 @@ from sqlalchemy import select
 from api.dependencies.session import CurrentContext, DBSession
 from db import WhatsAppTemplateRepository
 from db.models.conversation import Conversation, Message
-from shared import PermissionDeniedError, get_logger
+from integrations.supabase_storage import SupabaseStorage
+from shared import PermissionDeniedError, get_logger, get_settings
+
+# Signed-URL TTL for inbox media. Short-lived (a leaked URL is authless for its
+# lifetime); the FE re-mints on demand. Matches the KB signing convention.
+_MEDIA_URL_TTL_S = 3600
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -67,6 +72,11 @@ class MessageOut(BaseModel):
     error: dict[str, Any] | None
     meta: dict[str, Any] | None = None
     created_at: datetime
+
+
+class MediaUrlOut(BaseModel):
+    url: str
+    expires_at: datetime
 
 
 class UpdateNoteIn(BaseModel):
@@ -131,6 +141,59 @@ async def get_conversation(conversation_id: UUID, session: DBSession) -> dict[st
         **_conv_to_dict(conv),
         "messages": [_to_out(m).model_dump(mode="json") for m in messages],
     }
+
+
+@router.get("/{conversation_id}/messages/{message_id}/media", response_model=MediaUrlOut)
+async def get_message_media_url(
+    conversation_id: UUID,
+    message_id: UUID,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> MediaUrlOut:
+    """Mint a short-lived signed URL for an inbound media attachment.
+
+    Reads go direct-to-Supabase elsewhere, but media lives in a private bucket
+    and the impersonation flow's token can't sign a Storage read — so we sign
+    here with the **service role** (bypasses bucket RLS) and hard-check the
+    object lives under the caller's own `{merchant_id}/` prefix before signing
+    (IDOR guard; same pattern as `_resolve_header_image_url`). The Message
+    lookup is itself RLS-scoped, so a cross-tenant `message_id` 404s first.
+    """
+    if ctx.merchant_id is None:
+        raise PermissionDeniedError(
+            "Merchant context required to access media",
+            error_code="no_merchant_context",
+        )
+    msg = (
+        await session.execute(
+            select(Message).where(
+                Message.id == message_id,
+                Message.conversation_id == conversation_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if msg is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    media = (msg.meta or {}).get("media") if msg.meta else None
+    storage_path = media.get("storage_path") if isinstance(media, dict) else None
+    if not storage_path:
+        raise HTTPException(status_code=404, detail="no media on this message")
+    if str(storage_path).split("/", 1)[0] != str(ctx.merchant_id):
+        raise PermissionDeniedError(
+            "media path outside merchant scope",
+            error_code="media_cross_merchant",
+        )
+    settings = get_settings()
+    storage = SupabaseStorage(
+        project_url=settings.supabase_url,
+        service_role_key=settings.supabase_service_role_key,
+        bucket=settings.supabase_media_bucket,
+    )
+    url = await storage.create_signed_url(str(storage_path), expires_in_seconds=_MEDIA_URL_TTL_S)
+    return MediaUrlOut(
+        url=url,
+        expires_at=datetime.now(UTC) + timedelta(seconds=_MEDIA_URL_TTL_S),
+    )
 
 
 @router.post("/{conversation_id}/messages", status_code=201, response_model=MessageOut)

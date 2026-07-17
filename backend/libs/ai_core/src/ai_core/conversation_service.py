@@ -24,7 +24,7 @@ from sqlalchemy import select
 
 from ai_core.corrections import build_correction_lines
 from ai_core.delivery import compute_typing_delay_s, split_into_bubbles
-from ai_core.llm import ChatMessage
+from ai_core.llm import ChatMessage, ImagePart
 from ai_core.orchestrator import (
     ConversationContext,
     ConversationOrchestrator,
@@ -212,6 +212,34 @@ class ReplySender(Protocol):
     ) -> str: ...
 
 
+class MediaPipeline(Protocol):
+    """Downloads inbound WhatsApp media and stores it (workers inject the real
+    360dialog+Supabase impl; tests inject a fake or leave it None).
+
+    Dependency inversion, exactly like `ReplySender`: ai_core stays unaware of
+    360dialog / Supabase Storage / Whisper. `fetch_and_store` is best-effort — it
+    returns a `meta.media` patch (with `storage_path`/`size_bytes`/
+    `transcription`, or `error` on failure) and never raises."""
+
+    async def fetch_and_store(
+        self,
+        *,
+        api_key: str,
+        waba_base_url: str | None,
+        phone_number_id: str,
+        merchant_id: UUID,
+        conversation_id: UUID,
+        message_id: UUID,
+        media_id: str,
+        kind: str,
+        mime: str | None,
+    ) -> dict[str, Any]: ...
+
+    async def load_image(
+        self, *, storage_path: str, mime: str | None
+    ) -> ImagePart | None: ...
+
+
 # ---- The entry point workers call ----------------------------------------
 
 
@@ -280,6 +308,10 @@ class _ReplyContext:
     # continuity directive in `_generate_and_deliver` so the bot continues the
     # automation's thread instead of restarting generically. None otherwise.
     proactive_reply_to: str | None = None
+    # Vision attachment resolved for the current turn (customer sent a photo).
+    # Loaded from storage in `generate_and_send_reply`; threaded into the
+    # orchestrator so the model actually sees the image. None for text turns.
+    current_image: ImagePart | None = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -698,6 +730,7 @@ class ConversationService:
         embedder: Embedder | None = None,
         sentiment: SentimentAnalyzer | None = None,
         tool_executor: ToolExecutor | None = None,
+        media_pipeline: MediaPipeline | None = None,
         kek_base64: str,
     ) -> None:
         self._orchestrator = orchestrator
@@ -705,6 +738,9 @@ class ConversationService:
         self._sender = reply_sender
         self._embedder = embedder
         self._sentiment = sentiment
+        # Inbound-media download + storage (+ audio transcription). None in tests
+        # and when media support is unconfigured → media turns degrade to text.
+        self._media_pipeline = media_pipeline
         # Read-only tool executor for the Amalia-style tool-use loop. When wired
         # (+ AGENT_TOOL_USE_ENABLED) the orchestrator can ground itself on live
         # availability/appointment data mid-turn. None = single-shot turns.
@@ -721,6 +757,7 @@ class ConversationService:
         text: str,
         wa_message_id: str | None,
         wa_timestamp_unix: int | None = None,
+        media: dict[str, Any] | None = None,
     ) -> InboundResult:
         """All-in-one entry: durably persist the inbound, then (if auto-reply is
         on) generate and deliver the reply using the captured phase-1 context.
@@ -735,6 +772,7 @@ class ConversationService:
             text=text,
             wa_message_id=wa_message_id,
             wa_timestamp_unix=wa_timestamp_unix,
+            media=media,
         )
         if not outcome.handled:
             return InboundResult(handled=False, reason=outcome.reason)
@@ -757,6 +795,7 @@ class ConversationService:
         campaign: str | None = None,
         force_handoff_reason: str | None = None,
         wa_timestamp_unix: int | None = None,
+        media: dict[str, Any] | None = None,
     ) -> PersistOutcome:
         """Phase 1: durably persist the inbound and evaluate the auto-reply gate.
 
@@ -899,13 +938,62 @@ class ConversationService:
                     )
 
             if already_persisted is None:
-                await msgs.persist_user_message(
+                # Media descriptor (image/audio/video/document/sticker). Persisted
+                # under `meta.media` with `storage_path=null`; filled by the
+                # best-effort download below. The row is written first so a failed
+                # download still leaves an inbox bubble (Amalia's two-phase shape).
+                message_meta: dict[str, Any] | None = None
+                if media and media.get("id"):
+                    message_meta = {
+                        "media": {
+                            "kind": media.get("kind"),
+                            "mime": media.get("mime"),
+                            "wa_media_id": media.get("id"),
+                            "caption": media.get("caption"),
+                            "storage_path": None,
+                        }
+                    }
+                persisted = await msgs.persist_user_message(
                     conversation_id=conv.id,
                     merchant_id=resolved.merchant_id,
                     content=text,
                     wa_message_id=wa_message_id,
                     variant_id=conv.variant_id,
+                    meta=message_meta,
                 )
+                # Download + store the media (best-effort) and patch the row's
+                # `meta.media`. Never raises — a media failure must not lose the
+                # customer's turn nor block the reply. Images download sub-second;
+                # video/document (handed off) are the only slow case.
+                if (
+                    message_meta is not None
+                    and wa_message_id
+                    and self._media_pipeline is not None
+                ):
+                    try:
+                        patch = await self._media_pipeline.fetch_and_store(
+                            api_key=resolved.api_key,
+                            waba_base_url=resolved.waba_base_url,
+                            phone_number_id=phone_number_id,
+                            merchant_id=resolved.merchant_id,
+                            conversation_id=conv.id,
+                            message_id=persisted.id,
+                            media_id=str(media["id"]),
+                            kind=str(media.get("kind") or ""),
+                            mime=media.get("mime"),
+                        )
+                        if patch:
+                            await msgs.patch_message_media(
+                                wa_message_id=wa_message_id,
+                                merchant_id=resolved.merchant_id,
+                                media_patch=patch,
+                            )
+                    except Exception as e:  # pragma: no cover - best effort
+                        logger.warning(
+                            "uc01.media_pipeline_failed",
+                            error=str(e),
+                            wa_message_id=wa_message_id,
+                        )
                 # S-03: capture behavioral signals (latency + message length)
                 latency_s: int | None = None
                 if prior_last_message_at is not None:
@@ -1091,6 +1179,12 @@ class ConversationService:
             history = await msgs.list_history(conv.id, limit=_HISTORY_FETCH_LIMIT)
             history = [m for m in history if m.wa_message_id not in exclude]
 
+            # Vision / voice: attach the current turn's image for the model to see,
+            # or swap in the audio transcription as the effective turn text.
+            current_image, effective_text = await self._resolve_current_media(
+                msgs, wa_message_id, text
+            )
+
             rc = _ReplyContext(
                 resolved=resolved,
                 conv_id=conv.id,
@@ -1105,13 +1199,51 @@ class ConversationService:
                 chat_history=_to_chat_history(history),
                 from_phone=from_phone,
                 phone_number_id=phone_number_id,
-                text=text,
+                text=effective_text,
                 conv_current_state=conv.current_state,
                 latest_wa_message_id=wa_message_id,
                 lead_avg_latency_seconds=lead.avg_response_latency_seconds,
                 proactive_reply_to=_trailing_proactive_text(history),
+                current_image=current_image,
             )
         return await self._generate_and_deliver(rc)
+
+    async def _resolve_current_media(
+        self, msgs: MessageRepository, wa_message_id: str | None, text: str
+    ) -> tuple[ImagePart | None, str]:
+        """Resolve the current turn's vision/voice payload from persisted media.
+
+        Returns `(image, effective_text)`:
+        - image message → load the bytes for a vision block, text unchanged;
+        - audio message → no image, text replaced by the transcription (so the
+          model reads the voice note) when one is present;
+        - anything else / no pipeline → `(None, text)`.
+
+        Best-effort: any failure degrades to the text turn. The current inbound
+        is excluded from history but persisted, so it's fetched by wa id here.
+        """
+        if not wa_message_id or self._media_pipeline is None:
+            return None, text
+        try:
+            cur = await msgs.find_by_wa_message_id(wa_message_id)
+        except Exception:  # pragma: no cover - defensive
+            return None, text
+        media = (cur.meta or {}).get("media") if cur is not None else None
+        if not media:
+            return None, text
+        kind = media.get("kind")
+        if kind == "audio":
+            transcription = media.get("transcription")
+            return None, (transcription or text)
+        if kind == "image" and media.get("storage_path"):
+            try:
+                img = await self._media_pipeline.load_image(
+                    storage_path=str(media["storage_path"]), mime=media.get("mime")
+                )
+            except Exception:  # pragma: no cover - best effort
+                img = None
+            return img, text
+        return None, text
 
     async def _generate_and_deliver(self, rc: _ReplyContext) -> InboundResult:
         """Phase 2 (LLM + persist) and phase 3 (typing indicator, human-paced
@@ -1375,6 +1507,7 @@ class ConversationService:
                 scoring_enabled=caps.scoring_enabled,
                 directives=caps.directives,
                 critical_keywords=caps.critical_keywords,
+                current_image=rc.current_image,
             )
 
             # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
@@ -1774,6 +1907,7 @@ class ConversationService:
         customer_phone: str,
         text: str,
         wa_message_id: str,
+        media: dict[str, Any] | None = None,
     ) -> PhoneEchoResult:
         """Persist a message the merchant typed on their phone Business App.
 
@@ -1834,12 +1968,50 @@ class ConversationService:
                     variant_id=None,
                 )
 
-            await msgs.persist_phone_echo_message(
+            echo_meta: dict[str, Any] | None = None
+            if media and media.get("id"):
+                echo_meta = {
+                    "media": {
+                        "kind": media.get("kind"),
+                        "mime": media.get("mime"),
+                        "wa_media_id": media.get("id"),
+                        "caption": media.get("caption"),
+                        "storage_path": None,
+                    }
+                }
+            echo_msg = await msgs.persist_phone_echo_message(
                 conversation_id=conv.id,
                 merchant_id=resolved.merchant_id,
                 content=text,
                 wa_message_id=wa_message_id,
+                meta=echo_meta,
             )
+            # Download + store the attachment (best-effort) so a photo the
+            # merchant sent from their handset shows in the inbox. No LLM turn —
+            # the customer already received the message on WhatsApp.
+            if echo_meta is not None and self._media_pipeline is not None:
+                try:
+                    patch = await self._media_pipeline.fetch_and_store(
+                        api_key=resolved.api_key,
+                        waba_base_url=resolved.waba_base_url,
+                        phone_number_id=phone_number_id,
+                        merchant_id=resolved.merchant_id,
+                        conversation_id=conv.id,
+                        message_id=echo_msg.id,
+                        media_id=str(media["id"]),  # type: ignore[index]
+                        kind=str((media or {}).get("kind") or ""),
+                        mime=(media or {}).get("mime"),
+                    )
+                    if patch:
+                        await msgs.patch_message_media(
+                            wa_message_id=wa_message_id,
+                            merchant_id=resolved.merchant_id,
+                            media_patch=patch,
+                        )
+                except Exception as e:  # pragma: no cover - best effort
+                    logger.warning(
+                        "wa.phone_echo.media_failed", error=str(e), wa_message_id=wa_message_id
+                    )
             await convs.touch_last_message(conv.id)
             # The merchant just answered from their phone: soft-pause the bot for
             # a couple of hours so it doesn't talk over the human. Reset on every

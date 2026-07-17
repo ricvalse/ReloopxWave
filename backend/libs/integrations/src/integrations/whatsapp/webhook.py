@@ -18,6 +18,13 @@ class WhatsAppInboundEvent:
     # the inbound-staleness gate so the bot doesn't answer a backlog out of
     # context after downtime. None when absent/unparseable.
     timestamp_unix: int | None = None
+    # Media descriptor for image/audio/video/document/sticker turns. `media_id`
+    # is the Meta/360dialog id the worker downloads with; `caption` (surfaced
+    # into `text` upstream) carries the customer's question so it reaches the
+    # LLM instead of being dropped. None for text/interactive turns.
+    media_id: str | None = None
+    media_mime: str | None = None
+    caption: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -38,6 +45,12 @@ class WhatsAppPhoneEchoEvent:
     kind: str  # text | image | audio | …
     text: str | None
     raw: dict[str, Any]
+    # Media descriptor for image/audio/video/document/sticker echoes — so a
+    # merchant photographing something from their handset still lands (with the
+    # attachment) in the inbox instead of vanishing.
+    media_id: str | None = None
+    media_mime: str | None = None
+    caption: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -139,6 +152,30 @@ def parse_template_status_payload(
     return events
 
 
+# Message `type` values that carry a downloadable media object (Meta shape).
+_MEDIA_KINDS = ("image", "audio", "video", "document", "sticker")
+
+
+def _extract_media(msg: dict[str, Any], kind: str) -> tuple[str | None, str | None, str | None]:
+    """Pull (media_id, mime, caption) from a media message node.
+
+    For `image`/`video`/`document` the caption is the customer's text; for a
+    document with no caption we fall back to the filename so the inbox shows
+    something meaningful. `audio`/`sticker` carry no caption.
+    """
+    node = msg.get(kind) or {}
+    media_id = node.get("id")
+    mime = node.get("mime_type")
+    caption = node.get("caption")
+    if not caption and kind == "document":
+        caption = node.get("filename")
+    return (
+        str(media_id) if media_id else None,
+        str(mime) if mime else None,
+        str(caption) if caption else None,
+    )
+
+
 def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]:
     """Pulls the `messages[]` out of Meta's nested webhook shape.
 
@@ -156,6 +193,7 @@ def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]
             for msg in value.get("messages", []) or []:
                 kind = msg.get("type", "unknown")
                 text: str | None = None
+                media_id = media_mime = caption = None
                 if kind == "text":
                     text = msg.get("text", {}).get("body")
                 elif kind == "interactive":
@@ -164,6 +202,12 @@ def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]
                         text = interactive.get("button_reply", {}).get("title")
                     elif interactive.get("type") == "list_reply":
                         text = interactive.get("list_reply", {}).get("title")
+                elif kind in _MEDIA_KINDS:
+                    media_id, media_mime, caption = _extract_media(msg, kind)
+                    # The caption is the customer's actual message — surface it as
+                    # the turn text so it reaches the LLM (upstream fills the
+                    # media placeholder only when there's no caption).
+                    text = caption
                 events.append(
                     WhatsAppInboundEvent(
                         phone_number_id=phone_number_id or "",
@@ -173,6 +217,9 @@ def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]
                         text=text,
                         raw=msg,
                         timestamp_unix=_parse_ts(msg.get("timestamp")),
+                        media_id=media_id,
+                        media_mime=media_mime,
+                        caption=caption,
                     )
                 )
     return events
@@ -206,6 +253,7 @@ def parse_message_echo_payload(payload: dict[str, Any]) -> list[WhatsAppPhoneEch
             for msg in value.get("message_echoes", []) or []:
                 kind = msg.get("type", "unknown")
                 text: str | None = None
+                media_id = media_mime = caption = None
                 if kind == "text":
                     text = msg.get("text", {}).get("body")
                 elif kind == "interactive":
@@ -214,6 +262,9 @@ def parse_message_echo_payload(payload: dict[str, Any]) -> list[WhatsAppPhoneEch
                         text = interactive.get("button_reply", {}).get("title")
                     elif interactive.get("type") == "list_reply":
                         text = interactive.get("list_reply", {}).get("title")
+                elif kind in _MEDIA_KINDS:
+                    media_id, media_mime, caption = _extract_media(msg, kind)
+                    text = caption
                 events.append(
                     WhatsAppPhoneEchoEvent(
                         phone_number_id=phone_number_id,
@@ -223,6 +274,9 @@ def parse_message_echo_payload(payload: dict[str, Any]) -> list[WhatsAppPhoneEch
                         kind=kind,
                         text=text,
                         raw=msg,
+                        media_id=media_id,
+                        media_mime=media_mime,
+                        caption=caption,
                     )
                 )
     return events

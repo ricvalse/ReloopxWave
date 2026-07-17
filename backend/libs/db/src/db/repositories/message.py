@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, Message
@@ -43,7 +44,14 @@ class MessageRepository:
         content: str,
         wa_message_id: str | None,
         variant_id: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Message:
+        # `sender_type='customer'` lets the inbox distinguish inbound customer
+        # turns from system-synthesized ones; `meta.media` carries the
+        # attachment descriptor (storage_path filled once the download lands).
+        message_meta: dict[str, Any] = {"sender_type": "customer"}
+        if meta:
+            message_meta.update(meta)
         msg = Message(
             conversation_id=conversation_id,
             merchant_id=merchant_id,
@@ -52,10 +60,38 @@ class MessageRepository:
             content=content,
             wa_message_id=wa_message_id,
             variant_id=variant_id,
+            meta=message_meta,
         )
         self._session.add(msg)
         await self._session.flush()
         return msg
+
+    async def patch_message_media(
+        self,
+        *,
+        wa_message_id: str,
+        merchant_id: UUID,
+        media_patch: dict[str, Any],
+    ) -> None:
+        """Merge `media_patch` into `meta -> 'media'` for a message, by wa id.
+
+        Used by the worker after a media download lands (or fails) to fill
+        `storage_path` / `size_bytes` / `transcription` / `error` on the row
+        inserted during phase-1 persist. Scoped by `merchant_id` (RLS already
+        constrains the session, but keep the guard explicit — the worker writes
+        service-role). No-op if the row or its wa id is missing.
+        """
+        import json
+
+        await self._session.execute(
+            text(
+                "UPDATE messages SET meta = jsonb_set("
+                "COALESCE(meta, '{}'::jsonb), '{media}', "
+                "COALESCE(meta -> 'media', '{}'::jsonb) || CAST(:patch AS jsonb)) "
+                "WHERE wa_message_id = :wa_id AND merchant_id = :mid"
+            ),
+            {"patch": json.dumps(media_patch), "wa_id": wa_message_id, "mid": str(merchant_id)},
+        )
 
     async def persist_phone_echo_message(
         self,
@@ -64,14 +100,19 @@ class MessageRepository:
         merchant_id: UUID,
         content: str,
         wa_message_id: str,
+        meta: dict[str, Any] | None = None,
     ) -> Message:
         """Outbound message that originated from the merchant's phone Business App.
 
         Stored as `role='agent', direction='out', status='sent'` — the message has
         already been delivered by the time we hear about it, so we skip the
         pending→sent state machine entirely. `meta.sender_type='phone'` lets the
-        UI distinguish phone-typed replies from composer-typed ones.
+        UI distinguish phone-typed replies from composer-typed ones; `meta.media`
+        carries an attachment descriptor for a photo sent from the handset.
         """
+        message_meta: dict[str, Any] = {"sender_type": "phone"}
+        if meta:
+            message_meta.update(meta)
         msg = Message(
             conversation_id=conversation_id,
             merchant_id=merchant_id,
@@ -80,7 +121,7 @@ class MessageRepository:
             status="sent",
             content=content,
             wa_message_id=wa_message_id,
-            meta={"sender_type": "phone"},
+            meta=message_meta,
         )
         self._session.add(msg)
         await self._session.flush()

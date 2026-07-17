@@ -16,7 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from ai_core.llm import ChatMessage, LLMClient
+from ai_core.llm import ChatMessage, ImagePart, LLMClient
 from ai_core.rag import RetrievedChunk
 from ai_core.router import ModelRouter, RoutingRequest
 from shared import get_logger
@@ -113,6 +113,10 @@ class ConversationContext:
     # Keyword vocabulary that forces the escalation model route. None = code
     # default (CRITICAL_KEYWORDS).
     critical_keywords: tuple[str, ...] | None = None
+    # Vision attachment for THIS turn (customer just sent a photo). When set, the
+    # image rides the current user message and the "you can't see media" note is
+    # swapped for a "you CAN see the attached image" directive. None = text turn.
+    current_image: ImagePart | None = None
 
 
 class ConversationOrchestrator:
@@ -237,7 +241,10 @@ class ConversationOrchestrator:
         )
 
     def _build_messages(self, ctx: ConversationContext, user_message: str) -> list[ChatMessage]:
-        system_parts = [ctx.system_prompt, render_schema_hint(ctx.allowed_actions)]
+        system_parts = [
+            ctx.system_prompt,
+            render_schema_hint(ctx.allowed_actions, viewable_media=ctx.current_image is not None),
+        ]
         # Qualification context (internal — never repeat the number to the lead):
         # gives the model the current score + the merchant's configured advance
         # threshold so `move_pipeline` fires in line with the merchant's setting.
@@ -260,7 +267,7 @@ class ConversationOrchestrator:
             system_parts.append(_directives_block(ctx.directives))
         messages = [ChatMessage(role="system", content="\n\n".join(system_parts))]
         messages.extend(ctx.history)
-        messages.append(ChatMessage(role="user", content=user_message))
+        messages.append(ChatMessage(role="user", content=user_message, image=ctx.current_image))
         return messages
 
     async def run_proactive(
@@ -476,6 +483,18 @@ _MEDIA_NOTE = (
     "per il gruppo, non una per ciascun media.\n"
 )
 
+# Replaces _MEDIA_NOTE when the customer's current turn carries a viewable image
+# (the bytes ARE attached to this request). Without this swap the model is told
+# it can't see media and refuses the very photo it's looking at — the class of
+# regression where a stale prompt hint overrides real context.
+_MEDIA_VIEWABLE_NOTE = (
+    "MEDIA: il cliente ha allegato un'immagine a QUESTO messaggio e tu la stai "
+    "vedendo. Rispondi nel merito di ciò che mostra (descrivila, rispondi alla "
+    "domanda, riconosci il prodotto/documento) senza dire che non puoi vederla. "
+    "Se l'immagine è illeggibile o non pertinente, dillo con naturalezza e chiedi "
+    "un chiarimento. Un'immagine da sola NON è un motivo per escalate_human.\n"
+)
+
 _NO_FALSE_CONFIRM_NOTE = (
     "IMPORTANTE — niente false conferme: per book_slot / reschedule_slot / "
     "cancel_slot / propose_slots la conferma reale (con l'esito vero: prenotato, "
@@ -501,7 +520,7 @@ def _schema_header(kinds: list[str]) -> str:
     )
 
 
-def render_schema_hint(allowed: set[str] | None) -> str:
+def render_schema_hint(allowed: set[str] | None, *, viewable_media: bool = False) -> str:
     """Render the response-schema hint, restricted to an action allowlist.
 
     `allowed=None` reproduces the full hint verbatim (the default sales path;
@@ -510,6 +529,10 @@ def render_schema_hint(allowed: set[str] | None) -> str:
     and the booking note — so the model is never told about actions the playbook
     forbids. `none` is always available. `escalate_human` is always kept as a
     safety valve unless the allowlist is explicitly empty.
+
+    `viewable_media=True` swaps the "you can't see media" note for the vision
+    directive — set only when a real image is attached to the current turn, so
+    the default (text) output stays byte-identical.
     """
     if allowed is None:
         kinds = list(_ACTION_ORDER)
@@ -537,7 +560,7 @@ def render_schema_hint(allowed: set[str] | None) -> str:
         else:
             parts.append("Puoi emettere più azioni nello stesso turno.\n")
     parts.append("\n")
-    parts.append(_MEDIA_NOTE)
+    parts.append(_MEDIA_VIEWABLE_NOTE if viewable_media else _MEDIA_NOTE)
     if any(k in _BOOKING_ACTIONS for k in kinds):
         parts.append("\n")
         parts.append(_NO_FALSE_CONFIRM_NOTE)

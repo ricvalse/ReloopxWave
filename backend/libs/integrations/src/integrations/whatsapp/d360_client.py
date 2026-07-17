@@ -63,7 +63,8 @@ class D360WhatsAppClient:
         # the same `waba-v2.360dialog.io` host, but 360dialog reserves the
         # right to issue per-region/per-platform URLs — using `address` makes
         # us forward-compatible with that without changing call sites.
-        self._http = http or httpx.AsyncClient(base_url=base_url or D360_BASE, timeout=15.0)
+        self._base_url = (base_url or D360_BASE).rstrip("/")
+        self._http = http or httpx.AsyncClient(base_url=self._base_url, timeout=15.0)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -98,6 +99,77 @@ class D360WhatsAppClient:
                 },
             }
         )
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential_jitter(initial=0.5, max=5.0),
+        reraise=True,
+        retry=retry_if_exception_type(httpx.TransportError),
+    )
+    async def download_media(self, *, media_id: str) -> tuple[bytes, str] | None:
+        """Download inbound media by Meta/360dialog media id. Two-step.
+
+        1. `GET {base_url}/{media_id}` (auth: `D360-API-KEY`) → JSON `{url, mime_type}`.
+        2. The `url` points at Meta's CDN (`lookaside.fbsbx.com`), which needs a
+           Facebook token 360dialog partners don't hold. Swap the host for the
+           360dialog proxy — it injects the token server-side — then GET the
+           binary with the same `D360-API-KEY`.
+
+        Returns `(bytes, mime)` or `None` on any failure (best-effort: a media
+        failure must never block the text reply). Transport errors retry via the
+        decorator; ARQ's job retry is the outer net. 30s per hop — media on a
+        slow CDN would be dropped by the client-wide 15s send timeout.
+        """
+        headers = {"D360-API-KEY": self._api_key}
+        try:
+            meta_resp = await self._http.get(f"/{media_id}", headers=headers, timeout=30.0)
+        except httpx.TransportError:
+            raise  # let @retry handle connect/read errors
+        except httpx.HTTPError as exc:
+            logger.warning("d360.media.metadata_error", media_id=media_id, error=str(exc))
+            return None
+        if meta_resp.status_code >= 400:
+            logger.warning(
+                "d360.media.metadata_failed",
+                media_id=media_id,
+                status=meta_resp.status_code,
+            )
+            return None
+        try:
+            meta_json = meta_resp.json()
+        except ValueError:
+            logger.warning("d360.media.metadata_not_json", media_id=media_id)
+            return None
+        url = meta_json.get("url")
+        if not url:
+            logger.warning("d360.media.no_url", media_id=media_id)
+            return None
+
+        # Meta CDN URLs require a Facebook token 360dialog partners don't have;
+        # rewrite the host to the 360dialog proxy (adds the token server-side).
+        # `.replace("\\", "")` strips JSON escaping artefacts (Amalia does the
+        # same — `dialog360.py:663-665`).
+        proxied = str(url).replace("https://lookaside.fbsbx.com", self._base_url).replace("\\", "")
+        try:
+            bin_resp = await self._http.get(proxied, headers=headers, timeout=30.0)
+        except httpx.TransportError:
+            raise
+        except httpx.HTTPError as exc:
+            logger.warning("d360.media.binary_error", media_id=media_id, error=str(exc))
+            return None
+        if bin_resp.status_code >= 400:
+            logger.warning(
+                "d360.media.binary_failed",
+                media_id=media_id,
+                status=bin_resp.status_code,
+            )
+            return None
+        mime = (
+            bin_resp.headers.get("content-type")
+            or meta_json.get("mime_type")
+            or "application/octet-stream"
+        )
+        return bin_resp.content, str(mime)
 
     async def send_typing_indicator(self, *, message_id: str) -> dict[str, Any]:
         """Mark the customer's inbound message as read AND show a "typing…"

@@ -810,6 +810,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/{conversation_id}/messages/{message_id}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Message Media Url
+         * @description Mint a short-lived signed URL for an inbound media attachment.
+         *
+         *     Reads go direct-to-Supabase elsewhere, but media lives in a private bucket
+         *     and the impersonation flow's token can't sign a Storage read — so we sign
+         *     here with the **service role** (bypasses bucket RLS) and hard-check the
+         *     object lives under the caller's own `{merchant_id}/` prefix before signing
+         *     (IDOR guard; same pattern as `_resolve_header_image_url`). The Message
+         *     lookup is itself RLS-scoped, so a cross-tenant `message_id` 404s first.
+         */
+        get: operations["get_message_media_url_conversations__conversation_id__messages__message_id__media_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{conversation_id}/messages": {
         parameters: {
             query?: never;
@@ -2886,6 +2913,16 @@ export interface components {
         LocationsOut: {
             /** Locations */
             locations: components["schemas"]["LocationOut"][];
+        };
+        /** MediaUrlOut */
+        MediaUrlOut: {
+            /** Url */
+            url: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
         };
         /** MerchantIn */
         MerchantIn: {
@@ -5958,6 +5995,40 @@ export interface operations {
             };
         };
     };
+    get_message_media_url_conversations__conversation_id__messages__message_id__media_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaUrlOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     send_message_conversations__conversation_id__messages_post: {
         parameters: {
             query?: never;
@@ -8045,6 +8116,7 @@ export enum ApiPaths {
     list_conversations_conversations__get = "/conversations/",
     get_conversation_conversations__conversation_id__get = "/conversations/{conversation_id}",
     delete_conversation_conversations__conversation_id__delete = "/conversations/{conversation_id}",
+    get_message_media_url_conversations__conversation_id__messages__message_id__media_get = "/conversations/{conversation_id}/messages/{message_id}/media",
     send_message_conversations__conversation_id__messages_post = "/conversations/{conversation_id}/messages",
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
     pause_ai_conversations__conversation_id__ai_pause_post = "/conversations/{conversation_id}/ai-pause",

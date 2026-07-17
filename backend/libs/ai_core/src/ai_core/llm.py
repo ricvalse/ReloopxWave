@@ -8,9 +8,27 @@ from typing import Any, Protocol
 
 
 @dataclass(slots=True, frozen=True)
+class ImagePart:
+    """A base64-encoded image attached to a user turn for vision.
+
+    Kept as a separate optional field on `ChatMessage` (rather than widening
+    `content` to a union) so every existing `.content` string operation across
+    the router / playground / FT export keeps working untouched — only the two
+    provider serializers below look at `image`. `mime` is the normalized media
+    type (e.g. `image/jpeg`); each provider emits its own block dialect.
+    """
+
+    mime: str
+    b64: str
+
+
+@dataclass(slots=True, frozen=True)
 class ChatMessage:
     role: str  # system | user | assistant | tool
     content: str
+    # Optional vision attachment on a user turn. None for every text-only
+    # message (the overwhelming majority), so serialization is unchanged there.
+    image: ImagePart | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,6 +52,37 @@ class LLMClient(Protocol):
         temperature: float = 0.3,
         max_tokens: int | None = None,
     ) -> CompletionResult: ...
+
+
+def _openai_content(m: ChatMessage) -> Any:
+    """OpenAI chat-completions content: a bare string, or a parts list carrying
+    an `image_url` data-URI when the turn has a vision attachment."""
+    if m.image is None:
+        return m.content
+    parts: list[dict[str, Any]] = []
+    if m.content:
+        parts.append({"type": "text", "text": m.content})
+    parts.append(
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{m.image.mime};base64,{m.image.b64}"},
+        }
+    )
+    return parts
+
+
+def _anthropic_content(m: ChatMessage) -> Any:
+    """Anthropic messages content: a bare string, or a blocks list with a native
+    base64 `image` block (Meta/Amalia shape) plus the text."""
+    if m.image is None:
+        return m.content
+    return [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": m.image.mime, "data": m.image.b64},
+        },
+        {"type": "text", "text": m.content or "(immagine ricevuta)"},
+    ]
 
 
 def _model_locks_temperature(model: str) -> bool:
@@ -80,7 +129,7 @@ class OpenAIClient:
         client = self._get_client()
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": _openai_content(m)} for m in messages],
         }
         # GPT-5 family rejects any non-default temperature with a 400. We
         # also use the same family for fine-tunes (`ft:gpt-5-…`), so match
@@ -141,9 +190,11 @@ class AnthropicClient:
     ) -> CompletionResult:
         import time
 
+        # System turns are always text (images only ride user turns), so the join
+        # is safe; user/assistant turns may carry a vision block.
         system_text = "\n\n".join(m.content for m in messages if m.role == "system")
         user_turns = [
-            {"role": m.role, "content": m.content}
+            {"role": m.role, "content": _anthropic_content(m)}
             for m in messages
             if m.role in {"user", "assistant"}
         ]
