@@ -425,7 +425,8 @@ _ACTION_SNIPPETS: dict[str, str] = {
     "book_slot": (
         '- "book_slot": quando l\'utente vuole prenotare/fissare un appuntamento o '
         "accetta uno slot proposto. payload: {\n"
-        '    "preferred_start_iso": "<ISO8601, es. 2026-06-03T15:00:00, se l\'utente indica data/ora>",\n'
+        '    "preferred_start_iso": "<ISO8601 COMPLETO di anno, formato AAAA-MM-GGThh:mm:ss, '
+        "calcolato rispetto alla «Data e ora attuali» indicata nel prompt — mai un anno passato>\",\n"
         '    "service_id": "<UUID del servizio scelto dall\'elenco \\"Servizi '
         "prenotabili\\\" del prompt — OBBLIGATORIO quando quell'elenco è presente. "
         "Se l'utente non ha ancora scelto un servizio NON prenotare: chiedigli "

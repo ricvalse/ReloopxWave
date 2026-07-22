@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -401,6 +402,41 @@ _SENTIMENT_FRAGMENTS: dict[str, str] = {
 }
 
 
+_WEEKDAYS_IT_CAP = (
+    "Lunedì",
+    "Martedì",
+    "Mercoledì",
+    "Giovedì",
+    "Venerdì",
+    "Sabato",
+    "Domenica",
+)
+
+
+def _current_datetime_line(tz_name: str) -> str:
+    """High-salience temporal-grounding line for the system prompt.
+
+    The model has no other way to know today's date, and this bot's core job is
+    date negotiation ("mattina o pomeriggio?", "giovedì va bene?"). Without this
+    line the only date in the whole prompt was a hard-coded example from the
+    action schema, actively misleading the model into the wrong year. Rendered in
+    the merchant's timezone; weekday is locale-free (deterministic for tests).
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = UTC
+    now = datetime.now(tz=tz)
+    weekday = _WEEKDAYS_IT_CAP[now.weekday()]
+    return (
+        f"Data e ora attuali: {weekday} {now.strftime('%d/%m/%Y')}, ore "
+        f"{now.strftime('%H:%M')} (fuso orario {tz_name}). Usa SEMPRE questo "
+        "riferimento per interpretare «oggi», «domani», «questa settimana», i "
+        "giorni della settimana e gli orari: non dare mai per scontato un anno o "
+        "un giorno diverso."
+    )
+
+
 async def build_cascade_system_prompt(
     *,
     session: Any,
@@ -477,6 +513,7 @@ async def build_cascade_system_prompt(
     website = await _str(ConfigKey.BUSINESS_WEBSITE)
     tone = await _str(ConfigKey.BOT_TONE) or "professionale-amichevole"
     language = await _str(ConfigKey.BOT_LANGUAGE) or "it"
+    tz_name = await _str(ConfigKey.SCHEDULE_TIMEZONE) or "Europe/Rome"
     extras = await _str(ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS)
     first_message = await _str(ConfigKey.BOT_FIRST_MESSAGE)
 
@@ -571,6 +608,10 @@ async def build_cascade_system_prompt(
         lines.append(f"Sei un assistente conversazionale per un'attività del settore {industry}.")
     else:
         lines.append("Sei un assistente conversazionale per l'azienda.")
+
+    # Temporal grounding, high in the prompt: the bot negotiates dates/times and
+    # otherwise has no idea what day it is.
+    lines.append(_current_datetime_line(tz_name))
 
     if description:
         lines.append(f"L'attività si descrive così: {description}")

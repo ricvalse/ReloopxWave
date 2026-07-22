@@ -215,3 +215,25 @@ async def test_extras_are_last(monkeypatch) -> None:
     assert "Istruzioni aggiuntive dal merchant:" in prompt
     # The freeform escape hatch wins: it sits after the structured fragments.
     assert prompt.index("dando del tu") < prompt.index("ISTRUZIONE-CUSTOM-XYZ")
+
+
+async def test_current_datetime_injected(monkeypatch) -> None:
+    """Fix 1 (blocco B): il prompt ora ancora il modello a oggi.
+
+    Prima l'unica data nel prompt era un esempio hardcoded dello schema azioni,
+    del mese sbagliato: il bot prenotava nell'anno/giorno sbagliato.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    prompt = await _build(monkeypatch, {**_BIZ})
+    assert "Data e ora attuali:" in prompt
+    # L'anno corrente (fuso merchant di default) compare nel prompt.
+    assert str(datetime.now(ZoneInfo("Europe/Rome")).year) in prompt
+
+
+async def test_current_datetime_uses_merchant_timezone(monkeypatch) -> None:
+    prompt = await _build(
+        monkeypatch, {**_BIZ, ConfigKey.SCHEDULE_TIMEZONE: "America/New_York"}
+    )
+    assert "America/New_York" in prompt

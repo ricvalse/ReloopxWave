@@ -33,6 +33,7 @@ from db import (
     GhlSyncRepository,
     IntegrationRepository,
     LeadRepository,
+    MessageRepository,
     TenantContext,
     build_reminder_schedule,
     next_reminder_due,
@@ -47,6 +48,63 @@ if TYPE_CHECKING:
     from ai_core.conversation_service import ReplySender, TurnContext
 
 logger = get_logger(__name__)
+
+
+async def send_action_reply(
+    reply_sender: ReplySender,
+    turn_ctx: TurnContext,
+    text: str,
+    *,
+    session: Any | None = None,
+) -> str:
+    """Send an outbound WhatsApp text from an action handler AND persist it as a
+    ``Message`` row, so the send is visible in the merchant inbox and lands in the
+    NEXT turn's history — parity with the automation/composer path (the invariant
+    "ogni send proattivo → persist"). Without this, proposed slots and booking
+    confirmations went out via the bare transport (`reply_sender.send`) leaving no
+    row: invisible in the inbox, and absent from history, so the agent forgot it
+    had proposed slots.
+
+    Pass ``session`` when the caller already holds an open worker session (same
+    transaction, no nesting); otherwise a short-lived one is opened. Persistence
+    is best-effort: a failure is logged, never raised into the send path.
+    """
+    wa_message_id = await reply_sender.send(
+        phone_number_id=turn_ctx.phone_number_id,
+        api_key=turn_ctx.api_key,
+        to_phone=turn_ctx.lead_phone,
+        text=text,
+        waba_base_url=turn_ctx.waba_base_url,
+    )
+    if not text:
+        return wa_message_id
+
+    async def _write(s: Any) -> None:
+        await MessageRepository(s).persist_outbound_message(
+            conversation_id=turn_ctx.conversation_id,
+            merchant_id=turn_ctx.merchant_id,
+            content=text,
+            wa_message_id=wa_message_id or None,
+            role="agent",
+            status="sent",
+            meta={"sender_type": "agent_action"},
+        )
+
+    try:
+        if session is not None:
+            await _write(session)
+        else:
+            worker_ctx = TenantContext(
+                tenant_id=turn_ctx.tenant_id,
+                merchant_id=turn_ctx.merchant_id,
+                role="worker",
+                actor_id=turn_ctx.merchant_id,
+            )
+            async with tenant_session(worker_ctx) as s:
+                await _write(s)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("action.persist_outbound_failed", error=str(exc))
+    return wa_message_id
 
 
 async def _resolve_reminder_lead_hours(
@@ -207,12 +265,11 @@ class BookSlotHandler:
                         "conversation_id": str(turn_ctx.conversation_id),
                     },
                 )
-                await self._reply_sender.send(
-                    phone_number_id=turn_ctx.phone_number_id,
-                    api_key=turn_ctx.api_key,
-                    to_phone=turn_ctx.lead_phone,
-                    text=format_service_selection(_active_services),
-                    waba_base_url=turn_ctx.waba_base_url,
+                await send_action_reply(
+                    self._reply_sender,
+                    turn_ctx,
+                    format_service_selection(_active_services),
+                    session=session,
                 )
                 return
 
@@ -857,13 +914,7 @@ class BookSlotHandler:
             suggested=outcome.suggested,
             local_only=outcome.local_only,
         )
-        await self._reply_sender.send(
-            phone_number_id=turn_ctx.phone_number_id,
-            api_key=turn_ctx.api_key,
-            to_phone=turn_ctx.lead_phone,
-            text=text,
-            waba_base_url=turn_ctx.waba_base_url,
-        )
+        await send_action_reply(self._reply_sender, turn_ctx, text)
 
 
 class ProposeSlotsHandler:
@@ -936,12 +987,8 @@ class ProposeSlotsHandler:
             )
 
         if suggestions:
-            await self._reply_sender.send(
-                phone_number_id=turn_ctx.phone_number_id,
-                api_key=turn_ctx.api_key,
-                to_phone=turn_ctx.lead_phone,
-                text=format_slot_proposal(suggestions),
-                waba_base_url=turn_ctx.waba_base_url,
+            await send_action_reply(
+                self._reply_sender, turn_ctx, format_slot_proposal(suggestions)
             )
 
     async def _fetch_slots(
@@ -1095,11 +1142,25 @@ def _next_business_hour(
     return (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
 
 
+_WEEKDAYS_IT = (
+    "lunedì",
+    "martedì",
+    "mercoledì",
+    "giovedì",
+    "venerdì",
+    "sabato",
+    "domenica",
+)
+
+
 def _format_human(iso: str) -> str:
     dt = _parse_iso(iso)
     if dt is None:
         return iso
-    return dt.strftime("%d/%m alle %H:%M")
+    # Weekday + full year: the LLM has no other temporal anchor for a slot, so
+    # "22/07 alle 10:00" leaves it guessing the year and the day of week when the
+    # lead says "giovedì" / "va bene". Deterministic Italian weekday (locale-free).
+    return f"{_WEEKDAYS_IT[dt.weekday()]} {dt.strftime('%d/%m/%Y alle %H:%M')}"
 
 
 def format_booking_confirmation(

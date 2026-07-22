@@ -15,7 +15,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ai_core.actions.appointment_ops import cancel_appointment, reschedule_appointment
-from ai_core.actions.booking import _format_human, _parse_iso, _resolve_tz
+from ai_core.actions.booking import (
+    _format_human,
+    _parse_iso,
+    _resolve_tz,
+    send_action_reply,
+)
 from ai_core.orchestrator import OrchestratorAction
 from db import AppointmentRepository, TenantContext, tenant_session
 from db.models import Appointment
@@ -94,13 +99,7 @@ class CancelSlotHandler:
                     if result.ok
                     else "Non sono riuscito ad annullare l'appuntamento. Riprova più tardi o scrivici."
                 )
-        await self._reply_sender.send(
-            phone_number_id=turn_ctx.phone_number_id,
-            api_key=turn_ctx.api_key,
-            to_phone=turn_ctx.lead_phone,
-            text=text,
-            waba_base_url=turn_ctx.waba_base_url,
-        )
+        await send_action_reply(self._reply_sender, turn_ctx, text)
 
 
 class RescheduleSlotHandler:
@@ -163,10 +162,4 @@ class RescheduleSlotHandler:
                         if result.ok
                         else "Non sono riuscito a spostare l'appuntamento. Riprova più tardi o scrivici."
                     )
-        await self._reply_sender.send(
-            phone_number_id=turn_ctx.phone_number_id,
-            api_key=turn_ctx.api_key,
-            to_phone=turn_ctx.lead_phone,
-            text=text,
-            waba_base_url=turn_ctx.waba_base_url,
-        )
+        await send_action_reply(self._reply_sender, turn_ctx, text)
