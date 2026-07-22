@@ -70,6 +70,19 @@ export const TRIGGER_DEFS: TypeDef[] = [
       { key: 'stage_id', label: 'ID stage (opzionale)', kind: 'text', placeholder: 'qualsiasi stage' },
     ],
   },
+  {
+    type: 'conversation_escalated',
+    label: 'Handoff a operatore',
+    description:
+      'La conversazione è passata a un umano (richiesta del cliente, media non gestibile, o nodo «Passa a operatore»).',
+    fields: [],
+  },
+  {
+    type: 'conversation_handoff_overdue',
+    label: 'Handoff in ritardo (SLA)',
+    description: 'Un handoff è rimasto aperto oltre la soglia SLA senza essere preso in carico.',
+    fields: [],
+  },
 ];
 
 export const CONDITION_DEFS: TypeDef[] = [
@@ -211,6 +224,20 @@ export const ACTION_DEFS: TypeDef[] = [
     ],
   },
   {
+    type: 'notify_slack',
+    label: 'Notifica Slack',
+    description:
+      'Invia un avviso al canale Slack collegato (Integrazioni → Slack). Non invia messaggi WhatsApp.',
+    fields: [
+      {
+        key: 'text',
+        label: 'Testo personalizzato (opzionale)',
+        kind: 'text',
+        placeholder: 'Vuoto = avviso automatico. Placeholder: {name} {phone} {reason} {last_message}',
+      },
+    ],
+  },
+  {
     type: 'wait',
     label: 'Attendi',
     fields: [
@@ -287,6 +314,7 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
     if (type === 'set_lead_field')
       return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}`;
     if (type === 'human_handoff') return String(config.reason || 'operatore umano');
+    if (type === 'notify_slack') return config.text ? String(config.text) : 'Slack';
     if (type === 'send_message') return String(config.text ?? '');
     if (type === 'wait') {
       const u = config.unit === 'hours' ? 'ore' : config.unit === 'days' ? 'giorni' : 'min';

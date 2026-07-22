@@ -42,6 +42,7 @@ from workers.scheduler.handlers import (
     daily_kpi_rollup,
     enforce_retention,
     followup_no_answer,
+    handoff_sla_sweep,
     integration_health_check,
     kb_reindex,
     objection_extraction,
@@ -107,6 +108,8 @@ class WorkerSettings:
         kb_reindex,
         catalog_reindex,
         integration_health_check,
+        # SLA sweep: emit conversation.handoff_overdue for stale open handoffs
+        handoff_sla_sweep,
         build_analytics_export,
         enforce_retention,
         # queue: scheduler:jobs — UC-02 appointment reconcile poll + reminders
@@ -172,6 +175,9 @@ class WorkerSettings:
         cron(send_appointment_reminders, minute={5, 35}, timeout=300, max_tries=1),
         # Automazioni: tail analytics_events every minute and fan out flow runs.
         cron(automation_dispatch, minute=set(range(60)), timeout=120, max_tries=1),
+        # Handoff SLA: every 5 min, emit conversation.handoff_overdue for handoffs
+        # open past handoff_sla_minutes (edge-triggered per handoff episode).
+        cron(handoff_sla_sweep, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=120, max_tries=1),
         # S-05: compute optimal send hour per lead — weekly (Sunday 06:00 UTC).
         cron(optimize_send_times, weekday=6, hour=6, minute=0, timeout=600, max_tries=1),
     ]

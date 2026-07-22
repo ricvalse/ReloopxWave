@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     # 0 disables the limiter. Fail-open if Redis is unreachable.
     rate_limit_public_per_min: int = 120
 
+    # Minutes an open human handoff may sit unresolved before the handoff_sla_sweep
+    # cron emits `conversation.handoff_overdue` (drives an operator alert, e.g.
+    # Slack). Per-episode edge-triggered, so it fires at most once per handoff.
+    handoff_sla_minutes: int = 15
+
     integrations_kek_base64: str = Field(
         default="", description="AES-256-GCM key-encryption key, base64-encoded"
     )

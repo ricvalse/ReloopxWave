@@ -43,6 +43,12 @@ TRIGGER_TYPES = (
     # "stage_id": str?} — the dispatcher only fires the flow when they match the
     # event (empty = any pipeline/stage).
     "crm_opportunity_created",
+    # The conversation was handed to a human (escalate_human, unsupported media,
+    # or a `human_handoff` node). Emitted as `conversation.escalated`.
+    "conversation_escalated",
+    # An open handoff crossed the SLA without being resolved — emitted by the
+    # `handoff_sla_sweep` cron as `conversation.handoff_overdue`.
+    "conversation_handoff_overdue",
 )
 CONDITION_TYPES = (
     "lead_temperature",  # cfg: {"op": "==|!=", "value": "hot|warm|cold"}
@@ -88,6 +94,12 @@ ACTION_TYPES = (
     # Hand the conversation to a human operator (takeover), as an explicit flow step.
     # cfg: {"reason": str}
     "human_handoff",
+    # Post a message to the merchant's connected Slack incoming webhook. Sends no
+    # WhatsApp; the webhook creds live in `integrations` (provider='slack'), the
+    # logic in the isolated `notifications` lib. cfg: {"text": str|None} — an
+    # optional custom line with {name}/{phone}/{reason}/{last_message} placeholders
+    # (empty = default Block Kit layout built from the run context).
+    "notify_slack",
 )
 
 

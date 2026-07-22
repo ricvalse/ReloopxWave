@@ -61,6 +61,22 @@ class ResolvedGHLIntegration:
     meta: dict[str, Any]
 
 
+@dataclass(slots=True, frozen=True)
+class ResolvedSecret:
+    """A decrypted per-merchant provider secret (generic, provider-agnostic).
+
+    Used for simple single-secret providers (e.g. Slack incoming webhook URL)
+    that don't need the bespoke WhatsApp/GHL resolvers. `meta` carries any
+    provider-specific extras stored alongside the secret.
+    """
+
+    merchant_id: UUID
+    provider: str
+    secret: str
+    status: str
+    meta: dict[str, Any]
+
+
 class IntegrationRepository:
     def __init__(self, session: AsyncSession, *, kek_base64: str) -> None:
         self._session = session
@@ -261,6 +277,80 @@ class IntegrationRepository:
             delete(Integration)
             .where(Integration.merchant_id == merchant_id)
             .where(Integration.provider == "whatsapp")
+        )
+        result = cast(CursorResult[Any], await self._session.execute(stmt))
+        await self._session.flush()
+        return (result.rowcount or 0) > 0
+
+    # ---- Generic single-secret provider (Slack, …) -----------------------
+
+    async def resolve_secret(self, provider: str, merchant_id: UUID) -> ResolvedSecret | None:
+        """Decrypt a simple per-merchant secret for `provider`. Returns None when
+        the integration is missing or not active. Provider-agnostic — the first
+        consumer is Slack (`provider='slack'`, the incoming webhook URL)."""
+        integration = await self._get(provider, merchant_id)
+        if integration is None or integration.status != "active":
+            return None
+        return ResolvedSecret(
+            merchant_id=integration.merchant_id,
+            provider=provider,
+            secret=self._decrypt(integration),
+            status=integration.status,
+            meta=dict(integration.meta or {}),
+        )
+
+    async def upsert_secret(
+        self,
+        *,
+        merchant_id: UUID,
+        provider: str,
+        secret: str,
+        external_account_id: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> Integration:
+        """Encrypt + store a single secret for `provider` (AES-256-GCM, generic).
+
+        Upserts on the (merchant_id, provider) unique key and marks it active.
+        `meta` is merged over any existing meta (partial updates keep prior keys).
+        """
+        if not secret:
+            raise ValueError("secret is required")
+        aad = f"{provider}:{merchant_id}".encode()
+        enc = encrypt_secret(secret, kek_base64=self._kek, aad=aad)
+
+        integration = await self._get(provider, merchant_id)
+        new_meta: dict[str, Any] = {**(integration.meta if integration else {}), **(meta or {})}
+        if integration is None:
+            integration = Integration(
+                merchant_id=merchant_id,
+                provider=provider,
+                status="active",
+                external_account_id=external_account_id,
+                secret_ciphertext=enc.ciphertext,
+                secret_nonce=enc.nonce,
+                secret_aad=enc.aad,
+                kek_version=enc.kek_version,
+                meta=new_meta,
+            )
+            self._session.add(integration)
+        else:
+            integration.status = "active"
+            if external_account_id is not None:
+                integration.external_account_id = external_account_id
+            integration.secret_ciphertext = enc.ciphertext
+            integration.secret_nonce = enc.nonce
+            integration.secret_aad = enc.aad
+            integration.kek_version = enc.kek_version
+            integration.meta = new_meta
+        await self._session.flush()
+        return integration
+
+    async def disconnect_provider(self, *, merchant_id: UUID, provider: str) -> bool:
+        """Hard-delete the (merchant_id, provider) integration row. Returns True
+        when a row was removed."""
+        stmt = delete(Integration).where(
+            Integration.merchant_id == merchant_id,
+            Integration.provider == provider,
         )
         result = cast(CursorResult[Any], await self._session.execute(stmt))
         await self._session.flush()

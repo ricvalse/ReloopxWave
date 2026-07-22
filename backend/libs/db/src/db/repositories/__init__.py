@@ -12,7 +12,11 @@ from db.repositories.catalog import (
     FaqRepository,
     StorePolicyRepository,
 )
-from db.repositories.conversation import ConversationRepository, ReminderCandidate
+from db.repositories.conversation import (
+    ConversationRepository,
+    HandoffOverdueCandidate,
+    ReminderCandidate,
+)
 from db.repositories.flow import (
     FLOW_FIRST_CONTACT,
     FlowRepository,
@@ -64,6 +68,7 @@ __all__ = [
     "GHLMarketplaceRepository",
     "GhlSyncEntry",
     "GhlSyncRepository",
+    "HandoffOverdueCandidate",
     "IntegrationRepository",
     "IntegrationStatus",
     "BusinessClosureRepository",

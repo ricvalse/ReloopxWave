@@ -1,10 +1,10 @@
 'use client';
 
 import { useSearchParams } from 'next/navigation';
-import { useEffect } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Card, CardContent, CardHeader, CardTitle, SkeletonCard } from '@reloop/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, SkeletonCard } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { ConnectWhatsAppButton } from './connect-whatsapp-button';
 import { GhlSyncLog } from './ghl-sync-log';
@@ -65,6 +65,7 @@ export function IntegrationsPanel() {
 
   const ghl = status.data?.connections.find((c) => c.provider === 'ghl');
   const wa = status.data?.connections.find((c) => c.provider === 'whatsapp');
+  const slack = status.data?.connections.find((c) => c.provider === 'slack');
 
   return (
     <div className="space-y-4 p-6">
@@ -79,6 +80,13 @@ export function IntegrationsPanel() {
       <WhatsAppCard
         connection={wa}
         onPopupClosed={() =>
+          queryClient.invalidateQueries({ queryKey: ['integrations', 'status'] })
+        }
+      />
+
+      <SlackCard
+        connection={slack}
+        onChanged={() =>
           queryClient.invalidateQueries({ queryKey: ['integrations', 'status'] })
         }
       />
@@ -167,6 +175,105 @@ function WhatsAppCard({
             onDisconnected={onPopupClosed}
           />
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SlackCard({
+  connection,
+  onChanged,
+}: {
+  connection: Connection | undefined;
+  onChanged: () => void;
+}) {
+  const connected = connection?.connected ?? false;
+  const [webhook, setWebhook] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: async (url: string) => {
+      const api = getApiClient();
+      const { error: err } = await api.POST('/integrations/slack', {
+        body: { webhook_url: url },
+      });
+      if (err) throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+    },
+    onSuccess: () => {
+      setWebhook('');
+      setError(null);
+      onChanged();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : 'Errore salvataggio'),
+  });
+
+  const disconnect = useMutation({
+    mutationFn: async () => {
+      const api = getApiClient();
+      const { error: err } = await api.POST('/integrations/slack/disconnect');
+      if (err) throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+    },
+    onSuccess: () => {
+      setError(null);
+      onChanged();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : 'Errore disconnessione'),
+  });
+
+  // The webhook is a secret; a Slack incoming webhook always lives under this host.
+  const canSave = webhook.trim().startsWith('https://hooks.slack.com/');
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <CardTitle>Slack</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Ricevi un avviso su Slack quando una conversazione passa a un operatore. Crea un
+            «Incoming Webhook» su Slack, incolla qui l&apos;URL, poi aggiungi il nodo «Notifica
+            Slack» alle tue automazioni.
+          </p>
+        </div>
+        <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {connected ? (
+          <div className="flex items-center justify-between gap-4 text-sm text-muted-foreground">
+            <span>Webhook configurato.</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disconnect.isPending}
+              onClick={() => disconnect.mutate()}
+            >
+              Scollega
+            </Button>
+          </div>
+        ) : null}
+        <div className="flex items-start gap-2">
+          <Input
+            type="url"
+            placeholder="https://hooks.slack.com/services/…"
+            value={webhook}
+            onChange={(e) => {
+              setWebhook(e.target.value);
+              setError(null);
+            }}
+          />
+          <Button
+            size="sm"
+            disabled={!canSave || save.isPending}
+            onClick={() => save.mutate(webhook.trim())}
+          >
+            {connected ? 'Aggiorna' : 'Salva'}
+          </Button>
+        </div>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {webhook && !canSave ? (
+          <p className="text-xs text-muted-foreground">
+            L&apos;URL deve iniziare con https://hooks.slack.com/
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

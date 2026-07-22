@@ -604,6 +604,64 @@ async def whatsapp_disconnect(ctx: CurrentContext, session: DBSession) -> Respon
     return Response(status_code=204)
 
 
+# ---- Slack (operator notifications) ----------------------------------------
+
+
+class SlackConnectIn(BaseModel):
+    # A Slack *incoming webhook* URL. The webhook already targets one channel, so
+    # there's nothing else to configure. Stored encrypted in `integrations`.
+    webhook_url: str = Field(min_length=1, max_length=512)
+
+
+@router.post("/slack", status_code=204)
+async def slack_connect(
+    payload: SlackConnectIn, ctx: CurrentContext, session: DBSession
+) -> Response:
+    """Store the merchant's Slack incoming-webhook URL (encrypted).
+
+    Powers the `notify_slack` automation node + the handoff-overdue alert. The URL
+    is a secret, so it goes in the AES-GCM `integrations` table (provider='slack'),
+    never in the browser-readable config cascade.
+    """
+    merchant_id = _require_merchant_scope(ctx)
+    url = payload.webhook_url.strip()
+    if not url.startswith("https://hooks.slack.com/"):
+        raise IntegrationError(
+            "URL webhook Slack non valido (atteso https://hooks.slack.com/...)",
+            error_code="slack_webhook_invalid",
+        )
+    settings = get_settings()
+    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+    await repo.upsert_secret(
+        merchant_id=merchant_id,
+        provider="slack",
+        secret=url,
+        meta={"created_via": "merchant"},
+    )
+    logger.info(
+        "integrations.slack.connected",
+        actor_id=str(ctx.actor_id),
+        merchant_id=str(merchant_id),
+    )
+    return Response(status_code=204)
+
+
+@router.post("/slack/disconnect", status_code=204)
+async def slack_disconnect(ctx: CurrentContext, session: DBSession) -> Response:
+    """Remove the merchant's Slack webhook. `notify_slack` nodes then no-op."""
+    merchant_id = _require_merchant_scope(ctx)
+    settings = get_settings()
+    repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+    removed = await repo.disconnect_provider(merchant_id=merchant_id, provider="slack")
+    logger.info(
+        "integrations.slack.disconnected",
+        actor_id=str(ctx.actor_id),
+        merchant_id=str(merchant_id),
+        had_row=removed,
+    )
+    return Response(status_code=204)
+
+
 # ---- Status ----------------------------------------------------------------
 
 
@@ -682,6 +740,33 @@ async def integration_status(
                 external_account_id=wa.external_account_id,
                 expires_at=wa.expires_at,
                 meta=wa.meta,
+            )
+        )
+
+    # Slack (operator notifications) — also lives in the integrations table, so
+    # its status is a plain card like WhatsApp. The webhook URL itself is never
+    # surfaced (it's the secret); only connected/status.
+    sl = by_provider.get("slack")
+    if sl is None:
+        connections.append(
+            ConnectionOut(
+                provider="slack",
+                connected=False,
+                status="disconnected",
+                external_account_id=None,
+                expires_at=None,
+                meta={},
+            )
+        )
+    else:
+        connections.append(
+            ConnectionOut(
+                provider="slack",
+                connected=sl.status == "active",
+                status=sl.status,
+                external_account_id=sl.external_account_id,
+                expires_at=sl.expires_at,
+                meta=sl.meta,
             )
         )
 

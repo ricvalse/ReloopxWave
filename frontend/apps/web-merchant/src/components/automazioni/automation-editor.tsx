@@ -74,6 +74,7 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
       };
     if (type === 'set_lead_field') return { field: 'tag', key: '', value: '', ghl_sync: false };
     if (type === 'human_handoff') return { reason: '' };
+    if (type === 'notify_slack') return { text: '' };
   }
   return {};
 }

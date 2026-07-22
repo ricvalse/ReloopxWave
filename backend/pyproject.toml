@@ -10,6 +10,7 @@ members = [
     "services/api",
     "libs/ai_core",
     "libs/integrations",
+    "libs/notifications",
     "libs/db",
     "libs/config_resolver",
     "libs/shared",
@@ -19,6 +20,7 @@ members = [
 api = { workspace = true }
 ai_core = { workspace = true }
 integrations = { workspace = true }
+notifications = { workspace = true }
 db = { workspace = true }
 config_resolver = { workspace = true }
 shared = { workspace = true }
@@ -41,6 +43,7 @@ src = [
     "services/api/src",
     "libs/ai_core/src",
     "libs/integrations/src",
+    "libs/notifications/src",
     "libs/db/src",
     "libs/config_resolver/src",
     "libs/shared/src",
@@ -97,6 +100,7 @@ pythonpath = [
     "services/api/src",
     "libs/ai_core/src",
     "libs/integrations/src",
+    "libs/notifications/src",
     "libs/db/src",
     "libs/config_resolver/src",
     "libs/shared/src",

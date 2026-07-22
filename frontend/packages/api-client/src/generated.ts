@@ -1577,6 +1577,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/slack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Slack Connect
+         * @description Store the merchant's Slack incoming-webhook URL (encrypted).
+         *
+         *     Powers the `notify_slack` automation node + the handoff-overdue alert. The URL
+         *     is a secret, so it goes in the AES-GCM `integrations` table (provider='slack'),
+         *     never in the browser-readable config cascade.
+         */
+        post: operations["slack_connect_integrations_slack_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/slack/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Slack Disconnect
+         * @description Remove the merchant's Slack webhook. `notify_slack` nodes then no-op.
+         */
+        post: operations["slack_disconnect_integrations_slack_disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/status": {
         parameters: {
             query?: never;
@@ -3587,6 +3631,11 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** SlackConnectIn */
+        SlackConnectIn: {
+            /** Webhook Url */
+            webhook_url: string;
         };
         /** SnapshotIn */
         SnapshotIn: {
@@ -7305,6 +7354,68 @@ export interface operations {
             };
         };
     };
+    slack_connect_integrations_slack_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlackConnectIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    slack_disconnect_integrations_slack_disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     integration_status_integrations_status_get: {
         parameters: {
             query?: {
@@ -8154,6 +8265,8 @@ export enum ApiPaths {
     ghl_pipelines_integrations_ghl_pipelines_get = "/integrations/ghl/pipelines",
     whatsapp_onboard_start_integrations_whatsapp_onboard_start_post = "/integrations/whatsapp/onboard/start",
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
+    slack_connect_integrations_slack_post = "/integrations/slack",
+    slack_disconnect_integrations_slack_disconnect_post = "/integrations/slack/disconnect",
     integration_status_integrations_status_get = "/integrations/status",
     ghl_sync_log_integrations_ghl_sync_log_get = "/integrations/ghl/sync-log",
     list_templates_whatsapp_templates_get = "/whatsapp-templates",

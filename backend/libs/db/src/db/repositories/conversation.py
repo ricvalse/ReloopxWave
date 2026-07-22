@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Integer, cast, delete, func, select, text, update
+from sqlalchemy import DateTime, Integer, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, Lead, Merchant
@@ -42,6 +42,23 @@ class ReminderCandidate:
     # ADR 0015 edge-trigger anchor: the `last_inbound_at` we last emitted a
     # `lead.no_answer` trigger for. None = never fired for this conversation.
     no_answer_fired_for: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class HandoffOverdueCandidate:
+    """A conversation whose human handoff has been open past the SLA.
+
+    Edge-triggered like the no-answer emitter: `sla_fired_for` is the `handoff_at`
+    we last emitted `conversation.handoff_overdue` for, so a re-escalation (a new
+    `handoff_at`) re-arms the alert while an already-alerted one stays quiet.
+    """
+
+    conversation_id: UUID
+    merchant_id: UUID
+    tenant_id: UUID
+    lead_id: UUID | None
+    handoff_at: datetime
+    sla_fired_for: datetime | None
 
 
 class ConversationRepository:
@@ -414,6 +431,81 @@ class ConversationRepository:
                 SET meta = jsonb_set(
                     coalesce(meta, '{}'::jsonb),
                     '{no_answer_fired_for}',
+                    to_jsonb(:anchor::text)
+                )
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id), "anchor": anchor.isoformat()},
+        )
+
+    async def list_overdue_handoffs(
+        self, *, min_overdue_minutes: int, limit: int = 500
+    ) -> list[HandoffOverdueCandidate]:
+        """Cross-tenant scan of open handoffs older than `min_overdue_minutes`.
+
+        An open handoff is `handoff_at IS NOT NULL AND handoff_resolved_at IS NULL`
+        (the same predicate the automation engine uses for `ai_paused`). Returns
+        the `handoff_sla_fired_for` anchor so the caller emits the overdue trigger
+        once per handoff episode (edge-triggered, mirroring no-answer).
+        """
+        now = datetime.now(tz=UTC)
+        cutoff = now - timedelta(minutes=min_overdue_minutes)
+        sla_fired = Conversation.meta["handoff_sla_fired_for"].astext
+        stmt = (
+            select(
+                Conversation.id,
+                Conversation.merchant_id,
+                Merchant.tenant_id,
+                Conversation.lead_id,
+                Conversation.handoff_at,
+                sla_fired.label("sla_fired_for"),
+            )
+            .join(Merchant, Merchant.id == Conversation.merchant_id)
+            .where(
+                Conversation.handoff_at.is_not(None),
+                Conversation.handoff_resolved_at.is_(None),
+                Conversation.handoff_at < cutoff,
+                # Exclude already-alerted handoffs in SQL (not just the Python edge
+                # gate) so the pool self-drains: otherwise unresolved-but-alerted
+                # rows accumulate forever and, past the 500 cap, could starve fresh
+                # overdue handoffs out of the result set. `handoff_sla_fired_for` is
+                # a new key we only ever write as an ISO timestamp, so the cast is
+                # safe. Oldest-first so the most urgent are handled within the cap.
+                or_(
+                    sla_fired.is_(None),
+                    cast(sla_fired, DateTime(timezone=True)) < Conversation.handoff_at,
+                ),
+            )
+            .order_by(Conversation.handoff_at)
+            .limit(limit)
+        )
+        rows = await self._session.execute(stmt)
+        results: list[HandoffOverdueCandidate] = []
+        for row in rows.mappings():
+            results.append(
+                HandoffOverdueCandidate(
+                    conversation_id=row["id"],
+                    merchant_id=row["merchant_id"],
+                    tenant_id=row["tenant_id"],
+                    lead_id=row["lead_id"],
+                    handoff_at=row["handoff_at"],
+                    sla_fired_for=_parse_iso(row["sla_fired_for"]),
+                )
+            )
+        return results
+
+    async def mark_handoff_sla_fired(self, conversation_id: UUID, anchor: datetime) -> None:
+        """Stamp the `handoff_at` anchor a `conversation.handoff_overdue` trigger was
+        emitted for. Suppresses re-emission until a new handoff (advancing
+        `handoff_at`) re-arms it."""
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = jsonb_set(
+                    coalesce(meta, '{}'::jsonb),
+                    '{handoff_sla_fired_for}',
                     to_jsonb(:anchor::text)
                 )
                 WHERE id = :conversation_id

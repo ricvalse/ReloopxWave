@@ -40,6 +40,7 @@ from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
 from ai_core.router import RoutingRequest
 from db import (
+    AnalyticsRepository,
     AutomationRepository,
     ConversationRepository,
     GHLMarketplaceRepository,
@@ -89,6 +90,11 @@ EVENT_TO_TRIGGER: dict[str, str] = {
     # ADR 0016: emitted by the GHL marketplace webhook handler (CRM-originated).
     "lead.crm_created": "crm_lead_created",
     "opportunity.created": "crm_opportunity_created",
+    # Human takeover happened (escalate_human / unsupported media / human_handoff
+    # node) — lets a merchant notify an operator (e.g. Slack) off a handoff.
+    "conversation.escalated": "conversation_escalated",
+    # An open handoff crossed the SLA (emitted by the handoff_sla_sweep cron).
+    "conversation.handoff_overdue": "conversation_handoff_overdue",
 }
 
 _CURSOR_KEY = "automation:dispatch:cursor"
@@ -123,6 +129,11 @@ class RunContext:
     conversation_id: UUID | None
     tenant_id: UUID
     merchant_id: UUID
+    # The trigger_type of the automation currently walking this context — set by
+    # `automation_run`. Lets action nodes tailor themselves to what fired the flow
+    # (e.g. notify_slack picks the handoff-vs-overdue layout; human_handoff avoids
+    # re-emitting the event that triggered it).
+    trigger_type: str = ""
     # Last inbound (customer) message time — the ADR 0015 re-engagement signal the
     # stale-cadence guard compares against the episode anchor at each resume.
     last_inbound_at: datetime | None = None
@@ -321,6 +332,7 @@ async def automation_run(
 
         run_ctx.api_key = wa.api_key
         run_ctx.waba_base_url = wa.waba_base_url
+        run_ctx.trigger_type = automation.trigger_type or ""
         ai_deps = await _build_ai_reply_deps(ctx, session, automation, run_ctx, UUID(merchant_id))
 
         start = start_keys if start_keys is not None else _trigger_successors(automation)
@@ -508,6 +520,8 @@ async def _do_action(
         return await _do_set_lead_field(node, cfg, run_ctx, session=session, settings=settings)
     if node.type == "human_handoff":
         return await _do_human_handoff(node, cfg, run_ctx, session=session)
+    if node.type == "notify_slack":
+        return await _do_notify_slack(node, cfg, run_ctx, session=session, settings=settings)
     if node.type == "send":
         # Unified send: build a ResolvedFlowStep and reuse the same compliance
         # gate the schedulers use, so custom flows honour the 24h window too.
@@ -1002,17 +1016,120 @@ async def _do_human_handoff(
     if session is None or run_ctx.conversation_id is None:
         logger.info("automation.human_handoff.skipped", node=node.node_key, reason="no_context")
         return False
-    await ConversationRepository(session).mark_escalated(
+    reason = str(cfg.get("reason") or "automation_handoff")
+    # Atomic exactly-once takeover (ADR 0017): claim only if the bot still owns the
+    # thread. This makes the node idempotent — a handoff node inside a flow that a
+    # handoff/overdue event already triggered is a no-op instead of re-stamping
+    # handoff_at (which would re-arm the SLA sweep into an infinite loop) and
+    # re-emitting the event. The bot stays paused either way.
+    claimed = await ConversationRepository(session).claim_handoff(
         run_ctx.conversation_id,
-        reason=str(cfg.get("reason") or "automation_handoff"),
+        reason=reason,
     )
     run_ctx.ai_paused = True
+    if not claimed:
+        logger.info(
+            "automation.human_handoff.noop", node=node.node_key, reason="already_handed_off"
+        )
+        return False
+    # Emit `conversation.escalated` so a notify_slack (or any) automation can react
+    # to a canvas-driven handoff too — this path was previously silent, unlike the
+    # AI `escalate_human` handler. Only on a winning claim, so a handoff already in
+    # flight is never double-emitted and can't loop.
+    await AnalyticsRepository(session).emit(
+        tenant_id=run_ctx.tenant_id,
+        merchant_id=run_ctx.merchant_id,
+        event_type="conversation.escalated",
+        subject_type="conversation",
+        subject_id=run_ctx.conversation_id,
+        properties={
+            "lead_id": str(run_ctx.lead_id) if run_ctx.lead_id else None,
+            "reason": reason,
+            "summary": None,
+            "conversation_id": str(run_ctx.conversation_id),
+            "source": "automation_node",
+        },
+    )
     logger.info(
         "automation.human_handoff",
         node=node.node_key,
         conversation_id=str(run_ctx.conversation_id),
     )
     return False
+
+
+async def _do_notify_slack(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    session: AsyncSession | None,
+    settings: Any,
+) -> bool:
+    """Post a Slack notification for this conversation via the merchant's stored
+    incoming webhook.
+
+    All Slack logic lives in the isolated `notifications` lib; this is the ONLY
+    core call site, and the import is kept local so removing Slack is a
+    self-contained revert. Sends no WhatsApp → returns False (like the other
+    non-message actions). Best-effort: a delivery failure is logged, never raised.
+    """
+    if session is None or settings is None:
+        logger.info("automation.notify_slack.skipped", node=node.node_key, reason="no_context")
+        return False
+
+    # Local import: keeps the Slack dependency off the hot conversation path and
+    # confined to this branch (isolation — see libs/notifications).
+    from notifications import (
+        KIND_HANDOFF,
+        KIND_HANDOFF_OVERDUE,
+        SlackNotification,
+        send_slack_notification,
+    )
+
+    integrations = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+    webhook = await integrations.resolve_secret("slack", run_ctx.merchant_id)
+    if webhook is None:
+        logger.info("automation.notify_slack.skipped", node=node.node_key, reason="no_slack")
+        return False
+
+    is_overdue = run_ctx.trigger_type == "conversation_handoff_overdue"
+    reason: str | None = None
+    summary: str | None = None
+    overdue_minutes: int | None = None
+    if run_ctx.conversation_id is not None:
+        conv = await session.get(Conversation, run_ctx.conversation_id)
+        if conv is not None:
+            reason = conv.handoff_reason
+            summary = conv.handoff_summary
+            if is_overdue and conv.handoff_at is not None:
+                delta = datetime.now(tz=UTC) - conv.handoff_at
+                overdue_minutes = max(0, int(delta.total_seconds() / 60))
+
+    custom = str(cfg.get("text")).strip() if cfg.get("text") else None
+    notification = SlackNotification(
+        kind=KIND_HANDOFF_OVERDUE if is_overdue else KIND_HANDOFF,
+        lead_name=run_ctx.name,
+        phone=run_ctx.phone,
+        reason=reason,
+        summary=summary,
+        last_message=run_ctx.last_message,
+        inbox_url=_inbox_url(settings, run_ctx.conversation_id),
+        custom_text=custom,
+        overdue_minutes=overdue_minutes,
+    )
+    delivered = await send_slack_notification(webhook.secret, notification)
+    logger.info("automation.notify_slack", node=node.node_key, delivered=delivered)
+    return False
+
+
+def _inbox_url(settings: Any, conversation_id: UUID | None) -> str | None:
+    """Best-effort deep link to the conversation in the merchant portal, for the
+    Slack "Apri conversazione" button. None when the portal URL isn't configured."""
+    base = getattr(settings, "public_web_merchant_url", None)
+    if not base or conversation_id is None:
+        return None
+    return f"{str(base).rstrip('/')}/conversations/{conversation_id}"
 
 
 # --------------------------------------------------------------------------- #

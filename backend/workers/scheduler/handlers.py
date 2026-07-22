@@ -15,6 +15,7 @@ from workers.scheduler.ghl_hours_sync import sync_ghl_calendar_hours  # re-expor
 from workers.scheduler.appointment_reminder import send_appointment_reminders  # re-export
 from workers.scheduler.appointment_sync import sync_appointments  # re-export
 from workers.scheduler.close_conversations import close_idle_conversations  # re-export
+from workers.scheduler.handoff_sla import handoff_sla_sweep  # re-export
 from workers.scheduler.integration_health import integration_health_check  # re-export
 from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
 from workers.scheduler.no_answer import followup_no_answer  # re-export for ARQ registration
@@ -36,6 +37,7 @@ __all__ = [
     "daily_kpi_rollup",
     "enforce_retention",
     "followup_no_answer",
+    "handoff_sla_sweep",
     "integration_health_check",
     "kb_reindex",
     "objection_extraction",
