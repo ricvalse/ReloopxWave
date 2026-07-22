@@ -1,6 +1,6 @@
 import { createBrowserSupabase, createServerSupabase } from '@reloop/supabase-client';
 import { parsePublicEnv } from '@reloop/config/env';
-import { IMP_COOKIE, decodeJwtPayload, impTokenValid, readCookieBrowser } from './impersonation';
+import { IMP_COOKIE, activeImpersonationToken, readCookieBrowser } from './impersonation';
 
 const publicEnv = () =>
   parsePublicEnv({
@@ -22,11 +22,8 @@ const publicEnv = () =>
  * authorized once by RealtimeAuthGate (`realtime.setAuth`) on the same shared
  * instance these reads use — REST and Realtime stay in sync under impersonation.
  */
-const impAccessTokenIfValid = (): string | undefined => {
-  const token = readCookieBrowser(IMP_COOKIE);
-  if (token && impTokenValid(decodeJwtPayload(token))) return token;
-  return undefined;
-};
+const impAccessTokenIfValid = (): string | undefined =>
+  activeImpersonationToken(readCookieBrowser(IMP_COOKIE)) ?? undefined;
 
 export const getBrowserSupabase = () => {
   const env = publicEnv();

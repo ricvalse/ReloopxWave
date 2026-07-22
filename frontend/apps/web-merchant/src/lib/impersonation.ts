@@ -78,6 +78,29 @@ export function impTokenValid(claims: ImpClaims | null): claims is ImpClaims {
   return claims.exp * 1000 > Date.now();
 }
 
+/**
+ * Single source of truth for "does a valid impersonation cookie beat a real
+ * session right now?" — every consumer that has to pick one of the two must
+ * call this instead of re-deriving the check, so they can't silently drift
+ * into disagreeing about which one wins.
+ *
+ * Impersonation is an explicit, short-lived admin action, so a valid cookie
+ * always wins over a real (possibly stale/lingering) Supabase session in the
+ * same browser profile — e.g. an agency admin who also has a real merchant
+ * login sitting in that browser from earlier testing. Consumers: `lib/api.ts`
+ * (backend Bearer), `lib/supabase.ts` (direct-to-Supabase Bearer),
+ * `server/require-session.ts` (server-rendered merchant context — the
+ * `merchant_id`/`tenant_id` fed into `MerchantProvider`), `realtime-auth-gate.tsx`
+ * (websocket auth). Before this helper existed, `require-session.ts` checked
+ * the real session *first* while the other three checked impersonation first —
+ * a stale real session in the browser made the server-rendered merchant_id
+ * disagree with the client's Bearer, so every API call 403'd as
+ * `cross_merchant_access`.
+ */
+export function activeImpersonationToken(cookieValue: string | null): string | null {
+  return cookieValue && impTokenValid(decodeJwtPayload(cookieValue)) ? cookieValue : null;
+}
+
 /** Shape an impersonation token's claims into the common MerchantSession. */
 export function impSessionFromClaims(claims: ImpClaims): MerchantSession {
   return {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { getBrowserSupabase } from '@/lib/supabase';
 import {
   IMP_COOKIE,
   IMP_META_COOKIE,
@@ -52,8 +53,19 @@ export default function ImpersonatePage() {
 
     const secure = window.location.protocol === 'https:' ? '; secure' : '';
     const base = `path=/; max-age=${maxAge}; samesite=lax${secure}`;
+    // Set the impersonation cookies BEFORE touching supabase-js: getBrowserSupabase()
+    // caches a singleton on first call (see packages/supabase-client — required for
+    // Realtime), and it bakes the impersonation Bearer in as a static header at
+    // creation time. Calling it any earlier would freeze that header as empty.
     document.cookie = `${IMP_COOKIE}=${encodeURIComponent(token)}; ${base}`;
     document.cookie = `${IMP_META_COOKIE}=${encodeURIComponent(JSON.stringify(meta))}; ${base}`;
+
+    // A real merchant login can be sitting in this same browser profile from
+    // earlier testing. requireSession() and every client-side consumer now
+    // agree that impersonation wins when both are present (activeImpersonationToken),
+    // but a stale real session is still bad state to leave around — drop it
+    // (local-only, no network round trip) so the two can't coexist at all.
+    void getBrowserSupabase().auth.signOut({ scope: 'local' });
 
     router.replace('/dashboard');
   }, [router]);

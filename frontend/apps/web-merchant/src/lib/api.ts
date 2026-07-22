@@ -1,6 +1,6 @@
 import { createReloopClient } from '@reloop/api-client';
 import { getBrowserSupabase } from './supabase';
-import { IMP_COOKIE, decodeJwtPayload, impTokenValid, readCookieBrowser } from './impersonation';
+import { IMP_COOKIE, activeImpersonationToken, readCookieBrowser } from './impersonation';
 
 export const getApiClient = () => {
   const supabase = getBrowserSupabase();
@@ -10,10 +10,8 @@ export const getApiClient = () => {
       // While impersonating, the backend Bearer is the merchant-scoped
       // impersonation token (there is no supabase-js session). Prefer it when a
       // valid cookie is present; otherwise fall back to the real session.
-      const imp = readCookieBrowser(IMP_COOKIE);
-      if (imp && impTokenValid(decodeJwtPayload(imp))) {
-        return imp;
-      }
+      const imp = activeImpersonationToken(readCookieBrowser(IMP_COOKIE));
+      if (imp) return imp;
       const { data } = await supabase.auth.getSession();
       return data.session?.access_token ?? null;
     },

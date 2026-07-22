@@ -4,8 +4,8 @@ import { useEffect } from 'react';
 import { getBrowserSupabase } from '@/lib/supabase';
 import {
   IMP_COOKIE,
+  activeImpersonationToken,
   decodeJwtPayload,
-  impTokenValid,
   readCookieBrowser,
 } from '@/lib/impersonation';
 
@@ -32,9 +32,9 @@ const REASSERT_MS = 10_000;
  */
 export function RealtimeAuthGate() {
   useEffect(() => {
-    const token = readCookieBrowser(IMP_COOKIE);
-    const claims = token ? decodeJwtPayload(token) : null;
-    if (!token || !impTokenValid(claims)) return; // not impersonating → no-op
+    const token = activeImpersonationToken(readCookieBrowser(IMP_COOKIE));
+    if (!token) return; // not impersonating → no-op
+    const claims = decodeJwtPayload(token)!;
 
     const realtime = getBrowserSupabase().realtime;
     void realtime.setAuth(token);
