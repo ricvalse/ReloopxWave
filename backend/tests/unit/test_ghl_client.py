@@ -244,3 +244,28 @@ async def test_get_free_slots_epoch_ms_and_flatten() -> None:
         "2026-07-15T17:00:00+02:00",
         "2026-07-16T09:00:00+02:00",
     ]
+
+
+async def test_get_free_slots_passes_merchant_timezone() -> None:
+    """Fix fuso: senza `timezone` GHL risponde nel fuso della LOCATION (spesso il
+    default Europe/London) → slot mostrati sbagliati di un'ora e booking che non
+    matcha mai uno slot offerto (400 "slot no longer available")."""
+    resp = FakeResp(200, {"2026-07-23": {"slots": ["2026-07-23T09:00:00+02:00"]}})
+    http = FakeHttp([resp], FakeResp(200, {}))
+    await _client(http).get_free_slots(
+        "CAL-1",
+        start_iso="2026-07-23T00:00:00+00:00",
+        end_iso="2026-07-24T00:00:00+00:00",
+        timezone="Europe/Rome",
+    )
+    path = http.requests[0][1]
+    assert "timezone=Europe%2FRome" in path
+
+
+async def test_get_free_slots_without_timezone_omits_param() -> None:
+    resp = FakeResp(200, {})
+    http = FakeHttp([resp], FakeResp(200, {}))
+    await _client(http).get_free_slots(
+        "CAL-1", start_iso="2026-07-23T00:00:00+00:00", end_iso="2026-07-24T00:00:00+00:00"
+    )
+    assert "timezone=" not in http.requests[0][1]

@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -233,18 +234,25 @@ class GHLClient:
     # ---- Calendar (UC-02) ----
 
     async def get_free_slots(
-        self, calendar_id: str, *, start_iso: str, end_iso: str
+        self, calendar_id: str, *, start_iso: str, end_iso: str, timezone: str | None = None
     ) -> list[dict[str, Any]]:
         # GHL wants the window as epoch-MILLISECOND integers (ISO strings are
         # rejected) and returns an availability map keyed by date
         # (YYYY-MM-DD → {"slots": [ISO, ...]}). Normalize to a flat list of
         # {"startTime": ISO} so callers don't depend on the wire shape.
+        #
+        # `timezone` (IANA name) pins the OFFSET of the returned slot ISOs.
+        # Without it GHL answers in the LOCATION's configured timezone — which a
+        # merchant can easily leave on the GHL default (Europe/London): the slots
+        # then display one hour off AND a booking built in the merchant timezone
+        # never matches an offered instant → 400 "slot no longer available" on
+        # every attempt. Always pass the merchant's schedule.timezone.
         start_ms = _iso_to_epoch_ms(start_iso)
         end_ms = _iso_to_epoch_ms(end_iso)
-        resp = await self._request(
-            "GET",
-            f"/calendars/{calendar_id}/free-slots?startDate={start_ms}&endDate={end_ms}",
-        )
+        path = f"/calendars/{calendar_id}/free-slots?startDate={start_ms}&endDate={end_ms}"
+        if timezone:
+            path += f"&timezone={quote(timezone, safe='')}"
+        resp = await self._request("GET", path)
         return _flatten_slots(resp)
 
     async def create_booking(

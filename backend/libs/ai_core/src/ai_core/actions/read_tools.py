@@ -115,6 +115,7 @@ class GhlReadToolExecutor:
             location_id=location_id,
             calendar_id=str(calendar_id),
             tz=tz,
+            tz_name=str(tz_name),
             lookahead_days=int(lookahead) if lookahead else 14,
             preferred_iso=preferred_iso,
         )
@@ -135,6 +136,7 @@ class GhlReadToolExecutor:
         location_id: str | None,
         calendar_id: str,
         tz: tzinfo,
+        tz_name: str,
         lookahead_days: int,
         preferred_iso: str | None,
     ) -> list[str]:
@@ -171,7 +173,7 @@ class GhlReadToolExecutor:
                 start = _next_business_hour(tz)
                 end = start + timedelta(days=lookahead_days)
             slots = await client.get_free_slots(
-                calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat()
+                calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat(), timezone=tz_name
             )
             raw = [s.get("startTime") or s.get("start") for s in slots if s]
             return [s for s in raw if s]

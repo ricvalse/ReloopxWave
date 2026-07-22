@@ -813,6 +813,7 @@ class BookSlotHandler:
                     calendar_id,
                     start_iso=window_start.isoformat(),
                     end_iso=window_end.isoformat(),
+                    timezone=tz_name,
                 )
                 raw_suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
                 suggestions: list[str] = [s for s in raw_suggestions if s]
@@ -1016,7 +1017,7 @@ class ProposeSlotsHandler:
             start = _next_business_hour(tz)
             end = start + timedelta(days=lookahead_days)
             slots = await client.get_free_slots(
-                calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat()
+                calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat(), timezone=tz_name
             )
             raw = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
             return [s for s in raw if s]
