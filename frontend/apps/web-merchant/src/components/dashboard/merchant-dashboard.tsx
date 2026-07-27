@@ -20,6 +20,15 @@ type Kpis = {
   score_distribution: { bucket: number; count: number }[];
 };
 
+/** Metrica event-based configurabile (ADR 0021) — definita nel config cascade. */
+type Metric = {
+  id: string;
+  label: string;
+  event_type: string;
+  window_days: number;
+  value: number;
+};
+
 const PERIODS = [
   { value: 7, label: 'Ultimi 7 giorni' },
   { value: 30, label: 'Ultimi 30 giorni' },
@@ -89,6 +98,23 @@ export function MerchantDashboard() {
     refetchOnWindowFocus: true,
   });
 
+  // ADR 0021 — le metriche mostrate NON sono cablate qui: arrivano dal config
+  // cascade (`dashboard.metrics`), già risolte e conteggiate dal backend.
+  const metricsQuery = useQuery({
+    queryKey: ['merchant-metrics', merchantId, sinceDays],
+    enabled: !!merchantId,
+    queryFn: async (): Promise<Metric[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/analytics/metrics', {
+        params: { query: { since_days: sinceDays } },
+      });
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return (data?.metrics ?? []) as Metric[];
+    },
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
+
   // UC-11 — Supabase Realtime: invalidate on new analytics_events for this merchant.
   useEffect(() => {
     if (!merchantId) return;
@@ -105,6 +131,7 @@ export function MerchantDashboard() {
         } as never,
         () => {
           queryClient.invalidateQueries({ queryKey: ['merchant-kpis', merchantId] });
+          queryClient.invalidateQueries({ queryKey: ['merchant-metrics', merchantId] });
         },
       )
       .subscribe();
@@ -173,6 +200,38 @@ export function MerchantDashboard() {
           value={k ? pct(k.booking_rate) : '—'}
         />
       </div>
+
+      {/* ADR 0021 — griglia guidata dalla configurazione, non dal codice:
+          aggiungere/togliere una metrica non richiede una modifica al FE. */}
+      {metricsQuery.isLoading || (metricsQuery.data ?? []).length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Attività</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Conteggi degli eventi negli ultimi {sinceDays} giorni.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3 lg:grid-cols-5">
+              {metricsQuery.isLoading
+                ? Array.from({ length: 5 }).map((_, i) => (
+                    <KPICard key={i} label="" value="—" loading />
+                  ))
+                : (metricsQuery.data ?? []).map((m) => (
+                    <KPICard
+                      key={m.id}
+                      label={
+                        m.window_days === sinceDays
+                          ? m.label
+                          : `${m.label} (${m.window_days}g)`
+                      }
+                      value={m.value}
+                    />
+                  ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>

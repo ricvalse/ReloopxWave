@@ -10,7 +10,13 @@ from config_resolver.resolver import (
     resolve,
     set_shared_redis,
 )
-from config_resolver.schema import SYSTEM_DEFAULTS, BotConfigSchema, ConfigKey
+from config_resolver.schema import (
+    SYSTEM_DEFAULTS,
+    BotConfigSchema,
+    ConfigKey,
+    DashboardConfig,
+    MetricDefinitionSchema,
+)
 
 __all__ = [
     "SUGGESTED_RULES",
@@ -19,6 +25,8 @@ __all__ = [
     "BotConfigSchema",
     "ConfigKey",
     "ConfigResolver",
+    "DashboardConfig",
+    "MetricDefinitionSchema",
     "SuggestedRules",
     "TonePreset",
     "get_shared_redis",

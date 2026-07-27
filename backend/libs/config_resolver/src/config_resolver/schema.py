@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _StrictModel(BaseModel):
@@ -193,6 +193,29 @@ class ConfigKey(StrEnum):
     CONVERSATION_PLAYBOOK_DIRECTIVES = "conversation.playbook.directives"
     CONVERSATION_PLAYBOOK_ACTIONS_ENABLED = "conversation.playbook.actions.enabled"
 
+    # Dashboard configurabile (ADR 0021) — QUALI metriche event-based mostra la
+    # dashboard di questo merchant. Risolta come doc atomico attraverso la
+    # cascata: il merchant SOSTITUISCE la lista d'agenzia (replace per-leaf, non
+    # merge). `event_type` deve appartenere al catalogo `db.analytics_events`.
+    DASHBOARD_METRICS = "dashboard.metrics"
+
+
+# Dashboard di default (ADR 0021): riproduce le metriche che la dashboard
+# mostrava hardcoded, così un merchant senza override vede esattamente quello di
+# prima. `id` è la chiave stabile usata dal FE; `event_type` deve appartenere al
+# catalogo (validato da `MetricDefinitionSchema`).
+_DEFAULT_DASHBOARD_METRICS: list[dict[str, Any]] = [
+    {"id": "bookings_created", "label": "Appuntamenti presi", "event_type": "booking.created"},
+    {"id": "messages_received", "label": "Messaggi ricevuti", "event_type": "message.received"},
+    {"id": "messages_replied", "label": "Risposte inviate", "event_type": "message.replied"},
+    {"id": "pipeline_moved", "label": "Spostamenti in pipeline", "event_type": "pipeline.moved"},
+    {
+        "id": "reminders_sent",
+        "label": "Promemoria inviati",
+        "event_type": "appointment_reminder.sent",
+    },
+]
+
 
 # Default objection vocabulary (UC-13); merchants can override per-tenant.
 _DEFAULT_OBJECTION_CATEGORIES = [
@@ -302,6 +325,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.CONVERSATION_PLAYBOOK_GOAL: None,
     ConfigKey.CONVERSATION_PLAYBOOK_DIRECTIVES: [],
     ConfigKey.CONVERSATION_PLAYBOOK_ACTIONS_ENABLED: None,
+    ConfigKey.DASHBOARD_METRICS: _DEFAULT_DASHBOARD_METRICS,
 }
 
 
@@ -326,6 +350,7 @@ class BotConfigSchema(_StrictModel):
     objections: ObjectionsConfig = Field(default_factory=lambda: ObjectionsConfig())
     conversation: ConversationConfig = Field(default_factory=lambda: ConversationConfig())
     ghl: GHLConfig = Field(default_factory=lambda: GHLConfig())
+    dashboard: DashboardConfig = Field(default_factory=lambda: DashboardConfig())
 
 
 class NoAnswerConfig(_StrictModel):
@@ -509,6 +534,63 @@ class ConversationConfig(_StrictModel):
     idle_close_minutes: int = Field(120, ge=15, le=10080)
     # Conversation playbook (ADR 0018) — resolved as one atomic doc.
     playbook: PlaybookConfig = Field(default_factory=lambda: PlaybookConfig())
+
+
+class MetricDefinitionSchema(_StrictModel):
+    """Una metrica della dashboard configurabile (ADR 0021).
+
+    V1: conteggio di un `event_type` su una finestra temporale. `event_type` è
+    validato contro il catalogo tipato (`db.analytics_events.EventType`), così
+    una metrica non può puntare a un evento che il sistema non emette mai — è
+    esattamente il modo in cui è nato il bug `reminder.sent` (sempre 0).
+    """
+
+    # Chiave stabile usata dal FE (e per riconoscere una metrica fra i salvataggi).
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=80)
+    event_type: str = Field(min_length=1, max_length=64)
+    # None = usa la finestra globale della dashboard (il `since_days` della query).
+    window_days: int | None = Field(default=None, ge=1, le=365)
+    # V1: solo conteggio eventi. I rate hanno denominatori eterogenei non
+    # desumibili dai soli analytics_events (vedi ADR 0021).
+    aggregation: Literal["count"] = "count"
+
+    @field_validator("event_type")
+    @classmethod
+    def _event_type_must_be_known(cls, v: str) -> str:
+        # Import locale: tiene il modulo importabile anche se `db` non è
+        # installato (es. tooling che carica solo lo schema).
+        from db.analytics_events import EventType
+
+        valid = {e.value for e in EventType}
+        if v not in valid:
+            raise ValueError(
+                f"event_type sconosciuto: {v!r}. Deve appartenere al catalogo eventi "
+                f"(GET /analytics/event-catalog)."
+            )
+        return v
+
+
+class DashboardConfig(_StrictModel):
+    """Quali metriche mostra la dashboard di questo merchant (ADR 0021).
+
+    Risolta come doc atomico dalla cascata: una lista impostata a livello
+    merchant SOSTITUISCE quella d'agenzia (replace per-leaf, non merge).
+    """
+
+    metrics: list[MetricDefinitionSchema] = Field(
+        default_factory=lambda: [MetricDefinitionSchema(**m) for m in _DEFAULT_DASHBOARD_METRICS],
+        max_length=24,
+    )
+
+    @field_validator("metrics")
+    @classmethod
+    def _ids_must_be_unique(cls, v: list[MetricDefinitionSchema]) -> list[MetricDefinitionSchema]:
+        ids = [m.id for m in v]
+        if len(ids) != len(set(ids)):
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(f"id metrica duplicati: {', '.join(dupes)}")
+        return v
 
 
 class GHLConfig(_StrictModel):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -8,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.analytics_events import EventType
 from db.models import AnalyticsEvent, Lead, Merchant
 
 
@@ -103,10 +105,12 @@ class AnalyticsRepository:
             .tuples()
             .all()
         )
-        messages_received = int(counts.get("message.received", 0))
-        messages_replied = int(counts.get("message.replied", 0))
-        bookings_created = int(counts.get("booking.created", 0))
-        reminders_sent = int(counts.get("reminder.sent", 0))
+        messages_received = int(counts.get(EventType.MESSAGE_RECEIVED, 0))
+        messages_replied = int(counts.get(EventType.MESSAGE_REPLIED, 0))
+        bookings_created = int(counts.get(EventType.BOOKING_CREATED, 0))
+        # Bug fix (ADR 0021): lo scheduler emette `appointment_reminder.sent`,
+        # non `reminder.sent` — la vecchia stringa dava sempre 0.
+        reminders_sent = int(counts.get(EventType.APPOINTMENT_REMINDER_SENT, 0))
 
         response_rate = (messages_replied / messages_received) if messages_received else 0.0
         booking_rate = (bookings_created / leads_total) if leads_total else 0.0
@@ -121,6 +125,36 @@ class AnalyticsRepository:
             booking_rate=booking_rate,
             reminders_sent=reminders_sent,
         )
+
+    async def event_counts(
+        self,
+        *,
+        merchant_id: UUID,
+        since: datetime,
+        event_types: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Conteggio eventi per `event_type` in una finestra (ADR 0021).
+
+        È la stessa `GROUP BY event_type` usata da `merchant_kpis`, esposta in
+        forma generica per la dashboard configurabile: il chiamante decide
+        QUALI event_type mappare invece di avere i campi cablati nel DTO.
+        `event_types=None` conta tutto (utile per un'anteprima del catalogo).
+        """
+        stmt = (
+            select(AnalyticsEvent.event_type, func.count(AnalyticsEvent.id))
+            .where(
+                AnalyticsEvent.merchant_id == merchant_id,
+                AnalyticsEvent.occurred_at >= since,
+            )
+            .group_by(AnalyticsEvent.event_type)
+        )
+        if event_types is not None:
+            wanted = list(event_types)
+            if not wanted:
+                return {}
+            stmt = stmt.where(AnalyticsEvent.event_type.in_(wanted))
+        rows = (await self._session.execute(stmt)).tuples().all()
+        return {str(event_type): int(count) for event_type, count in rows}
 
     async def list_campaigns(self, *, merchant_id: UUID) -> list[str]:
         """Distinct campaigns seen for a merchant — populates the dashboard filter."""
@@ -191,9 +225,10 @@ class AnalyticsRepository:
         return {
             "leads_total": leads_total,
             "active_merchants": active_merchants,
-            "messages_received": int(counts.get("message.received", 0)),
-            "bookings_created": int(counts.get("booking.created", 0)),
-            "reminders_sent": int(counts.get("reminder.sent", 0)),
+            "messages_received": int(counts.get(EventType.MESSAGE_RECEIVED, 0)),
+            "bookings_created": int(counts.get(EventType.BOOKING_CREATED, 0)),
+            # Bug fix (ADR 0021): vedi merchant_kpis — era `reminder.sent` (sempre 0).
+            "reminders_sent": int(counts.get(EventType.APPOINTMENT_REMINDER_SENT, 0)),
         }
 
     async def merchants_ranking(
@@ -220,7 +255,7 @@ class AnalyticsRepository:
             )
             .where(
                 AnalyticsEvent.tenant_id == tenant_id,
-                AnalyticsEvent.event_type == "booking.created",
+                AnalyticsEvent.event_type == EventType.BOOKING_CREATED,
                 AnalyticsEvent.occurred_at >= since,
             )
             .group_by(AnalyticsEvent.merchant_id)

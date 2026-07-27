@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,8 +14,13 @@ from sqlalchemy import select
 
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
-from config_resolver import ConfigKey, ConfigResolver
-from db import AnalyticsRepository, MerchantRepository
+from config_resolver import (
+    ConfigKey,
+    ConfigResolver,
+    DashboardConfig,
+    MetricDefinitionSchema,
+)
+from db import AnalyticsRepository, MerchantRepository, event_catalog
 from db.models import AnalyticsEvent, Objection
 from integrations import SupabaseStorage
 from shared import (
@@ -218,6 +224,144 @@ async def download_export(export_id: UUID, ctx: CurrentContext) -> ExportDownloa
             export_id=str(export_id),
         ) from None
     return ExportDownload(export_id=export_id, signed_url=signed, expires_in_seconds=expires)
+
+
+# ---- Catalogo eventi (vocabolario per la dashboard configurabile) ---------
+
+
+class EventCatalogEntryOut(BaseModel):
+    event_type: str
+    label: str
+    description: str
+    category: str
+    subject_type: str | None
+    selectable: bool
+
+
+@router.get("/event-catalog", response_model=list[EventCatalogEntryOut])
+async def event_catalog_list(
+    ctx: CurrentContext,
+    selectable_only: bool = Query(
+        default=False, description="Escludi eventi operativi/sintetici (rollup, log di sistema)"
+    ),
+) -> list[EventCatalogEntryOut]:
+    """Catalogo tipato degli `event_type` che il sistema sa emettere.
+
+    Single source of truth (ADR 0021) che popola il metric-builder della
+    dashboard configurabile: il FE mostra `label`/`description` e usa
+    `event_type` come chiave della metrica. `selectable_only=true` restituisce
+    solo gli eventi di business (esclude rollup interni e log di sistema).
+    """
+    return [
+        EventCatalogEntryOut(
+            event_type=d.event_type.value,
+            label=d.label,
+            description=d.description,
+            category=d.category.value,
+            subject_type=d.subject_type,
+            selectable=d.selectable,
+        )
+        for d in event_catalog(selectable_only=selectable_only)
+    ]
+
+
+# ---- Dashboard configurabile (metriche event-based) -----------------------
+
+
+class MetricValueOut(BaseModel):
+    id: str
+    label: str
+    event_type: str
+    window_days: int
+    value: int
+
+
+class MetricsOut(BaseModel):
+    since_days: int
+    metrics: list[MetricValueOut]
+
+
+def group_metrics_by_window(
+    definitions: Sequence[MetricDefinitionSchema], *, since_days: int
+) -> dict[int, list[MetricDefinitionSchema]]:
+    """Raggruppa le metriche per finestra effettiva → una query per finestra.
+
+    `window_days=None` eredita la finestra globale della dashboard, quindi nel
+    caso comune tutte le metriche cadono in un solo gruppo (una sola query).
+    """
+    by_window: dict[int, list[MetricDefinitionSchema]] = {}
+    for d in definitions:
+        by_window.setdefault(d.window_days or since_days, []).append(d)
+    return by_window
+
+
+def assemble_metric_values(
+    definitions: Sequence[MetricDefinitionSchema],
+    counts_by_window: dict[int, dict[str, int]],
+    *,
+    since_days: int,
+) -> list[MetricValueOut]:
+    """Mappa i conteggi sulle definizioni, preservando l'ordine configurato.
+
+    Un event_type senza righe nella finestra vale 0 (non sparisce dalla
+    dashboard): una metrica a zero è un'informazione, un buco è un bug.
+    """
+    values: list[MetricValueOut] = []
+    for d in definitions:
+        window = d.window_days or since_days
+        counts = counts_by_window.get(window, {})
+        values.append(
+            MetricValueOut(
+                id=d.id,
+                label=d.label,
+                event_type=d.event_type,
+                window_days=window,
+                value=int(counts.get(d.event_type, 0)),
+            )
+        )
+    return values
+
+
+@router.get("/metrics", response_model=MetricsOut)
+async def merchant_metrics(
+    ctx: CurrentContext,
+    session: DBSession,
+    since_days: int = Query(30, ge=1, le=365),
+    merchant_id: UUID | None = _MERCHANT_FILTER,
+) -> MetricsOut:
+    """Calcola le metriche configurate per il merchant (ADR 0021).
+
+    Le definizioni vengono dal config cascade (`dashboard.metrics`): il merchant
+    eredita quelle d'agenzia finché non le sovrascrive. Ogni metrica è un
+    conteggio di `event_type` sulla finestra globale `since_days`, salvo che la
+    definizione porti un `window_days` proprio.
+    """
+    target = _resolve_kpi_merchant(ctx, merchant_id)
+
+    if ctx.role.startswith("agency"):
+        merchant = await MerchantRepository(session).get(target)
+        if merchant is None or merchant.tenant_id != ctx.tenant_id:
+            raise NotFoundError("Merchant not found", merchant_id=str(target))
+
+    raw = await ConfigResolver(session).resolve(ConfigKey.DASHBOARD_METRICS, merchant_id=target)
+    definitions = DashboardConfig(metrics=raw).metrics if raw else DashboardConfig().metrics
+
+    repo = AnalyticsRepository(session)
+    now = datetime.now(tz=UTC)
+
+    # Una query per finestra distinta (nel caso comune: una sola).
+    counts_by_window: dict[int, dict[str, int]] = {}
+    for window, defs in group_metrics_by_window(definitions, since_days=since_days).items():
+        counts_by_window[window] = await repo.event_counts(
+            merchant_id=target,
+            since=now - timedelta(days=window),
+            event_types=[d.event_type for d in defs],
+        )
+
+    return MetricsOut(
+        since_days=since_days,
+        metrics=assemble_metric_values(definitions, counts_by_window, since_days=since_days),
+    )
 
 
 # ---- Activity feed (timeline per lead) ------------------------------------

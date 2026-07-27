@@ -1,3 +1,10 @@
+from db.analytics_events import (
+    EVENT_CATALOG,
+    EventCategory,
+    EventType,
+    EventTypeDef,
+    event_catalog,
+)
 from db.repositories import (
     FLOW_FIRST_CONTACT,
     ABRepository,
@@ -50,6 +57,11 @@ from db.session import (
 )
 
 __all__ = [
+    "EVENT_CATALOG",
+    "EventCategory",
+    "EventType",
+    "EventTypeDef",
+    "event_catalog",
     "FLOW_FIRST_CONTACT",
     "ABRepository",
     "AnalyticsRepository",
