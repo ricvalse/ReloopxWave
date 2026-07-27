@@ -1621,6 +1621,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/slack/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Slack Oauth Start
+         * @description Mint a signed state (merchant_id) and return the Slack authorize URL.
+         *
+         *     The merchant is logged in, so the state binds their merchant_id. Slack then
+         *     asks them which channel to post to and hands back a ready webhook — no
+         *     copy-paste (ADR 0020).
+         */
+        get: operations["slack_oauth_start_integrations_slack_oauth_start_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/slack/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Slack Oauth Callback
+         * @description Public callback — no JWT (it's a browser redirect from Slack). The signed
+         *     `state` carries the merchant_id. We exchange the code, store the webhook the
+         *     response hands us, seed the zero-config handoff automation, and bounce back to
+         *     the merchant portal.
+         */
+        get: operations["slack_oauth_callback_integrations_slack_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/status": {
         parameters: {
             query?: never;
@@ -7416,6 +7463,70 @@ export interface operations {
             };
         };
     };
+    slack_oauth_start_integrations_slack_oauth_start_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthStartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    slack_oauth_callback_integrations_slack_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     integration_status_integrations_status_get: {
         parameters: {
             query?: {
@@ -8267,6 +8378,8 @@ export enum ApiPaths {
     whatsapp_disconnect_integrations_whatsapp_disconnect_post = "/integrations/whatsapp/disconnect",
     slack_connect_integrations_slack_post = "/integrations/slack",
     slack_disconnect_integrations_slack_disconnect_post = "/integrations/slack/disconnect",
+    slack_oauth_start_integrations_slack_oauth_start_get = "/integrations/slack/oauth/start",
+    slack_oauth_callback_integrations_slack_oauth_callback_get = "/integrations/slack/oauth/callback",
     integration_status_integrations_status_get = "/integrations/status",
     ghl_sync_log_integrations_ghl_sync_log_get = "/integrations/ghl/sync-log",
     list_templates_whatsapp_templates_get = "/whatsapp-templates",

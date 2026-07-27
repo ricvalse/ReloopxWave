@@ -21,6 +21,14 @@ from notifications.models import (
     KIND_HANDOFF_OVERDUE,
     SlackNotification,
 )
+from notifications.oauth import (
+    SlackOAuthResult,
+    VerifiedSlackState,
+    build_slack_authorize_url,
+    exchange_slack_code,
+    sign_slack_state,
+    verify_slack_state,
+)
 from notifications.slack_client import SlackClient, SlackDeliveryError
 
 __all__ = [
@@ -29,6 +37,12 @@ __all__ = [
     "SlackClient",
     "SlackDeliveryError",
     "SlackNotification",
+    "SlackOAuthResult",
+    "VerifiedSlackState",
+    "build_slack_authorize_url",
     "build_slack_payload",
+    "exchange_slack_code",
     "send_slack_notification",
+    "sign_slack_state",
+    "verify_slack_state",
 ]

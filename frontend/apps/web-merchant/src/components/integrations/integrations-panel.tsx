@@ -18,6 +18,12 @@ export function IntegrationsPanel() {
   const providerJustConnected = searchParams.get('provider');
   const connectionResult = searchParams.get('status');
 
+  // Banner state is captured once from the URL, NOT read live from searchParams:
+  // clearing the params below calls replaceState, which in the App Router
+  // re-syncs useSearchParams and would otherwise unmount the banner after a frame
+  // (Slack is a full-page redirect, so the banner lands in the main window).
+  const [banner, setBanner] = useState<{ provider: string; status: string } | null>(null);
+
   const status = useQuery({
     queryKey: ['integrations', 'status'],
     queryFn: async (): Promise<Status> => {
@@ -28,21 +34,20 @@ export function IntegrationsPanel() {
     },
   });
 
-  // The router's `/onboard/callback` redirects the browser back here with
-  // `?provider=whatsapp&status=connected` after persisting the channel via
-  // `/internal/whatsapp-connected`. Just refresh the status query and clear
-  // the params so a reload doesn't re-show the banner.
+  // An OAuth/onboarding round-trip (WhatsApp `/onboard/callback`, Slack
+  // `/slack/oauth/callback`) redirects the browser back here with
+  // `?provider=<p>&status=connected|error`. Capture it for the banner, refresh
+  // the status query, then clear the params so a reload doesn't re-show it.
   useEffect(() => {
-    if (
-      providerJustConnected === 'whatsapp' &&
-      connectionResult === 'connected'
-    ) {
+    if (!providerJustConnected || !connectionResult) return;
+    setBanner({ provider: providerJustConnected, status: connectionResult });
+    if (connectionResult === 'connected') {
       void queryClient.invalidateQueries({ queryKey: ['integrations', 'status'] });
-      const url = new URL(window.location.href);
-      url.searchParams.delete('provider');
-      url.searchParams.delete('status');
-      window.history.replaceState({}, '', url.pathname + url.search);
     }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('provider');
+    url.searchParams.delete('status');
+    window.history.replaceState({}, '', url.pathname + url.search);
   }, [providerJustConnected, connectionResult, queryClient]);
 
   if (status.isLoading) {
@@ -69,9 +74,13 @@ export function IntegrationsPanel() {
 
   return (
     <div className="space-y-4 p-6">
-      {providerJustConnected && connectionResult === 'connected' ? (
+      {banner?.status === 'connected' ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          {providerJustConnected === 'ghl' ? 'GHL' : 'WhatsApp'} connesso correttamente.
+          {providerLabel(banner.provider)} connesso correttamente.
+        </div>
+      ) : banner?.provider === 'slack' && banner?.status === 'error' ? (
+        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+          Collegamento Slack non riuscito. Riprova.
         </div>
       ) : null}
 
@@ -188,8 +197,29 @@ function SlackCard({
   onChanged: () => void;
 }) {
   const connected = connection?.connected ?? false;
+  const channel =
+    typeof connection?.meta?.channel === 'string' ? connection.meta.channel : null;
   const [webhook, setWebhook] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  // "Add to Slack": fetch the authorize URL and hand the browser to Slack. Slack
+  // asks which channel to post to and returns a ready webhook — no copy-paste.
+  const startOAuth = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      const api = getApiClient();
+      const { data, error: err } = await api.GET('/integrations/slack/oauth/start');
+      if (err || !data) {
+        throw new Error(typeof err === 'string' ? err : "Impossibile avviare l'installazione");
+      }
+      window.location.href = data.authorize_url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Errore avvio installazione');
+      setStarting(false);
+    }
+  };
 
   const save = useMutation({
     mutationFn: async (url: string) => {
@@ -229,9 +259,8 @@ function SlackCard({
         <div>
           <CardTitle>Slack</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            Ricevi un avviso su Slack quando una conversazione passa a un operatore. Crea un
-            «Incoming Webhook» su Slack, incolla qui l&apos;URL, poi aggiungi il nodo «Notifica
-            Slack» alle tue automazioni.
+            Ricevi un avviso su Slack quando una conversazione passa a un operatore. Un click,
+            scegli il canale, e la notifica dell&apos;handoff è già attiva.
           </p>
         </div>
         <StatusPill connected={connected} label={connection?.status ?? 'disconnected'} />
@@ -239,44 +268,62 @@ function SlackCard({
       <CardContent className="space-y-3">
         {connected ? (
           <div className="flex items-center justify-between gap-4 text-sm text-muted-foreground">
-            <span>Webhook configurato.</span>
+            <span>Connesso{channel ? ` · ${channel}` : ''}.</span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={starting} onClick={startOAuth}>
+                Riconnetti
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={disconnect.isPending}
+                onClick={() => disconnect.mutate()}
+              >
+                Scollega
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" disabled={starting} onClick={startOAuth}>
+            {starting ? 'Reindirizzamento…' : 'Aggiungi a Slack'}
+          </Button>
+        )}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer select-none">
+            Avanzato: incolla un webhook manualmente
+          </summary>
+          <div className="mt-2 flex items-start gap-2">
+            <Input
+              type="url"
+              placeholder="https://hooks.slack.com/services/…"
+              value={webhook}
+              onChange={(e) => {
+                setWebhook(e.target.value);
+                setError(null);
+              }}
+            />
             <Button
-              variant="outline"
               size="sm"
-              disabled={disconnect.isPending}
-              onClick={() => disconnect.mutate()}
+              disabled={!canSave || save.isPending}
+              onClick={() => save.mutate(webhook.trim())}
             >
-              Scollega
+              Salva
             </Button>
           </div>
-        ) : null}
-        <div className="flex items-start gap-2">
-          <Input
-            type="url"
-            placeholder="https://hooks.slack.com/services/…"
-            value={webhook}
-            onChange={(e) => {
-              setWebhook(e.target.value);
-              setError(null);
-            }}
-          />
-          <Button
-            size="sm"
-            disabled={!canSave || save.isPending}
-            onClick={() => save.mutate(webhook.trim())}
-          >
-            {connected ? 'Aggiorna' : 'Salva'}
-          </Button>
-        </div>
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-        {webhook && !canSave ? (
-          <p className="text-xs text-muted-foreground">
-            L&apos;URL deve iniziare con https://hooks.slack.com/
-          </p>
-        ) : null}
+          {webhook && !canSave ? (
+            <p className="mt-1">L&apos;URL deve iniziare con https://hooks.slack.com/</p>
+          ) : null}
+        </details>
       </CardContent>
     </Card>
   );
+}
+
+function providerLabel(provider: string): string {
+  if (provider === 'ghl') return 'GHL';
+  if (provider === 'slack') return 'Slack';
+  return 'WhatsApp';
 }
 
 function StatusPill({ connected, label }: { connected: boolean; label: string }) {

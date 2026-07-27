@@ -17,6 +17,7 @@ dependencies = [
     "posthog>=3.5.0",
     "ai_core",
     "integrations",
+    "notifications",
     "db",
     "config_resolver",
     "shared",

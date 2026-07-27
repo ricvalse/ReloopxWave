@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     # Slack). Per-episode edge-triggered, so it fires at most once per handoff.
     handoff_sla_minutes: int = 15
 
+    # Slack "Add to Slack" OAuth app (incoming-webhook scope) — one shared Reloop
+    # app that each merchant installs in their own workspace. Register the redirect
+    # URI `<public_api_base_url>/integrations/slack/oauth/callback` on the app.
+    # `slack_oauth_state_secret` falls back to the client secret when unset.
+    slack_client_id: str = ""
+    slack_client_secret: str = ""
+    slack_oauth_state_secret: str = ""
+    slack_redirect_uri: str = ""
+
     integrations_kek_base64: str = Field(
         default="", description="AES-256-GCM key-encryption key, base64-encoded"
     )

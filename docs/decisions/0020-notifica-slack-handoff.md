@@ -74,6 +74,35 @@ come evento, non come canale.**
    SLA all'infinito). Il takeover manuale dall'inbox resta non notificato di
    proposito (l'operatore è già lì).
 
+## Onboarding a step minimi — "Add to Slack" OAuth + auto-seed
+
+Per ridurre al minimo gli step del merchant, la connessione **non** passa per il
+copia-incolla di un webhook: si usa **Slack OAuth v2 con scope `incoming-webhook`**
+(il pulsante «Aggiungi a Slack»). Con quello scope è Slack stesso a chiedere il
+canale durante l'autorizzazione e a restituire un webhook pronto in
+`incoming_webhook.url` — zero copia-incolla.
+
+- **Una singola Slack App di Reloop** (in "public distribution"), che ogni merchant
+  installa nel proprio workspace. Runbook: `docs/runbooks/slack-app-setup.md`.
+- **Punto d'ingresso**: bottone nel portal (merchant loggato). Il flusso riusa il
+  pattern OAuth di GHL — `state` firmato (qui HMAC del **merchant_id**, non del
+  tenant), callback pubblico senza JWT, `session_scope` service-role. Tutta la
+  logica Slack (state signing incluso) vive nella lib isolata `notifications`
+  (`oauth.py`), che dipende solo da httpx/shared.
+- **Endpoint**: `GET /integrations/slack/oauth/start` (mint state + authorize URL)
+  e `GET /integrations/slack/oauth/callback` (verifica state → `oauth.v2.access`
+  → `upsert_secret(provider='slack')` → redirect al portal). Il form incolla-URL
+  resta come opzione "Avanzato" nel FE.
+- **Auto-seed zero-config**: alla **prima** connessione Slack il callback crea (se
+  non esiste già) un'automazione `conversation_escalated → notify_slack` **già
+  abilitata**, così l'handoff→Slack funziona subito senza toccare la lavagnetta.
+  Idempotente (skip se il merchant ha già un'automazione su quel trigger, così un
+  reconnect non duplica né resuscita una che aveva disabilitato). È un seed su
+  **azione esplicita dell'utente**, non un seeding di default all'onboarding —
+  coerente con la deviazione dell'ADR 0015 (niente `ensure_system_automations`).
+
+Step netti per il merchant: **click «Aggiungi a Slack» → scegli canale → Consenti**.
+
 ## Conseguenze
 
 - **Isolamento reale ma non totale**: il nodo lavagnetta *deve* toccare 3-4 punti
@@ -92,3 +121,23 @@ come evento, non come canale.**
 - **Payload evento disomogeneo** (bug preesistente, fuori scope qui): il
   percorso LLM include `summary` ma non `variant_id`, il media path il contrario
   — l'A/B test perde l'attribuzione variante sugli handoff da azione LLM.
+- **Accettato: `notify_slack` richiede un canale WhatsApp attivo.** `automation_run`
+  esce con `skipped: no_channel` (`workers/automation/engine.py:329`) prima di
+  percorrere il grafo, quindi un'automazione di sola notifica non parte per un
+  merchant senza WhatsApp collegato. **Scelta deliberata** (verificata in test
+  2026-07-20): l'handoff nasce da una conversazione WhatsApp, quindi un merchant
+  senza canale non ha handoff da notificare. Conseguenza da conoscere: un merchant
+  senza WhatsApp attivo non riceve alert e lo skip è silenzioso (solo log).
+- **Rischio noto — replay dello `state` OAuth (difesa in profondità).** Lo `state`
+  è un token HMAC stateless (firma merchant_id + nonce + exp): la firma impedisce
+  di *forgiare* uno state per un merchant arbitrario, ma il nonce non è consumato
+  one-time né legato alla sessione del browser, quindi entro il TTL (600s) uno
+  state legittimo *intercettato* (es. dagli access-log del proxy, dove finisce in
+  query string della callback) potrebbe essere abbinato a un `code` di un altro
+  workspace e legare il webhook dell'attaccante al merchant vittima. Precondizione
+  non banale (accesso ai log = posizione privilegiata). **È lo stesso pattern del
+  flusso OAuth di GHL già in produzione** (`integrations/ghl/oauth.py`), non una
+  regressione introdotta qui. Hardening consigliato **a livello di piattaforma
+  per entrambi i flussi**: consumo one-time del nonce (Redis `SET NX` con TTL) o
+  binding a un cookie di sessione. Non applicato solo a Slack per non divergere
+  dal pattern GHL.

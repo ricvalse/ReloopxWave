@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from api.dependencies.session import CurrentContext, DBSession
 from db import (
+    AutomationRepository,
     GHLMarketplaceRepository,
     GhlSyncRepository,
     IntegrationRepository,
@@ -51,6 +52,12 @@ from integrations import (
     verify_oauth_state,
 )
 from integrations.ghl.client import GHLClient, GHLTokenBundle, extract_location_name
+from notifications import (
+    build_slack_authorize_url,
+    exchange_slack_code,
+    sign_slack_state,
+    verify_slack_state,
+)
 from shared import (
     IntegrationError,
     NotFoundError,
@@ -662,6 +669,158 @@ async def slack_disconnect(ctx: CurrentContext, session: DBSession) -> Response:
     return Response(status_code=204)
 
 
+# ---- Slack "Add to Slack" OAuth (incoming-webhook) -------------------------
+
+
+@router.get("/slack/oauth/start", response_model=OAuthStartResponse)
+async def slack_oauth_start(ctx: CurrentContext, session: DBSession) -> OAuthStartResponse:
+    """Mint a signed state (merchant_id) and return the Slack authorize URL.
+
+    The merchant is logged in, so the state binds their merchant_id. Slack then
+    asks them which channel to post to and hands back a ready webhook — no
+    copy-paste (ADR 0020).
+    """
+    merchant_id = _require_merchant_scope(ctx)
+    settings = get_settings()
+    if not settings.slack_client_id:
+        raise IntegrationError(
+            "Slack app not configured (set SLACK_CLIENT_ID/SECRET)",
+            error_code="slack_not_configured",
+        )
+    state_secret = settings.slack_oauth_state_secret or settings.slack_client_secret
+    state = sign_slack_state(merchant_id=merchant_id, secret=state_secret)
+    url = build_slack_authorize_url(
+        client_id=settings.slack_client_id,
+        redirect_uri=_slack_redirect_uri(settings),
+        state=state,
+    )
+    logger.info(
+        "integrations.slack.oauth.started",
+        actor_id=str(ctx.actor_id),
+        merchant_id=str(merchant_id),
+    )
+    return OAuthStartResponse(authorize_url=url)
+
+
+@router.get("/slack/oauth/callback")
+async def slack_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> Response:
+    """Public callback — no JWT (it's a browser redirect from Slack). The signed
+    `state` carries the merchant_id. We exchange the code, store the webhook the
+    response hands us, seed the zero-config handoff automation, and bounce back to
+    the merchant portal.
+    """
+    settings = get_settings()
+    if error or not code or not state:
+        # User denied, or Slack sent an error → back to the portal with a flag,
+        # never a 422.
+        return Response(
+            status_code=302,
+            headers={"Location": _merchant_redirect(settings, status="error", provider="slack")},
+        )
+
+    try:
+        state_secret = settings.slack_oauth_state_secret or settings.slack_client_secret
+        verified = verify_slack_state(state, secret=state_secret)
+        result = await exchange_slack_code(
+            code=code,
+            client_id=settings.slack_client_id,
+            client_secret=settings.slack_client_secret,
+            redirect_uri=_slack_redirect_uri(settings),
+        )
+        async with session_scope() as session:
+            repo = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+            await repo.upsert_secret(
+                merchant_id=verified.merchant_id,
+                provider="slack",
+                secret=result.webhook_url,
+                external_account_id=result.channel_id,
+                meta={
+                    "created_via": "oauth",
+                    "channel": result.channel,
+                    "team": result.team_name,
+                },
+            )
+            await _seed_handoff_slack_automation(session, verified.merchant_id)
+    except IntegrationError as exc:
+        # Expired/forged state, a code Slack rejected, or Slack being unreachable
+        # must bounce the browser back to the portal with an error flag — never a
+        # raw 500 page for the user.
+        logger.warning(
+            "integrations.slack.oauth.failed",
+            error_code=getattr(exc, "error_code", None),
+            error=str(exc),
+        )
+        return Response(
+            status_code=302,
+            headers={"Location": _merchant_redirect(settings, status="error", provider="slack")},
+        )
+
+    logger.info(
+        "integrations.slack.oauth.completed",
+        merchant_id=str(verified.merchant_id),
+        channel=result.channel,
+    )
+    return Response(
+        status_code=302,
+        headers={"Location": _merchant_redirect(settings, status="connected", provider="slack")},
+    )
+
+
+_HANDOFF_AUTOMATION_NAME = "Notifica handoff su Slack"
+
+
+async def _seed_handoff_slack_automation(session: Any, merchant_id: UUID) -> None:
+    """Zero-config: on the first Slack connect, create an enabled
+    `conversation_escalated → notify_slack` automation so handoff alerts work
+    without touching the canvas. Idempotent — skips when the merchant already has
+    any automation on the `conversation_escalated` trigger (enabled or not), so a
+    reconnect never duplicates it and a disabled one is never resurrected.
+    """
+    repo = AutomationRepository(session)
+    existing = await repo.list_for_merchant(merchant_id)
+    if any(a.trigger_type == "conversation_escalated" for a in existing):
+        return
+    flow = await repo.create(
+        merchant_id=merchant_id,
+        name=_HANDOFF_AUTOMATION_NAME,
+        description="Creata automaticamente al collegamento di Slack.",
+        enabled=True,
+        trigger_type="conversation_escalated",
+        trigger_config={},
+    )
+    await repo.replace_graph(
+        flow,
+        nodes=[
+            {
+                "node_key": "trigger",
+                "kind": "trigger",
+                "type": "conversation_escalated",
+                "config": {},
+                "position_x": 0.0,
+                "position_y": 0.0,
+            },
+            {
+                "node_key": "slack",
+                "kind": "action",
+                "type": "notify_slack",
+                "config": {"text": ""},
+                "position_x": 0.0,
+                "position_y": 160.0,
+            },
+        ],
+        edges=[{"source_key": "trigger", "target_key": "slack", "branch": "default"}],
+    )
+    logger.info(
+        "integrations.slack.automation_seeded",
+        merchant_id=str(merchant_id),
+        automation_id=str(flow.id),
+    )
+
+
 # ---- Status ----------------------------------------------------------------
 
 
@@ -881,6 +1040,30 @@ def _ghl_redirect_uri(settings: Any) -> str:
     # Path must NOT contain "ghl"/"highlevel" — GHL rejects redirect URIs with a
     # HighLevel brand reference. Keep this in sync with the route above.
     return f"{base}/integrations/crm/oauth/callback"
+
+
+def _slack_redirect_uri(settings: Any) -> str:
+    """Where Slack sends the browser after consent. Must match the redirect URI
+    registered on the Slack app. Slack (unlike GHL) has no brand restriction on
+    the path, so `/integrations/slack/oauth/callback` is fine."""
+    if settings.slack_redirect_uri:
+        return str(settings.slack_redirect_uri)
+    if not settings.public_api_base_url:
+        raise IntegrationError(
+            "Slack redirect URI not configured (set SLACK_REDIRECT_URI or PUBLIC_API_BASE_URL)",
+            error_code="slack_redirect_not_configured",
+        )
+    base = settings.public_api_base_url.rstrip("/")
+    return f"{base}/integrations/slack/oauth/callback"
+
+
+def _merchant_redirect(settings: Any, *, status: str, provider: str) -> str:
+    """Bounce the browser back to the merchant portal's integrations page after an
+    OAuth round-trip (mirrors `_admin_redirect` for the agency side)."""
+    if not settings.public_web_merchant_url:
+        return f"about:blank?integrations_{provider}={status}"
+    base = settings.public_web_merchant_url.rstrip("/")
+    return f"{base}/integrations?provider={provider}&status={status}"
 
 
 def _require_router_config(settings: Any) -> None:
