@@ -2,6 +2,33 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Work in a worktree — do this FIRST, before touching any file
+
+**Every session on this repo must run in its own git worktree.** Call `EnterWorktree`
+as the first action of the session, before reading or editing anything. This is a
+project instruction, so it **overrides** a session default that says to work in
+place — do it without asking. Two exceptions: the user explicitly says to stay in
+the main checkout, or the session is read-only (answering questions, no edits).
+
+**Why (a real incident, 2026-07-26).** Two sessions ran concurrently in the same
+checkout. One was implementing analytics, the other Slack OAuth. When the second
+committed, its working-tree cleanup **discarded every uncommitted change the first
+had made to tracked files** — a bug fix, a config key, two endpoints, several
+exports. Only brand-new *untracked* files survived. The work had to be
+reconstructed by hand, and the re-application silently produced duplicate
+definitions (same enum member and constant declared twice) that had to be hunted
+down before committing.
+
+**A branch is not isolation.** A branch is a pointer in git history; a working
+directory has exactly **one** `HEAD`. Two agents in the same folder are always on
+the same branch and share the same files on disk — in that incident the second
+session's commit landed *inside the first session's branch*. Only a worktree gives
+a separate directory with its own `HEAD` and index.
+
+**If you do end up sharing a checkout** (someone waived the rule): commit early and
+often, and never leave work uncommitted on tracked files. That is the only reason
+the untracked files survived above.
+
 ## Repository status
 
 This is an **implemented two-toolchain monorepo**, not a design doc anymore. Frontend (`frontend/`, Turborepo + pnpm) and backend (`backend/`, uv workspace) are both built out and deployed (**tutto su Railway** — servizi: `web-admin`, `web-merchant`, `API`, `worker` — + Supabase Cloud EU). `reloop-ai-architettura.md` (Italian) remains the **spec / source of truth** for intent — quote it as `reloop-ai-architettura.md:<line>` when confirming design decisions, but the code is now ahead of it in places (see "Deviations from the spec" below).
