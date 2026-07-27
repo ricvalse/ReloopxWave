@@ -1070,6 +1070,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/analytics/event-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Event Catalog List
+         * @description Catalogo tipato degli `event_type` che il sistema sa emettere.
+         *
+         *     Single source of truth (ADR 0021) che popola il metric-builder della
+         *     dashboard configurabile: il FE mostra `label`/`description` e usa
+         *     `event_type` come chiave della metrica. `selectable_only=true` restituisce
+         *     solo gli eventi di business (esclude rollup interni e log di sistema).
+         */
+        get: operations["event_catalog_list_analytics_event_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Merchant Metrics
+         * @description Calcola le metriche configurate per il merchant (ADR 0021).
+         *
+         *     Le definizioni vengono dal config cascade (`dashboard.metrics`): il merchant
+         *     eredita quelle d'agenzia finché non le sovrascrive. Ogni metrica è un
+         *     conteggio di `event_type` sulla finestra globale `since_days`, salvo che la
+         *     definizione porti un `window_days` proprio.
+         */
+        get: operations["merchant_metrics_analytics_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/analytics/events": {
         parameters: {
             query?: never;
@@ -2343,6 +2393,7 @@ export interface components {
             objections?: components["schemas"]["ObjectionsConfig"];
             conversation?: components["schemas"]["ConversationConfig"];
             ghl?: components["schemas"]["GHLConfig"];
+            dashboard?: components["schemas"]["DashboardConfig"];
         };
         /**
          * BotExample
@@ -2613,6 +2664,17 @@ export interface components {
             body: string;
         };
         /**
+         * DashboardConfig
+         * @description Quali metriche mostra la dashboard di questo merchant (ADR 0021).
+         *
+         *     Risolta come doc atomico dalla cascata: una lista impostata a livello
+         *     merchant SOSTITUISCE quella d'agenzia (replace per-leaf, non merge).
+         */
+        DashboardConfig: {
+            /** Metrics */
+            metrics?: components["schemas"]["MetricDefinitionSchema"][];
+        };
+        /**
          * DeliveryConfig
          * @description Human-feel delivery knobs. Defaults make the reply feel human out of the
          *     box (coalesce rapid messages, typing indicator, brief pause, a couple of
@@ -2681,6 +2743,21 @@ export interface components {
             silent_handoff: boolean;
             /** Critical Keywords */
             critical_keywords?: string[] | null;
+        };
+        /** EventCatalogEntryOut */
+        EventCatalogEntryOut: {
+            /** Event Type */
+            event_type: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Category */
+            category: string;
+            /** Subject Type */
+            subject_type: string | null;
+            /** Selectable */
+            selectable: boolean;
         };
         /** ExperimentIn */
         ExperimentIn: {
@@ -3130,6 +3207,51 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * MetricDefinitionSchema
+         * @description Una metrica della dashboard configurabile (ADR 0021).
+         *
+         *     V1: conteggio di un `event_type` su una finestra temporale. `event_type` è
+         *     validato contro il catalogo tipato (`db.analytics_events.EventType`), così
+         *     una metrica non può puntare a un evento che il sistema non emette mai — è
+         *     esattamente il modo in cui è nato il bug `reminder.sent` (sempre 0).
+         */
+        MetricDefinitionSchema: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Event Type */
+            event_type: string;
+            /** Window Days */
+            window_days?: number | null;
+            /**
+             * Aggregation
+             * @default count
+             * @constant
+             */
+            aggregation: "count";
+        };
+        /** MetricValueOut */
+        MetricValueOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Event Type */
+            event_type: string;
+            /** Window Days */
+            window_days: number;
+            /** Value */
+            value: number;
+        };
+        /** MetricsOut */
+        MetricsOut: {
+            /** Since Days */
+            since_days: number;
+            /** Metrics */
+            metrics: components["schemas"]["MetricValueOut"][];
         };
         /** NoAnswerConfig */
         NoAnswerConfig: {
@@ -6515,6 +6637,75 @@ export interface operations {
             };
         };
     };
+    event_catalog_list_analytics_event_catalog_get: {
+        parameters: {
+            query?: {
+                /** @description Escludi eventi operativi/sintetici (rollup, log di sistema) */
+                selectable_only?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventCatalogEntryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    merchant_metrics_analytics_metrics_get: {
+        parameters: {
+            query?: {
+                since_days?: number;
+                /** @description Admin-only: target merchant_id */
+                merchant_id?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_events_analytics_events_get: {
         parameters: {
             query?: {
@@ -8350,6 +8541,8 @@ export enum ApiPaths {
     agency_kpis_analytics_agency_kpis_get = "/analytics/agency/kpis",
     request_export_analytics_exports_post = "/analytics/exports",
     download_export_analytics_exports__export_id__download_get = "/analytics/exports/{export_id}/download",
+    event_catalog_list_analytics_event_catalog_get = "/analytics/event-catalog",
+    merchant_metrics_analytics_metrics_get = "/analytics/metrics",
     list_events_analytics_events_get = "/analytics/events",
     objection_trends_analytics_merchant_objection_trends_get = "/analytics/merchant/objection-trends",
     predictive_lead_scores_analytics_merchant_lead_scores_get = "/analytics/merchant/lead-scores",
