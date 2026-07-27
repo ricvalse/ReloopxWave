@@ -1791,6 +1791,12 @@ class ConversationService:
                 jitter_frac=jitter,
                 seed=f"{rc.conv_id}:{i}",
             )
+            # WhatsApp dismisses "typing…" the moment a message goes out, so the
+            # pre-loop call above only covers the first bubble — without this the
+            # pauses before bubbles 2..N are silent. Re-arming keeps the visible
+            # typing time proportional to each bubble's own length.
+            if i > 0 and delay > 0 and typing_indicator_enabled and rc.latest_wa_message_id:
+                await self._maybe_send_typing(rc, rc.latest_wa_message_id)
             if delay > 0:
                 await asyncio.sleep(delay)
             _last_wamid = await self._sender.send(

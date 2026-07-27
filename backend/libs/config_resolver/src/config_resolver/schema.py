@@ -623,7 +623,9 @@ class DeliveryConfig(_StrictModel):
     typing_jitter_frac: float = Field(0.25, ge=0.0, le=1.0)
     # Split a long reply into up to N WhatsApp bubbles. 1 = single send.
     multi_bubble_max: int = Field(2, ge=1, le=4)
-    bubble_max_chars: int = Field(600, ge=80, le=1000)
+    # Low values are a legitimate "one sentence per bubble" mode: the splitter
+    # never cuts mid-word, so a sentence longer than this stays whole.
+    bubble_max_chars: int = Field(600, ge=20, le=1000)
 
 
 class AgentConfig(_StrictModel):
