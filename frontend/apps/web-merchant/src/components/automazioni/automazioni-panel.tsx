@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from '@reloop/ui';
+import { Copy } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
 import { AutomationEditor } from './automation-editor';
 import { TRIGGER_DEFS } from './automation-nodes';
@@ -14,6 +15,47 @@ type Automation = components['schemas']['AutomationOut'];
 const TRIGGER_LABEL: Record<string, string> = Object.fromEntries(
   TRIGGER_DEFS.map((d) => [d.type, d.label]),
 );
+
+const NAME_MAX = 200; // AutomationUpsertIn.name
+
+// "Promo estate" → "Promo estate (copia)", poi "(copia 2)", "(copia 3)"… Il suffisso
+// viene tolto prima di riapplicarlo, così duplicare una copia non produce
+// "(copia) (copia)". I nomi non sono unici a DB: è solo leggibilità in lista.
+function copyName(base: string, existing: readonly string[]): string {
+  const root = base.replace(/\s*\(copia(?: \d+)?\)$/i, '').trim() || base;
+  const taken = new Set(existing);
+  for (let i = 1; ; i += 1) {
+    const suffix = i === 1 ? ' (copia)' : ` (copia ${i})`;
+    const candidate = root.slice(0, NAME_MAX - suffix.length) + suffix;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+// AutomationOut → AutomationUpsertIn: il grafo arriva già completo dalla lista,
+// quindi la copia non richiede una fetch aggiuntiva. La copia nasce SEMPRE come
+// bozza: clonare un'automazione attiva la farebbe partire in parallelo
+// all'originale sullo stesso trigger (doppio invio al lead).
+function duplicatePayload(a: Automation, existingNames: readonly string[]) {
+  return {
+    name: copyName(a.name, existingNames),
+    description: a.description ?? null,
+    enabled: false,
+    canvas: a.canvas ?? {},
+    nodes: a.nodes.map((n) => ({
+      node_key: n.node_key,
+      kind: n.kind,
+      type: n.type,
+      config: n.config ?? {},
+      position_x: n.position_x,
+      position_y: n.position_y,
+    })),
+    edges: a.edges.map((e) => ({
+      source_key: e.source_key,
+      target_key: e.target_key,
+      branch: e.branch,
+    })),
+  };
+}
 
 export function AutomazioniPanel() {
   const queryClient = useQueryClient();
@@ -37,6 +79,18 @@ export function AutomazioniPanel() {
       const api = getApiClient();
       const { error } = await api.DELETE('/automations/{automation_id}', {
         params: { path: { automation_id: id } },
+      });
+      if (error) throw new Error(apiErrorMessage(error));
+    },
+    onSuccess: invalidate,
+  });
+
+  const duplicate = useMutation({
+    mutationFn: async (a: Automation) => {
+      const api = getApiClient();
+      const existingNames = (automations.data ?? []).map((r) => r.name);
+      const { error } = await api.POST('/automations', {
+        body: duplicatePayload(a, existingNames) as never,
       });
       if (error) throw new Error(apiErrorMessage(error));
     },
@@ -74,6 +128,7 @@ export function AutomazioniPanel() {
     const triggerLabel = a.trigger_type
       ? (TRIGGER_LABEL[a.trigger_type] ?? a.trigger_type)
       : '—';
+    const duplicating = duplicate.isPending && duplicate.variables?.id === a.id;
     return (
       <Card key={a.id}>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
@@ -93,6 +148,16 @@ export function AutomazioniPanel() {
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setEditing(a)}>
               Apri sulla lavagnetta
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => duplicate.mutate(a)}
+              disabled={duplicate.isPending}
+              title="Crea una copia dell'automazione come bozza"
+            >
+              <Copy size={14} />
+              {duplicating ? 'Duplicazione…' : 'Duplica'}
             </Button>
             <Button
               variant="ghost"
@@ -118,6 +183,13 @@ export function AutomazioniPanel() {
         </p>
         <Button onClick={() => setCreating(true)}>Nuova automazione</Button>
       </div>
+
+      {duplicate.error ? (
+        <p className="text-xs text-destructive">
+          Duplicazione non riuscita:{' '}
+          {duplicate.error instanceof Error ? duplicate.error.message : 'errore sconosciuto'}
+        </p>
+      ) : null}
 
       <div className="space-y-3">
         {rows.length === 0 ? (
