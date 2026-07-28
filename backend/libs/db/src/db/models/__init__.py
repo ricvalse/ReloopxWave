@@ -12,6 +12,8 @@ from db.models.ghl import GHLAgencyInstall, GHLLocationToken, GhlSyncLog
 from db.models.integration import Integration
 from db.models.kb import KBChunk, KBGap, KnowledgeBaseDoc
 from db.models.lead import Lead, Objection
+from db.models.outcome import LeadOutcome, OutcomeDefinition
+from db.models.profile import ConversationProfile
 from db.models.services import BusinessClosure, BusinessHour, Service
 from db.models.tenant import Merchant, Tenant, User
 from db.models.whatsapp_template import WhatsAppTemplate
@@ -31,6 +33,7 @@ __all__ = [
     "BusinessClosure",
     "BusinessHour",
     "Conversation",
+    "ConversationProfile",
     "FTModel",
     "FaqEntry",
     "Flow",
@@ -43,9 +46,11 @@ __all__ = [
     "KBGap",
     "KnowledgeBaseDoc",
     "Lead",
+    "LeadOutcome",
     "Merchant",
     "Message",
     "Objection",
+    "OutcomeDefinition",
     "PromptTemplate",
     "Service",
     "StorePolicy",

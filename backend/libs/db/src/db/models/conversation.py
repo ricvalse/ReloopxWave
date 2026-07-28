@@ -60,6 +60,15 @@ class Conversation(Base, TimestampMixin):
     # Free-text internal note shown in the inbox detail panel. Per-thread,
     # edited by an agent; NULL when empty. See migration 0012.
     internal_note: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Profilo di conversazione attivo (ADR 0022). Puntatore VIVO, non timbro:
+    # un'automazione lo cambia con `set_conversation_profile` e la conversazione
+    # ci resta fino a fine episodio, quando torna al profilo `is_default`. NULL =
+    # nessun profilo (comportamento identico a prima dei profili).
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("conversation_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # FSM state — see ai_core.state_machine.ConvState. NULL = legacy row (treated as GREETING).
     current_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Compressed summary of older turns (S-04 context compressor).
@@ -90,6 +99,13 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     # direction: 'in' | 'out' — denormalised from role for cheap filtering
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    # Chi ha prodotto il messaggio. Era una chiave di `meta` (JSONB) letta per
+    # stringa da sette file del backend e da un union TypeScript scritto a mano
+    # che ne dichiarava sei degli otto valori reali; promossa a colonna con CHECK
+    # in 0047 così l'enum arriva al frontend via OpenAPI. Valori: customer |
+    # phone | human | ai | agent_action | automation | automation_ai |
+    # appointment_reminder.
+    sender_type: Mapped[str] = mapped_column(String(24), nullable=False, default="ai")
     content: Mapped[str] = mapped_column(String, nullable=False)
     # status: pending | sent | delivered | read | failed
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="sent")
@@ -105,6 +121,27 @@ class Message(Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # --- Attribuzione (0047) — timbri immutabili, scritti all'INSERT ---------
+    # Il profilo con cui QUESTO messaggio è stato prodotto (≠ il profilo attivo
+    # sulla conversazione, che è un puntatore e può cambiare dopo).
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # Quale automazione l'ha inviato, e da quale nodo del grafo. Il node_key è
+    # ciò che rende leggibile "il DM iniziale converte al 12%, il reminder a 7
+    # giorni al 3%", e serve anche come cancello deterministico ("sta rispondendo
+    # *a quel* tocco") prima di spendere una chiamata LLM. Nessuna FK: la storia
+    # deve sopravvivere alla cancellazione dell'automazione.
+    automation_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    automation_node_key: Mapped[str | None] = mapped_column(String(64))
+    # Attribuzione conversazionale last-touch: l'ultimo outbound *prima* di
+    # questo inbound. Scritta una volta sola, sull'inbound, all'INSERT. NON è il
+    # quoted-message di WhatsApp (quello, se servirà, va in `meta.context`).
+    # Il reply-rate è un JOIN su questa colonna; il tempo di risposta è la
+    # differenza dei due `created_at`.
+    reply_to_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()"), index=True

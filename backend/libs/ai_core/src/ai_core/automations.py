@@ -23,19 +23,26 @@ _VALID_TYPES: dict[str, set[str]] = {
     "action": set(ACTION_TYPES),
 }
 
+# Condizioni che richiedono IO e che quindi il valutatore sincrono non può
+# risolvere: `ai_check` (una chiamata LLM) e `has_outcome` (una query). Entrambe
+# sono clausole valide di un gruppo, ma vengono *valutate* solo dal motore
+# asincrono degli eventi.
+_ASYNC_CONDITION_TYPES: frozenset[str] = frozenset({"ai_check", "has_outcome"})
+
 # Atomic conditions a `condition_group` clause may reference *synchronously*.
-# Excludes `condition_group` (no nesting) and `ai_check` (async — evaluated only by
-# the event engine, see `_CLAUSE_CONDITION_TYPES`).
+# Excludes `condition_group` (no nesting) and the IO-bound ones above.
+# `conversation_profile` e `last_touch_node` restano qui — benché nascano per
+# gatare un ai_check, leggono valori già presenti in `RunContext` e sono pure.
 _ATOMIC_CONDITION_TYPES: frozenset[str] = frozenset(
-    t for t in CONDITION_TYPES if t not in ("condition_group", "ai_check")
+    t for t in CONDITION_TYPES if t != "condition_group" and t not in _ASYNC_CONDITION_TYPES
 )
 
-# Condition types a `condition_group` clause may be. Adds `ai_check` to the atomic
-# set: an AI clause is a valid clause, but it is only *evaluated* by the async event
-# engine (`workers.automation.engine._evaluate_group_async`). The sync
-# `_evaluate_group` (scheduler path) fails an ai_check clause closed, so the
-# frontend offers it only in custom/event flows — never in system flows.
-_CLAUSE_CONDITION_TYPES: frozenset[str] = _ATOMIC_CONDITION_TYPES | frozenset({"ai_check"})
+# Condition types a `condition_group` clause may be. Adds the async ones to the
+# atomic set: sono clausole valide, ma solo il motore asincrono
+# (`workers.automation.engine._evaluate_group_async`) le esegue davvero. Il
+# valutatore sincrono `_evaluate_group` (percorso scheduler) le fallisce chiuse,
+# quindi il frontend le offre solo nei flussi custom/evento.
+_CLAUSE_CONDITION_TYPES: frozenset[str] = _ATOMIC_CONDITION_TYPES | _ASYNC_CONDITION_TYPES
 
 # ActionKinds an `ai_reply` node may let the AI dispatch (mirrors the orchestrator
 # ActionKind set minus "none"). Kept here so graph validation stays IO-free.
@@ -213,6 +220,22 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
         if field == "score_delta" and not _is_int(cfg.get("value")):
             return [f"node {key!r}: set_lead_field score_delta needs an integer value"]
         return []
+    if atype == "emit_outcome":
+        # L'`outcome_id` arriva da una tendina, non digitato: è il motivo per cui
+        # l'esito è una riga di `outcome_definitions` e non una stringa libera.
+        # Validarlo qui impedisce che un grafo salvato punti al nulla.
+        if not str(cfg.get("outcome_id", "")).strip():
+            return [f"node {key!r}: emit_outcome needs an outcome_id"]
+        confidence = cfg.get("confidence")
+        if confidence is not None and not (
+            isinstance(confidence, int | float) and 0.0 <= float(confidence) <= 1.0
+        ):
+            return [f"node {key!r}: emit_outcome confidence must be between 0 and 1"]
+        return []
+    if atype == "set_conversation_profile":
+        if not str(cfg.get("profile_id", "")).strip():
+            return [f"node {key!r}: set_conversation_profile needs a profile_id"]
+        return []
     return []
 
 
@@ -224,6 +247,25 @@ def _condition_config_errors(node: dict[str, Any]) -> list[str]:
         cfg = node.get("config") or {}
         if not str(cfg.get("prompt", "")).strip():
             return [f"node {node.get('node_key')!r}: ai_check needs a prompt"]
+        return []
+    # I riferimenti a entità del merchant sono obbligatori: un nodo che punta a
+    # una statistica o a un profilo inesistente passerebbe validazione e poi
+    # fallirebbe muto a runtime — cioè la bolla resterebbe a zero senza che
+    # nessuno lo sappia.
+    if ntype == "has_outcome":
+        cfg = node.get("config") or {}
+        if not str(cfg.get("outcome_id", "")).strip():
+            return [f"node {node.get('node_key')!r}: has_outcome needs an outcome_id"]
+        return []
+    if ntype == "conversation_profile":
+        cfg = node.get("config") or {}
+        if not str(cfg.get("profile_id", "")).strip():
+            return [f"node {node.get('node_key')!r}: conversation_profile needs a profile_id"]
+        return []
+    if ntype == "last_touch_node":
+        cfg = node.get("config") or {}
+        if not str(cfg.get("node_key", "")).strip():
+            return [f"node {node.get('node_key')!r}: last_touch_node needs a node_key"]
         return []
     if ntype != "condition_group":
         return []
@@ -241,8 +283,15 @@ def _condition_config_errors(node: dict[str, Any]) -> list[str]:
             or str(clause.get("type", "")) not in _CLAUSE_CONDITION_TYPES
         ):
             return [f"node {key!r}: condition_group has a clause with an invalid type"]
-        if str(clause.get("type", "")) == "ai_check" and not str(clause.get("prompt", "")).strip():
+        ctype = str(clause.get("type", ""))
+        if ctype == "ai_check" and not str(clause.get("prompt", "")).strip():
             return [f"node {key!r}: ai_check clause needs a prompt"]
+        if ctype == "has_outcome" and not str(clause.get("outcome_id", "")).strip():
+            return [f"node {key!r}: has_outcome clause needs an outcome_id"]
+        if ctype == "conversation_profile" and not str(clause.get("profile_id", "")).strip():
+            return [f"node {key!r}: conversation_profile clause needs a profile_id"]
+        if ctype == "last_touch_node" and not str(clause.get("node_key", "")).strip():
+            return [f"node {key!r}: last_touch_node clause needs a node_key"]
     return []
 
 
@@ -316,6 +365,22 @@ def _evaluate_atomic(node_type: str, cfg: dict[str, Any], context: dict[str, Any
         text = str(context.get("last_message", "")).lower()
         keywords = [str(k).lower() for k in (cfg.get("keywords") or [])]
         return any(k and k in text for k in keywords)
+    if node_type == "conversation_profile":
+        wanted = str(cfg.get("profile_id") or "").strip()
+        active = str(context.get("profile_id") or "")
+        return bool(wanted) and wanted == active
+    if node_type == "last_touch_node":
+        # "Il lead sta rispondendo *a quel* tocco". Entrambi i confronti sono su
+        # valori precalcolati in `RunContext`, quindi la condizione resta pura e
+        # utilizzabile anche come clausola di un `condition_group` sul percorso
+        # sincrono.
+        wanted_node = str(cfg.get("node_key") or "").strip()
+        if not wanted_node or wanted_node != str(context.get("last_touch_node_key") or ""):
+            return False
+        wanted_automation = str(cfg.get("automation_id") or "").strip()
+        if wanted_automation:
+            return wanted_automation == str(context.get("last_touch_automation_id") or "")
+        return True
     return False
 
 

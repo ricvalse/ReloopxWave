@@ -54,6 +54,8 @@ def _candidate(*, last_inbound_at: datetime | None) -> AppointmentReminderCandid
 class _FakeConv:
     def __init__(self) -> None:
         self.id = uuid.uuid4()
+        # Timbro del profilo sull'invio proattivo (migrazione 0047).
+        self.profile_id = None
 
 
 def _patch(

@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { useConversationsContext } from '../lib/context';
-import type { Conversation, Message } from '../types';
+import { senderTypeOf, type Conversation, type Message } from '../types';
 import { CONV_LIST_KEY } from './use-conversations';
 
 const REALTIME_FALLBACK_MS = 30_000;
@@ -26,7 +26,7 @@ function hydrateListPreview(
   const preview = last.content.length > PREVIEW_MAX_CHARS
     ? `${last.content.slice(0, PREVIEW_MAX_CHARS - 1).trimEnd()}…`
     : last.content;
-  const senderType = last.meta?.sender_type ?? null;
+  const senderType = senderTypeOf(last);
 
   queryClient.setQueriesData<Conversation[]>(
     { queryKey: CONV_LIST_KEY },

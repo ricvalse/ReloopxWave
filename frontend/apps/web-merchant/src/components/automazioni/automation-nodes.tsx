@@ -8,7 +8,18 @@ export type NodeKind = 'trigger' | 'condition' | 'action';
 export interface FieldDef {
   key: string;
   label: string;
-  kind: 'text' | 'number' | 'select' | 'keywords' | 'template' | 'clauses' | 'multiselect' | 'bool';
+  kind:
+    | 'text'
+    | 'number'
+    | 'select'
+    | 'keywords'
+    | 'template'
+    | 'clauses'
+    | 'multiselect'
+    | 'bool'
+    // Riferimenti a entità del merchant, caricati in una tendina: mai digitati.
+    | 'outcome'
+    | 'profile';
   options?: { value: string; label: string }[];
   placeholder?: string;
 }
@@ -130,6 +141,38 @@ export const CONDITION_DEFS: TypeDef[] = [
       { key: 'model', label: 'Modello (opzionale)', kind: 'text', placeholder: 'auto' },
     ],
   },
+  // --- Cancelli deterministici (ADR 0023) ---------------------------------
+  // Costano zero e vanno messi PRIMA di una condizione AI: senza, un flusso su
+  // «Messaggio ricevuto» fa girare l'AI su ogni messaggio del merchant, non solo
+  // su quelli della campagna.
+  {
+    type: 'conversation_profile',
+    label: 'Profilo attivo è…',
+    description:
+      'Vero solo se la conversazione sta usando quel profilo. Mettilo prima di una condizione AI per limitarla alla campagna.',
+    fields: [{ key: 'profile_id', label: 'Profilo', kind: 'profile' }],
+  },
+  {
+    type: 'last_touch_node',
+    label: 'Sta rispondendo a…',
+    description:
+      'Vero se l’ultimo messaggio inviato dal bot è partito da quel nodo. Più affidabile delle parole chiave: se hai chiesto “hai compilato?”, il lead risponde “sì” e nessuna keyword corrisponderebbe.',
+    fields: [
+      {
+        key: 'node_key',
+        label: 'Nodo che ha inviato',
+        kind: 'text',
+        placeholder: 'es. n3 (identificativo del nodo di invio)',
+      },
+    ],
+  },
+  {
+    type: 'has_outcome',
+    label: 'Ha già l’esito…',
+    description:
+      'Vero se la statistica è già stata registrata per questo lead. Usalo negato: chi ha già confermato esce dal flusso e non costa più nulla.',
+    fields: [{ key: 'outcome_id', label: 'Statistica', kind: 'outcome' }],
+  },
   {
     type: 'condition_group',
     label: 'Se (E / O)',
@@ -214,6 +257,28 @@ export const ACTION_DEFS: TypeDef[] = [
       { key: 'value', label: 'Valore', kind: 'text', placeholder: 'es. VIP, oppure 10 / -5 per il punteggio' },
       { key: 'ghl_sync', label: 'Sincronizza su GHL', kind: 'bool', placeholder: 'Propaga tag/campo su GHL' },
     ],
+  },
+  {
+    type: 'emit_outcome',
+    label: 'Registra esito',
+    description:
+      'Registra una statistica personalizzata per questo lead. Non invia niente. È idempotente: se l’esito c’è già, non viene contato due volte.',
+    fields: [
+      { key: 'outcome_id', label: 'Statistica', kind: 'outcome' },
+      {
+        key: 'confidence',
+        label: 'Confidenza (0-1, opzionale)',
+        kind: 'number',
+        placeholder: '0.8',
+      },
+    ],
+  },
+  {
+    type: 'set_conversation_profile',
+    label: 'Carica profilo',
+    description:
+      'Cambia il comportamento del bot su questa conversazione fino a fine chat, poi si torna al profilo di default.',
+    fields: [{ key: 'profile_id', label: 'Profilo', kind: 'profile' }],
   },
   {
     type: 'human_handoff',

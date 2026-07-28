@@ -20,6 +20,7 @@ import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, Input, Label } from '@reloop/ui';
 import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
+import { useOutcomeOptions, useProfileOptions } from './use-reference-options';
 import {
   ACTION_DEFS,
   CLAUSE_CONDITION_DEFS,
@@ -558,6 +559,43 @@ function TemplateVariableMapping({
   );
 }
 
+function ReferenceSelect({
+  kind,
+  value,
+  className,
+  onChange,
+}: {
+  kind: 'outcome' | 'profile';
+  value: string;
+  className: string;
+  onChange: (value: unknown) => void;
+}) {
+  const outcomes = useOutcomeOptions();
+  const profiles = useProfileOptions();
+  const query = kind === 'outcome' ? outcomes : profiles;
+  const options = query.data ?? [];
+  const emptyHint =
+    kind === 'outcome'
+      ? 'Nessuna statistica: creane una in Statistiche → Statistiche personalizzate'
+      : 'Nessun profilo: creane uno in Statistiche → Profili';
+
+  return (
+    <>
+      <select className={className} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">— seleziona —</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {!query.isLoading && options.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{emptyHint}</p>
+      ) : null}
+    </>
+  );
+}
+
 function ConfigField({
   field,
   value,
@@ -616,6 +654,16 @@ function ConfigField({
             </option>
           ))}
         </select>
+      ) : field.kind === 'outcome' || field.kind === 'profile' ? (
+        // Riferimenti a entità del merchant: sempre da tendina, mai digitati —
+        // è ciò che impedisce a un nodo di puntare a una statistica che non
+        // esiste e di lasciare la bolla a zero senza che nessuno se ne accorga.
+        <ReferenceSelect
+          kind={field.kind}
+          value={String(value ?? '')}
+          className={selectClass}
+          onChange={onChange}
+        />
       ) : field.kind === 'bool' ? (
         <label className="flex items-center gap-1.5 text-xs">
           <input

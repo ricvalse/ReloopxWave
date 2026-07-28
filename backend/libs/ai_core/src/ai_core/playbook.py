@@ -47,17 +47,24 @@ class PlaybookRuntime:
         return self.mode != "off"
 
 
-async def resolve_playbook_runtime(session: Any, merchant_id: UUID) -> PlaybookRuntime:
+async def resolve_playbook_runtime(
+    session: Any, merchant_id: UUID, *, profile_id: UUID | None = None
+) -> PlaybookRuntime:
     """Resolve the playbook doc + capability flags for a merchant.
 
     Best-effort per key: any resolution error degrades that knob to its default
     (today's behavior), never breaking the turn.
+
+    `profile_id` è il livello 0 della cascata (ADR 0022): il playbook è
+    precisamente ciò che un profilo modula — obiettivo, direttive, azioni
+    permesse, e `mode` per spegnere la FSM di vendita su un profilo non
+    commerciale. Con `None` il risultato è identico a prima dei profili.
     """
     resolver = ConfigResolver(session)
 
     async def _get(key: ConfigKey, default: Any) -> Any:
         try:
-            value = await resolver.resolve(key, merchant_id=merchant_id)
+            value = await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
         except Exception:
             return default
         return value if value is not None else default

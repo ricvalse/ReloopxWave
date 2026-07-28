@@ -11,9 +11,15 @@ export type KPICardProps = {
   className?: string;
   /** When true, the value renders as a skeleton instead of `value`. */
   loading?: boolean;
+  /**
+   * Secondary line under the value, for qualifying the number itself
+   * (e.g. "di cui 180 verificati" on a metric whose source is partly inferred).
+   * Rendered instead of `delta` when both are given.
+   */
+  hint?: string;
 };
 
-export function KPICard({ label, value, delta, icon, className, loading }: KPICardProps) {
+export function KPICard({ label, value, delta, icon, className, loading, hint }: KPICardProps) {
   return (
     <Card className={cn('flex-1', className)}>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -26,7 +32,8 @@ export function KPICard({ label, value, delta, icon, className, loading }: KPICa
         ) : (
           <div className="text-2xl font-bold">{value}</div>
         )}
-        {!loading && delta ? (
+        {!loading && hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
+        {!loading && !hint && delta ? (
           <p
             className={cn(
               'text-xs',

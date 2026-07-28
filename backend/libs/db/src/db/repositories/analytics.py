@@ -47,8 +47,14 @@ class AnalyticsRepository:
         subject_type: str | None = None,
         subject_id: UUID | None = None,
         variant_id: str | None = None,
+        profile_id: UUID | None = None,
+        automation_id: UUID | None = None,
         properties: dict[str, Any] | None = None,
     ) -> AnalyticsEvent:
+        # `profile_id` / `automation_id` sono colonne, non chiavi di
+        # `properties`: ADR 0021 §V2 rinviava la segmentazione per dimensione
+        # proprio perché filtrare dentro il JSONB avrebbe richiesto un indice
+        # GIN. Come colonne indicizzate il problema non si pone.
         event = AnalyticsEvent(
             tenant_id=tenant_id,
             merchant_id=merchant_id,
@@ -56,6 +62,8 @@ class AnalyticsRepository:
             subject_type=subject_type,
             subject_id=subject_id,
             variant_id=variant_id,
+            profile_id=profile_id,
+            automation_id=automation_id,
             properties=properties or {},
         )
         self._session.add(event)
@@ -132,6 +140,8 @@ class AnalyticsRepository:
         merchant_id: UUID,
         since: datetime,
         event_types: Sequence[str] | None = None,
+        profile_id: UUID | None = None,
+        automation_id: UUID | None = None,
     ) -> dict[str, int]:
         """Conteggio eventi per `event_type` in una finestra (ADR 0021).
 
@@ -139,6 +149,10 @@ class AnalyticsRepository:
         forma generica per la dashboard configurabile: il chiamante decide
         QUALI event_type mappare invece di avere i campi cablati nel DTO.
         `event_types=None` conta tutto (utile per un'anteprima del catalogo).
+
+        `profile_id` / `automation_id` sono le dimensioni introdotte da 0047: la
+        pagina Statistiche divisa per profili le passa per restringere ogni
+        bolla al profilo selezionato.
         """
         stmt = (
             select(AnalyticsEvent.event_type, func.count(AnalyticsEvent.id))
@@ -153,6 +167,10 @@ class AnalyticsRepository:
             if not wanted:
                 return {}
             stmt = stmt.where(AnalyticsEvent.event_type.in_(wanted))
+        if profile_id is not None:
+            stmt = stmt.where(AnalyticsEvent.profile_id == profile_id)
+        if automation_id is not None:
+            stmt = stmt.where(AnalyticsEvent.automation_id == automation_id)
         rows = (await self._session.execute(stmt)).tuples().all()
         return {str(event_type): int(count) for event_type, count in rows}
 

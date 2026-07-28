@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_resolver.schema import SYSTEM_DEFAULTS, ConfigKey
-from db.models import BotConfig, BotTemplate, Merchant
+from db.models import BotConfig, BotTemplate, ConversationProfile, Merchant
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -40,7 +40,13 @@ def get_shared_redis() -> Redis | None:
 
 
 class ConfigResolver:
-    """Three-level cascade: merchant override → agency default → system default.
+    """Cascata: profilo → merchant → agenzia → system default.
+
+    I primi tre livelli sono override-bag della stessa forma, il quarto sono i
+    default in codice. Il livello **profilo** (ADR 0022) è per-conversazione e
+    opzionale: con ``profile_id=None`` — il default di ogni firma — la cascata è
+    identica a quella a tre livelli di prima, quindi i ~40 call-site esistenti
+    non cambiano comportamento.
 
     Every lookup round-trips through Redis with a short TTL. Cache invalidation
     happens on write at the matching level. The TTL is a safety net, not the
@@ -52,9 +58,38 @@ class ConfigResolver:
         self._session = session
         self._redis = redis if redis is not None else _shared_redis
 
-    async def resolve(self, key: ConfigKey | str, *, merchant_id: UUID) -> Any:
+    def _cache_prefix(self, merchant_id: UUID, profile_id: UUID | None) -> str:
+        """Namespace di cache per merchant, con il profilo quando c'è.
+
+        Senza il segmento del profilo due conversazioni dello stesso merchant su
+        profili diversi si sovrascriverebbero a vicenda la stessa chiave — è la
+        collisione che ADR 0022 segnalava fra le conseguenze. Resta sotto
+        ``cfg:{merchant_id}:`` così l'invalidazione a scan per merchant continua
+        a coprirlo senza modifiche.
+        """
+        if profile_id is None:
+            return f"cfg:{merchant_id}"
+        return f"cfg:{merchant_id}:p:{profile_id}"
+
+    async def _profile_overrides(self, profile_id: UUID | None) -> dict[str, Any]:
+        """Override del profilo, o ``{}`` se assente/disabilitato/cancellato.
+
+        Degradare a ``{}`` invece di sollevare è deliberato: un profilo rimosso
+        mentre una conversazione lo sta usando fa tornare quella conversazione al
+        comportamento del merchant, non rompe il turno.
+        """
+        if profile_id is None:
+            return {}
+        profile = await self._session.get(ConversationProfile, profile_id)
+        if profile is None or not profile.enabled:
+            return {}
+        return dict(profile.overrides or {})
+
+    async def resolve(
+        self, key: ConfigKey | str, *, merchant_id: UUID, profile_id: UUID | None = None
+    ) -> Any:
         key_str = key.value if isinstance(key, ConfigKey) else key
-        cache_key = f"cfg:{merchant_id}:{key_str}"
+        cache_key = f"{self._cache_prefix(merchant_id, profile_id)}:{key_str}"
 
         if self._redis is not None:
             try:
@@ -63,6 +98,13 @@ class ConfigResolver:
                     return json.loads(cached)
             except Exception as e:  # Redis down / network blip → fall back to DB.
                 logger.warning("config.cache.get_failed", key=cache_key, error=str(e))
+
+        # 0. Profilo di conversazione (DELTA sopra il merchant, ADR 0022)
+        if profile_id is not None:
+            value = _lookup(await self._profile_overrides(profile_id), key_str)
+            if value is not None:
+                await self._cache(cache_key, value)
+                return value
 
         # 1. Merchant override
         cfg = await self._session.execute(
@@ -110,7 +152,9 @@ class ConfigResolver:
         await self._cache(cache_key, value)
         return value
 
-    async def resolve_all(self, *, merchant_id: UUID) -> dict[str, Any]:
+    async def resolve_all(
+        self, *, merchant_id: UUID, profile_id: UUID | None = None
+    ) -> dict[str, Any]:
         """Resolve every ``ConfigKey`` for a merchant in a single pass.
 
         One Redis read of the whole bag (``cfg:{merchant_id}:__resolved__``) on
@@ -119,7 +163,7 @@ class ConfigResolver:
         by ``ConfigKey.value`` (dotted), ready to feed ``_dotted_set``. Cascade
         and None-skip semantics match ``resolve()`` exactly.
         """
-        cache_key = f"cfg:{merchant_id}:{RESOLVED_CACHE_KEY}"
+        cache_key = f"{self._cache_prefix(merchant_id, profile_id)}:{RESOLVED_CACHE_KEY}"
 
         if self._redis is not None:
             try:
@@ -162,10 +206,15 @@ class ConfigResolver:
                 )
             ).scalar_one_or_none() or {}
 
+        # 0. Profilo di conversazione — livello più alto della cascata.
+        profile_overrides = await self._profile_overrides(profile_id)
+
         resolved: dict[str, Any] = {}
         for key in ConfigKey:
             key_str = key.value
-            value = _lookup(overrides, key_str)
+            value = _lookup(profile_overrides, key_str)
+            if value is None:
+                value = _lookup(overrides, key_str)
             if value is None:
                 value = _lookup(defaults, key_str)
             if value is None:
@@ -176,6 +225,14 @@ class ConfigResolver:
         return resolved
 
     async def invalidate(self, merchant_id: UUID, *, keys: list[str] | None = None) -> None:
+        """Invalida la cache del merchant.
+
+        ATTENZIONE: la forma mirata (``keys=[...]``) colpisce solo le chiavi
+        senza profilo. Chi scrive un profilo — o qualunque cosa che i profili
+        possano sovrascrivere — deve chiamare con ``keys=None``, che fa lo scan
+        di ``cfg:{merchant_id}:*`` e porta via anche le voci namespacate per
+        profilo.
+        """
         if self._redis is None:
             return
         try:
@@ -229,5 +286,8 @@ async def resolve(
     *,
     merchant_id: UUID,
     key: ConfigKey | str,
+    profile_id: UUID | None = None,
 ) -> Any:
-    return await ConfigResolver(session, redis).resolve(key, merchant_id=merchant_id)
+    return await ConfigResolver(session, redis).resolve(
+        key, merchant_id=merchant_id, profile_id=profile_id
+    )

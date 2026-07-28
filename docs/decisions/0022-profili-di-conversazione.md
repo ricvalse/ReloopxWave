@@ -126,3 +126,49 @@ la persona base.
   thread-are `active_profile_id`/`automation_id` nelle emit analytics + le
   dimensioni V2 dell'ADR 0021 (GIN su properties). I due assi si saldano lì.
 - **Nessuna migrazione dati** sullo storico: i profili valgono da qui in avanti.
+
+---
+
+## Aggiornamento 2026-07-28 — implementazione (vedi ADR 0023)
+
+Il disegno è stato implementato insieme all'attribuzione delle statistiche
+(migrazione 0047). Tre scostamenti rispetto a quanto congelato sopra, tutti
+deliberati:
+
+1. **Tabella `conversation_profiles`, non `bot_profiles`.** Lo scope V1 è il solo
+   comportamento della conversazione (playbook, tono, `system_prompt_additions`),
+   non tutti i knob: `bot_profiles` avrebbe suggerito un terzo fratello di
+   `bot_configs`/`bot_templates` con pari poteri.
+
+2. **Carrier promosso da `conversation.meta['active_profile_id']` a colonna
+   `conversations.profile_id`.** L'ADR prevedeva la colonna "in V2 se serve
+   indice": la reportistica per-profilo *è* quel caso, e la migrazione si stava
+   comunque facendo, quindi il costo marginale era zero. Il puntatore ha una FK
+   con `ON DELETE SET NULL` (è vivo e mutabile, a differenza dei timbri storici
+   su `messages`/`analytics_events`, che FK non ne hanno — vedi ADR 0023 §2).
+
+3. **Lo scope degli override si estende a `dashboard.metrics`.** L'ADR congelava
+   "V1 = solo comportamento". Aggiungere questa chiave è un'estensione
+   deliberata e ristretta: è di sola lettura e non altera il comportamento del
+   bot a runtime, che era la ragione del vincolo. In cambio, "ogni profilo ha il
+   suo set di bolle" non richiede nessun meccanismo nuovo — la pagina
+   Statistiche divisa per profili è una conseguenza del profilo come livello 0
+   della cascata. Restano fuori booking, scoring, RAG e `model_override`.
+
+Firma effettiva del resolver: `resolve(key, *, merchant_id, profile_id=None)` —
+il resolver carica gli override dal profilo invece di riceverli, così i call-site
+passano il `conv.profile_id` che hanno già e la chiave di cache può essere
+namespacata in modo stabile (`cfg:{merchant}:p:{profilo}:{key}`, sotto il prefisso
+che l'invalidazione a scan già copre). **Attenzione**: la forma mirata
+`invalidate(merchant_id, keys=[...])` NON tocca le voci namespacate per profilo —
+chi scrive un profilo deve invalidare con `keys=None`.
+
+Il **rischio n.1** è stato chiuso su entrambi i call-site: `conversation_service`
+(inbound, via `_ReplyContext.conv_profile_id`) e `_build_ai_reply_deps`
+(proattivo, via `RunContext.profile_id`). Il reset di fine episodio è agganciato a
+`close_idle_active`, con una singola UPDATE a sottoquery correlata (il profilo di
+default varia per merchant e il batch ne contiene molti).
+
+Aggiunti anche i due nodi previsti: `set_conversation_profile` (azione) e
+`conversation_profile` (condizione, che è anche il cancello che rende sostenibile
+un `ai_check` su `message_received`).

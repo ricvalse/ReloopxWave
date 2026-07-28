@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _StrictModel(BaseModel):
@@ -205,14 +205,64 @@ class ConfigKey(StrEnum):
 # prima. `id` è la chiave stabile usata dal FE; `event_type` deve appartenere al
 # catalogo (validato da `MetricDefinitionSchema`).
 _DEFAULT_DASHBOARD_METRICS: list[dict[str, Any]] = [
-    {"id": "bookings_created", "label": "Appuntamenti presi", "event_type": "booking.created"},
-    {"id": "messages_received", "label": "Messaggi ricevuti", "event_type": "message.received"},
-    {"id": "messages_replied", "label": "Risposte inviate", "event_type": "message.replied"},
-    {"id": "pipeline_moved", "label": "Spostamenti in pipeline", "event_type": "pipeline.moved"},
+    {
+        "id": "bookings_created",
+        "label": "Appuntamenti presi",
+        "source": "event",
+        "event_type": "booking.created",
+    },
+    {
+        "id": "messages_received",
+        "label": "Messaggi ricevuti",
+        "source": "event",
+        "event_type": "message.received",
+    },
+    {
+        "id": "messages_replied",
+        "label": "Risposte inviate",
+        "source": "event",
+        "event_type": "message.replied",
+    },
+    {
+        "id": "pipeline_moved",
+        "label": "Spostamenti in pipeline",
+        "source": "event",
+        "event_type": "pipeline.moved",
+    },
     {
         "id": "reminders_sent",
         "label": "Promemoria inviati",
+        "source": "event",
         "event_type": "appointment_reminder.sent",
+    },
+]
+
+# Bolle strutturali offerte in aggiunta al catalogo eventi. Non sono nei default
+# (che riproducono la dashboard storica) ma il metric-builder le propone come
+# "automatiche": non richiedono né una dichiarazione né un'automazione.
+STRUCTURAL_METRIC_PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "automation_messages_sent",
+        "label": "Messaggi inviati",
+        "source": "messages",
+        "direction": "out",
+        "sender_types": ["automation", "automation_ai"],
+    },
+    {
+        "id": "automation_replies_received",
+        "label": "Risposte ricevute",
+        "source": "messages",
+        "direction": "out",
+        "sender_types": ["automation", "automation_ai"],
+        "has_reply": True,
+    },
+    {
+        "id": "automation_people_reached",
+        "label": "Persone raggiunte",
+        "source": "messages",
+        "direction": "out",
+        "sender_types": ["automation", "automation_ai"],
+        "aggregation": "count_unique",
     },
 ]
 
@@ -537,27 +587,62 @@ class ConversationConfig(_StrictModel):
 
 
 class MetricDefinitionSchema(_StrictModel):
-    """Una metrica della dashboard configurabile (ADR 0021).
+    """Una bolla della pagina Statistiche configurabile (ADR 0021 + 0047).
 
-    V1: conteggio di un `event_type` su una finestra temporale. `event_type` è
-    validato contro il catalogo tipato (`db.analytics_events.EventType`), così
-    una metrica non può puntare a un evento che il sistema non emette mai — è
-    esattamente il modo in cui è nato il bug `reminder.sent` (sempre 0).
+    Le bolle hanno **tre sorgenti**, e la distinzione non è cosmetica:
+
+    - `messages` — strutturale. Il vocabolario sta nel codice (`direction`,
+      `sender_type`, `automation_id` esistono per ogni merchant), quindi la
+      bolla funziona senza configurare nulla e senza cablarla in un'automazione.
+      Copre "messaggi inviati" e "risposte ricevute": lo stesso insieme letto due
+      volte, il che è ciò che rende sensato il rapporto fra i due numeri.
+    - `outcome` — **custom**. Il vocabolario appartiene al merchant, va prima
+      dichiarato (`outcome_definitions`) e poi cablato in un nodo `emit_outcome`.
+      È il caso "ha compilato il questionario".
+    - `event` — il catalogo eventi tipato preesistente (booking, pipeline,
+      escalation…).
+
+    In tutti e tre i casi il riferimento è validato contro un vocabolario, mai
+    una stringa libera: è la lezione del bug `reminder.sent` (una KPI ferma a
+    zero per mesi perché emettitore e lettore usavano stringhe diverse).
     """
 
     # Chiave stabile usata dal FE (e per riconoscere una metrica fra i salvataggi).
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
     label: str = Field(min_length=1, max_length=80)
-    event_type: str = Field(min_length=1, max_length=64)
+    source: Literal["event", "messages", "outcome"] = "event"
+
+    # --- source="event" ---------------------------------------------------
+    event_type: str | None = Field(default=None, max_length=64)
+
+    # --- source="outcome" -------------------------------------------------
+    # UUID di una `outcome_definitions`. Non una key testuale: una FK non si può
+    # sbagliare a digitare.
+    outcome_id: str | None = Field(default=None, max_length=64)
+
+    # --- source="messages" ------------------------------------------------
+    direction: Literal["in", "out"] | None = None
+    sender_types: list[str] = Field(default_factory=list, max_length=8)
+    # True → solo gli invii che hanno ottenuto risposta; False → solo quelli
+    # rimasti senza; None → nessun filtro. È così che "risposte ricevute" è un
+    # sottoinsieme di "messaggi inviati" invece di una misura scorrelata.
+    has_reply: bool | None = None
+    automation_node_key: str | None = Field(default=None, max_length=64)
+
+    # --- comuni -----------------------------------------------------------
     # None = usa la finestra globale della dashboard (il `since_days` della query).
     window_days: int | None = Field(default=None, ge=1, le=365)
-    # V1: solo conteggio eventi. I rate hanno denominatori eterogenei non
-    # desumibili dai soli analytics_events (vedi ADR 0021).
-    aggregation: Literal["count"] = "count"
+    # `count` conta le righe; `count_unique` conta i soggetti distinti
+    # (conversazioni per `messages`). Serve per "quante persone" invece di
+    # "quanti messaggi". Per `outcome` con cardinalità `once_per_lead` i due
+    # coincidono già grazie all'indice unique.
+    aggregation: Literal["count", "count_unique"] = "count"
 
     @field_validator("event_type")
     @classmethod
-    def _event_type_must_be_known(cls, v: str) -> str:
+    def _event_type_must_be_known(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         # Import locale: tiene il modulo importabile anche se `db` non è
         # installato (es. tooling che carica solo lo schema).
         from db.analytics_events import EventType
@@ -569,6 +654,22 @@ class MetricDefinitionSchema(_StrictModel):
                 f"(GET /analytics/event-catalog)."
             )
         return v
+
+    @model_validator(mode="after")
+    def _source_requires_its_reference(self) -> MetricDefinitionSchema:
+        """Ogni sorgente deve portare il proprio riferimento.
+
+        Senza questo, una bolla `outcome` senza `outcome_id` verrebbe salvata e
+        poi mostrerebbe zero per sempre — di nuovo il fallimento silenzioso che
+        il catalogo tipato doveva chiudere.
+        """
+        if self.source == "event" and not self.event_type:
+            raise ValueError("una metrica source='event' richiede event_type")
+        if self.source == "outcome" and not self.outcome_id:
+            raise ValueError("una metrica source='outcome' richiede outcome_id")
+        if self.source == "messages" and self.direction is None:
+            raise ValueError("una metrica source='messages' richiede direction ('in' o 'out')")
+        return self
 
 
 class DashboardConfig(_StrictModel):

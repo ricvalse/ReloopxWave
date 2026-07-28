@@ -44,7 +44,10 @@ from db.repositories.services import (
 from db.repositories.lead import LeadRepository, ReactivationCandidate
 from db.repositories.message import MessageRepository
 from db.repositories.objection import CategoryCount, ObjectionRepository
+from db.repositories.outcome import OutcomeCount, OutcomeRepository
+from db.repositories.profile import ConversationProfileRepository
 from db.repositories.prompt import PromptRepository
+from db.repositories.stats import MessageFilter, StatsRepository, TouchBreakdown
 from db.repositories.template import BotTemplateRepository
 from db.repositories.tenant import MerchantRepository, TenantRepository, UserRepository
 from db.repositories.whatsapp_template import WhatsAppTemplateRepository
@@ -61,6 +64,7 @@ __all__ = [
     "BotCorrectionRepository",
     "BotTemplateRepository",
     "CategoryCount",
+    "ConversationProfileRepository",
     "ConversationRepository",
     "FaqRepository",
     "FlowRepository",
@@ -77,8 +81,11 @@ __all__ = [
     "ServiceRepository",
     "LeadRepository",
     "MerchantRepository",
+    "MessageFilter",
     "MessageRepository",
     "ObjectionRepository",
+    "OutcomeCount",
+    "OutcomeRepository",
     "PromptRepository",
     "ReactivationCandidate",
     "ReminderCandidate",
@@ -87,8 +94,10 @@ __all__ = [
     "ResolvedGHLIntegration",
     "ResolvedLocationToken",
     "ResolvedWhatsAppIntegration",
+    "StatsRepository",
     "StorePolicyRepository",
     "TenantRepository",
+    "TouchBreakdown",
     "UserRepository",
     "VariantMetric",
     "WhatsAppTemplateRepository",

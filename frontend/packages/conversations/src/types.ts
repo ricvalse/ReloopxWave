@@ -38,17 +38,28 @@ export interface Conversation {
 }
 
 /**
- * `phone` — message originated from the merchant's WhatsApp Business App on
- * their handset (360dialog Coexistence echo). `human` — composer-typed reply
- * via the web UI. `ai` — assistant turn. `automation` / `automation_ai` /
- * `appointment_reminder` — proactive sends fired by the lavagnetta automations
- * and schedulers. Other backends may omit `meta` or `sender_type` entirely,
- * hence both are optional.
+ * Chi ha prodotto il messaggio.
+ *
+ * `customer` — turno in entrata dal lead. `phone` — dall'app WhatsApp Business
+ * sul telefono del merchant (echo Coexistence). `human` — risposta scritta dal
+ * composer web. `ai` — turno dell'assistente. `agent_action` — invio partito da
+ * un'azione dell'agente (es. proposta di slot). `automation` / `automation_ai` /
+ * `appointment_reminder` — invii proattivi da lavagnetta e scheduler.
+ *
+ * La fonte di verità è il CHECK constraint `ck_messages_sender_type`
+ * (migrazione 0047), che rimpiazza la vecchia chiave JSONB `meta.sender_type`.
+ * Questo union NON viene da OpenAPI: l'inbox legge i messaggi **direttamente da
+ * Supabase** (spec 4.4), quindi va tenuto allineato a mano — ed era già
+ * divergente, perché elencava sei valori mentre il backend ne scriveva otto:
+ * `customer` e `agent_action` mancavano, e un messaggio inviato da un'azione
+ * dell'agente non matchava nessun ramo della UI.
  */
 export type SenderType =
+  | 'customer'
   | 'phone'
   | 'human'
   | 'ai'
+  | 'agent_action'
   | 'automation'
   | 'automation_ai'
   | 'appointment_reminder';
@@ -102,8 +113,29 @@ export interface Message {
   read_at: string | null;
   failed_at: string | null;
   error: Record<string, unknown> | null;
+  /**
+   * Colonna dalla migrazione 0047, fonte di verità. Opzionale perché le righe
+   * lette prima del deploy del backend possono non averla; usa `senderTypeOf`
+   * invece di leggerla direttamente, che ricade su `meta.sender_type`.
+   */
+  sender_type?: SenderType | null;
+  /** Attribuzione last-touch: l'invio a cui questo messaggio risponde. */
+  reply_to_message_id?: string | null;
+  /** Attribuzione: quale automazione e quale nodo hanno prodotto l'invio. */
+  automation_id?: string | null;
+  automation_node_key?: string | null;
   meta?: MessageMeta | null;
   created_at: string;
+}
+
+/** Legge il mittente dalla colonna, con fallback sul vecchio JSONB.
+ *
+ * Il backend scrive entrambi per una release: l'inbox legge da Supabase in
+ * diretta e in Realtime, quindi durante la finestra di deploy convivono righe
+ * scritte da versioni diverse.
+ */
+export function senderTypeOf(message: Pick<Message, 'sender_type' | 'meta'>): SenderType | null {
+  return message.sender_type ?? message.meta?.sender_type ?? null;
 }
 
 export interface ThreadFilters {

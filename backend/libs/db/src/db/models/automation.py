@@ -57,6 +57,24 @@ CONDITION_TYPES = (
     "time_of_day",  # cfg: {"from": "09:00", "to": "18:00"}
     "message_contains",  # cfg: {"keywords": ["prezzo", "costo"]}
     "ai_check",  # cfg: {"prompt": str, "model": str|None} — LLM evaluates prompt → bool
+    # --- Cancelli deterministici (0047) -------------------------------------
+    # Esistono per rendere sostenibile un `ai_check` su `message_received`: senza
+    # nulla a monte, quel trigger fa partire una chiamata LLM per OGNI messaggio
+    # in ingresso del merchant, non solo per quelli della campagna. Questi tre
+    # costano zero (leggono colonne indicizzate) e vanno messi prima.
+    #
+    # cfg: {"profile_id": uuid} — vero se la conversazione ha quel profilo attivo.
+    "conversation_profile",
+    # cfg: {"node_key": str, "automation_id": uuid|None} — vero se l'ultimo
+    # messaggio in uscita del thread è stato inviato da quel nodo. È il cancello
+    # da preferire a `message_contains` quando si vuole riconoscere una risposta
+    # a una domanda precisa: se il tocco chiedeva "hai compilato il
+    # questionario?", il lead risponde "sì" e nessuna keyword matcherebbe.
+    "last_touch_node",
+    # cfg: {"outcome_id": uuid, "scope": "lead"|"conversation"} — vero se l'esito
+    # è già stato registrato. Usato negato, toglie definitivamente dal perimetro
+    # chi ha già confermato.
+    "has_outcome",
     # Composite "se": combine atomic clauses with AND/OR (+ per-clause negate).
     # cfg: {"operator": "and|or",
     #       "clauses": [{"type": <atomic CONDITION_TYPE>, "negate": bool, ...atomic cfg keys}]}
@@ -94,6 +112,17 @@ ACTION_TYPES = (
     # Hand the conversation to a human operator (takeover), as an explicit flow step.
     # cfg: {"reason": str}
     "human_handoff",
+    # Registra un esito sul lead (migrazione 0047). Non invia nulla.
+    # cfg: {"outcome_id": uuid, "confidence": float|None, "value": {...}}
+    # Scrive un FATTO — una riga in `lead_outcomes` — non incrementa un
+    # contatore: la statistica è un COUNT su quelle righe. Un contatore
+    # deriverebbe sotto le ri-esecuzioni del motore stateless, non sarebbe
+    # affettabile per finestra temporale né per profilo, non sarebbe correggibile
+    # e non saprebbe dire *chi*. L'unicità a DB rende l'azione idempotente.
+    "emit_outcome",
+    # Carica un profilo di conversazione (ADR 0022). Non invia nulla.
+    # cfg: {"profile_id": uuid} — il turno successivo lo legge dalla cascata.
+    "set_conversation_profile",
     # Post a message to the merchant's connected Slack incoming webhook. Sends no
     # WhatsApp; the webhook creds live in `integrations` (provider='slack'), the
     # logic in the isolated `notifications` lib. cfg: {"text": str|None} — an

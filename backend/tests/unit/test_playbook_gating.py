@@ -179,7 +179,7 @@ class _FakeResolver:
     def __init__(self, values):
         self._values = values
 
-    async def resolve(self, key, *, merchant_id):
+    async def resolve(self, key, *, merchant_id, profile_id=None):
         return self._values.get(key)
 
 

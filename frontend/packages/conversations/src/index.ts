@@ -50,7 +50,7 @@ export type {
   Lead,
   Objection,
 } from './types';
-export { isAutomationSender } from './types';
+export { isAutomationSender, senderTypeOf } from './types';
 
 // Lib utils
 export {

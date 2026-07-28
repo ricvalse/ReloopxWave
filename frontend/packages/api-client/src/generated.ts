@@ -1104,12 +1104,17 @@ export interface paths {
         };
         /**
          * Merchant Metrics
-         * @description Calcola le metriche configurate per il merchant (ADR 0021).
+         * @description Calcola le bolle configurate per il merchant (ADR 0021 + 0047).
          *
-         *     Le definizioni vengono dal config cascade (`dashboard.metrics`): il merchant
-         *     eredita quelle d'agenzia finché non le sovrascrive. Ogni metrica è un
-         *     conteggio di `event_type` sulla finestra globale `since_days`, salvo che la
-         *     definizione porti un `window_days` proprio.
+         *     Le definizioni vengono dal config cascade (`dashboard.metrics`). Con
+         *     `profile_id` la risoluzione passa per il **livello 0** della cascata, quindi
+         *     un profilo può avere un proprio set di bolle e non solo dati filtrati: è così
+         *     che la pagina "divisa per profili" funziona su due assi — *quali* bolle vedi,
+         *     e *su quali dati*.
+         *
+         *     Le tre sorgenti hanno tre query diverse: `event` conta `analytics_events`
+         *     (una query per finestra), `messages` conta i messaggi con filtri strutturali,
+         *     `outcome` conta i fatti in `lead_outcomes`.
          */
         get: operations["merchant_metrics_analytics_metrics_get"];
         put?: never;
@@ -1184,6 +1189,93 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/statistics/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Profiles */
+        get: operations["list_profiles_statistics_profiles_get"];
+        put?: never;
+        /** Create Profile */
+        post: operations["create_profile_statistics_profiles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statistics/profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Profile */
+        delete: operations["delete_profile_statistics_profiles__profile_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Profile */
+        patch: operations["update_profile_statistics_profiles__profile_id__patch"];
+        trace?: never;
+    };
+    "/statistics/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Outcomes
+         * @description Il vocabolario degli esiti di questo merchant.
+         *
+         *     È la tendina del metric-builder (accanto al catalogo eventi tipato) **e**
+         *     quella del nodo `emit_outcome`. Le due liste vengono dalla stessa fonte, che
+         *     è esattamente ciò che impedisce a emettitore e lettore di divergere.
+         */
+        get: operations["list_outcomes_statistics_outcomes_get"];
+        put?: never;
+        /** Create Outcome */
+        post: operations["create_outcome_statistics_outcomes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statistics/outcomes/{outcome_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Outcome
+         * @description Elimina la statistica **e il suo storico** (CASCADE).
+         *
+         *     Per smettere di misurare conservando i dati si usa `enabled=false`.
+         */
+        delete: operations["delete_outcome_statistics_outcomes__outcome_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Outcome
+         * @description `key` e `cardinality` non sono modificabili — vedi il repository.
+         */
+        patch: operations["update_outcome_statistics_outcomes__outcome_id__patch"];
         trace?: never;
     };
     "/playground/turn": {
@@ -3210,28 +3302,56 @@ export interface components {
         };
         /**
          * MetricDefinitionSchema
-         * @description Una metrica della dashboard configurabile (ADR 0021).
+         * @description Una bolla della pagina Statistiche configurabile (ADR 0021 + 0047).
          *
-         *     V1: conteggio di un `event_type` su una finestra temporale. `event_type` è
-         *     validato contro il catalogo tipato (`db.analytics_events.EventType`), così
-         *     una metrica non può puntare a un evento che il sistema non emette mai — è
-         *     esattamente il modo in cui è nato il bug `reminder.sent` (sempre 0).
+         *     Le bolle hanno **tre sorgenti**, e la distinzione non è cosmetica:
+         *
+         *     - `messages` — strutturale. Il vocabolario sta nel codice (`direction`,
+         *       `sender_type`, `automation_id` esistono per ogni merchant), quindi la
+         *       bolla funziona senza configurare nulla e senza cablarla in un'automazione.
+         *       Copre "messaggi inviati" e "risposte ricevute": lo stesso insieme letto due
+         *       volte, il che è ciò che rende sensato il rapporto fra i due numeri.
+         *     - `outcome` — **custom**. Il vocabolario appartiene al merchant, va prima
+         *       dichiarato (`outcome_definitions`) e poi cablato in un nodo `emit_outcome`.
+         *       È il caso "ha compilato il questionario".
+         *     - `event` — il catalogo eventi tipato preesistente (booking, pipeline,
+         *       escalation…).
+         *
+         *     In tutti e tre i casi il riferimento è validato contro un vocabolario, mai
+         *     una stringa libera: è la lezione del bug `reminder.sent` (una KPI ferma a
+         *     zero per mesi perché emettitore e lettore usavano stringhe diverse).
          */
         MetricDefinitionSchema: {
             /** Id */
             id: string;
             /** Label */
             label: string;
+            /**
+             * Source
+             * @default event
+             * @enum {string}
+             */
+            source: "event" | "messages" | "outcome";
             /** Event Type */
-            event_type: string;
+            event_type?: string | null;
+            /** Outcome Id */
+            outcome_id?: string | null;
+            /** Direction */
+            direction?: ("in" | "out") | null;
+            /** Sender Types */
+            sender_types?: string[];
+            /** Has Reply */
+            has_reply?: boolean | null;
+            /** Automation Node Key */
+            automation_node_key?: string | null;
             /** Window Days */
             window_days?: number | null;
             /**
              * Aggregation
              * @default count
-             * @constant
+             * @enum {string}
              */
-            aggregation: "count";
+            aggregation: "count" | "count_unique";
         };
         /** MetricValueOut */
         MetricValueOut: {
@@ -3239,17 +3359,25 @@ export interface components {
             id: string;
             /** Label */
             label: string;
-            /** Event Type */
-            event_type: string;
+            /** Source */
+            source: string;
             /** Window Days */
             window_days: number;
             /** Value */
             value: number;
+            /** Event Type */
+            event_type?: string | null;
+            /** Outcome Id */
+            outcome_id?: string | null;
+            /** Verified */
+            verified?: number | null;
         };
         /** MetricsOut */
         MetricsOut: {
             /** Since Days */
             since_days: number;
+            /** Profile Id */
+            profile_id?: string | null;
             /** Metrics */
             metrics: components["schemas"]["MetricValueOut"][];
         };
@@ -3299,6 +3427,58 @@ export interface components {
         ObjectionsConfig: {
             /** Categories */
             categories?: string[];
+        };
+        /** OutcomeOut */
+        OutcomeOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string | null;
+            /** Source Kind */
+            source_kind: string;
+            /** Cardinality */
+            cardinality: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Is Library */
+            is_library: boolean;
+        };
+        /** OutcomePatchIn */
+        OutcomePatchIn: {
+            /** Label */
+            label?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Source Kind */
+            source_kind?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+        };
+        /** OutcomeUpsertIn */
+        OutcomeUpsertIn: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Source Kind
+             * @default ai_check
+             */
+            source_kind: string;
+            /**
+             * Cardinality
+             * @default once_per_lead
+             */
+            cardinality: string;
         };
         /** OverridesIn */
         OverridesIn: {
@@ -3583,6 +3763,63 @@ export interface components {
              * @default 24
              */
             retention_months: number;
+        };
+        /** ProfileOut */
+        ProfileOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /** Is Default */
+            is_default: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Is Library */
+            is_library: boolean;
+            /** Overrides */
+            overrides: {
+                [key: string]: unknown;
+            };
+        };
+        /** ProfilePatchIn */
+        ProfilePatchIn: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Overrides */
+            overrides?: {
+                [key: string]: unknown;
+            } | null;
+            /** Is Default */
+            is_default?: boolean | null;
+        };
+        /** ProfileUpsertIn */
+        ProfileUpsertIn: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /** Overrides */
+            overrides?: {
+                [key: string]: unknown;
+            };
         };
         /** RagConfig */
         RagConfig: {
@@ -6677,6 +6914,10 @@ export interface operations {
                 since_days?: number;
                 /** @description Admin-only: target merchant_id */
                 merchant_id?: string | null;
+                /** @description Restringe ogni bolla al profilo di conversazione indicato */
+                profile_id?: string | null;
+                /** @description Restringe le bolle a una singola automazione (campagna) */
+                automation_id?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -6802,6 +7043,276 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PredictiveLeadScoreOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_profiles_statistics_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_profile_statistics_profiles_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileUpsertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_profile_statistics_profiles__profile_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_profile_statistics_profiles__profile_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfilePatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_outcomes_statistics_outcomes_get: {
+        parameters: {
+            query?: {
+                enabled_only?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_outcome_statistics_outcomes_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomeUpsertIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_outcome_statistics_outcomes__outcome_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                outcome_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_outcome_statistics_outcomes__outcome_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                outcome_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomePatchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"];
                 };
             };
             /** @description Validation Error */
@@ -8546,6 +9057,14 @@ export enum ApiPaths {
     list_events_analytics_events_get = "/analytics/events",
     objection_trends_analytics_merchant_objection_trends_get = "/analytics/merchant/objection-trends",
     predictive_lead_scores_analytics_merchant_lead_scores_get = "/analytics/merchant/lead-scores",
+    list_profiles_statistics_profiles_get = "/statistics/profiles",
+    create_profile_statistics_profiles_post = "/statistics/profiles",
+    update_profile_statistics_profiles__profile_id__patch = "/statistics/profiles/{profile_id}",
+    delete_profile_statistics_profiles__profile_id__delete = "/statistics/profiles/{profile_id}",
+    list_outcomes_statistics_outcomes_get = "/statistics/outcomes",
+    create_outcome_statistics_outcomes_post = "/statistics/outcomes",
+    update_outcome_statistics_outcomes__outcome_id__patch = "/statistics/outcomes/{outcome_id}",
+    delete_outcome_statistics_outcomes__outcome_id__delete = "/statistics/outcomes/{outcome_id}",
     playground_turn_playground_turn_post = "/playground/turn",
     playground_apply_playground_apply_post = "/playground/apply",
     list_experiments_ab_test__get = "/ab-test/",

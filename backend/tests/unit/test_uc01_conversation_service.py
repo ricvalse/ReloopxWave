@@ -51,6 +51,9 @@ class FakeConversation:
     last_message_at: Any = None
     current_state: str | None = None
     context_summary: dict | None = None
+    # Profilo di conversazione attivo (ADR 0022 / migrazione 0047). None =
+    # nessun profilo, cioè il comportamento identico a prima dei profili.
+    profile_id: uuid.UUID | None = None
 
 
 class FakeSession:
@@ -210,6 +213,10 @@ def service(
 
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
+        async def resolve_reply_target(self, conversation_id):
+            # Nessun tocco precedente in questi test: l'inbound non attribuisce.
+            return None
 
         async def persist_user_message(self, **kw):
             self.user_calls.append(kw)
@@ -400,7 +407,14 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
         return True
 
     async def fake_resolve_prompt(
-        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
+        self,
+        *,
+        session,
+        merchant_id,
+        variant_id=None,
+        prior_sentiment=None,
+        customer_message=None,
+        profile_id=None,
     ):
         return "system prompt"
 
@@ -465,6 +479,10 @@ async def test_inbound_persisted_and_fallback_sent_when_llm_fails(
 
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
+        async def resolve_reply_target(self, conversation_id):
+            # Nessun tocco precedente in questi test: l'inbound non attribuisce.
+            return None
 
         async def persist_user_message(self, **kw):
             user_calls.append(kw)
@@ -540,7 +558,14 @@ async def test_inbound_idempotent_on_redelivery(
         return True
 
     async def fake_resolve_prompt(
-        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
+        self,
+        *,
+        session,
+        merchant_id,
+        variant_id=None,
+        prior_sentiment=None,
+        customer_message=None,
+        profile_id=None,
     ):
         return "system prompt"
 
@@ -604,6 +629,10 @@ async def test_inbound_idempotent_on_redelivery(
 
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
+        async def resolve_reply_target(self, conversation_id):
+            # Nessun tocco precedente in questi test: l'inbound non attribuisce.
+            return None
 
         async def persist_user_message(self, **kw):
             user_calls.append(kw)
@@ -780,7 +809,14 @@ async def test_lost_handoff_claim_suppresses_reply_and_action(
         return True
 
     async def fake_resolve_prompt(
-        self, *, session, merchant_id, variant_id=None, prior_sentiment=None, customer_message=None
+        self,
+        *,
+        session,
+        merchant_id,
+        variant_id=None,
+        prior_sentiment=None,
+        customer_message=None,
+        profile_id=None,
     ):
         return "system prompt"
 
@@ -841,6 +877,10 @@ async def test_lost_handoff_claim_suppresses_reply_and_action(
 
         async def list_history(self, conversation_id, *, limit=30):
             return []
+
+        async def resolve_reply_target(self, conversation_id):
+            # Nessun tocco precedente in questi test: l'inbound non attribuisce.
+            return None
 
         async def persist_user_message(self, **kw):
             return None

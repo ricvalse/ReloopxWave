@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import DateTime, Integer, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Conversation, Lead, Merchant
+from db.models import Conversation, ConversationProfile, Lead, Merchant
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -118,13 +118,28 @@ class ConversationRepository:
         wa_phone_number_id: str,
         wa_contact_phone: str,
         variant_id: str | None = None,
+        profile_id: UUID | None = None,
     ) -> Conversation:
+        # `profile_id` non passato → si adotta il profilo `is_default` del
+        # merchant (ADR 0022). Se il merchant non ne ha definiti, resta None e la
+        # conversazione gira esattamente come prima dei profili.
+        if profile_id is None:
+            profile_id = (
+                await self._session.execute(
+                    select(ConversationProfile.id).where(
+                        ConversationProfile.merchant_id == merchant_id,
+                        ConversationProfile.is_default.is_(True),
+                        ConversationProfile.enabled.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
         conv = Conversation(
             merchant_id=merchant_id,
             lead_id=lead_id,
             wa_phone_number_id=wa_phone_number_id,
             wa_contact_phone=wa_contact_phone,
             variant_id=variant_id,
+            profile_id=profile_id,
             status="active",
         )
         self._session.add(conv)
@@ -227,6 +242,12 @@ class ConversationRepository:
         closed so the caller can enqueue UC-13 objection extraction for each.
         The threshold must sit *after* the follow-up window (UC-03) so we don't
         cut off pending reminders.
+
+        Chiudere la conversazione è anche la **fine dell'episodio** nel senso di
+        ADR 0022, quindi è qui che il profilo caricato da un'automazione decade e
+        si torna al profilo `is_default` del merchant. Agganciarlo alla chiusura
+        e non a uno stato di run è coerente col motore stateless (ADR 0015): non
+        c'è nessun altro punto che sappia dire "l'episodio è finito".
         """
         cutoff = datetime.now(tz=UTC) - timedelta(minutes=min_idle_minutes)
         ids = list(
@@ -248,7 +269,32 @@ class ConversationRepository:
             await self._session.execute(
                 update(Conversation).where(Conversation.id.in_(ids)).values(status="closed")
             )
+            await self._reset_profiles_to_default(ids)
         return ids
+
+    async def _reset_profiles_to_default(self, conversation_ids: list[UUID]) -> None:
+        """Riporta le conversazioni chiuse al profilo di default del loro merchant.
+
+        Una sola UPDATE con sottoquery correlata: il default varia per merchant e
+        il batch ne contiene molti. Se un merchant non ha un profilo di default
+        la sottoquery torna NULL, che è il valore giusto (nessun profilo).
+        """
+        default_for_merchant = (
+            select(ConversationProfile.id)
+            .where(
+                ConversationProfile.merchant_id == Conversation.merchant_id,
+                ConversationProfile.is_default.is_(True),
+                ConversationProfile.enabled.is_(True),
+            )
+            .limit(1)
+            .correlate(Conversation)
+            .scalar_subquery()
+        )
+        await self._session.execute(
+            update(Conversation)
+            .where(Conversation.id.in_(conversation_ids))
+            .values(profile_id=default_for_merchant)
+        )
 
     async def dropped_off_targets(
         self, conversation_ids: list[UUID]

@@ -34,6 +34,12 @@ class AnalyticsEvent(Base):
     subject_type: Mapped[str | None] = mapped_column(String(32))
     subject_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     variant_id: Mapped[str | None] = mapped_column(String(32))
+    # Le stesse dimensioni di attribuzione che portano `conversations` e
+    # `messages` (ADR 0021 §V2: senza queste, segmentare per profilo/automazione
+    # richiederebbe un filtro su `properties` e quindi un indice GIN). Timbri
+    # storici, nessuna FK.
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    automation_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     properties: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()"), index=True

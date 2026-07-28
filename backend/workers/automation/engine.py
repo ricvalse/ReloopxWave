@@ -20,15 +20,17 @@ inside it, ``send_template`` (approved template) anywhere — mirroring
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core.automations import (
+    _ASYNC_CONDITION_TYPES,
     _ATOMIC_CONDITION_TYPES,
     evaluate_condition,
     outgoing_targets,
@@ -42,11 +44,13 @@ from ai_core.router import RoutingRequest
 from db import (
     AnalyticsRepository,
     AutomationRepository,
+    ConversationProfileRepository,
     ConversationRepository,
     GHLMarketplaceRepository,
     IntegrationRepository,
     LeadRepository,
     MessageRepository,
+    OutcomeRepository,
     ResolvedFlowStep,
     TenantContext,
     WhatsAppTemplateRepository,
@@ -134,6 +138,20 @@ class RunContext:
     # (e.g. notify_slack picks the handoff-vs-overdue layout; human_handoff avoids
     # re-emitting the event that triggered it).
     trigger_type: str = ""
+    # Quale automazione sta camminando questo contesto, e quale profilo è attivo
+    # sulla conversazione. Prima di 0047 il contesto portava solo `trigger_type`:
+    # al momento dell'invio il motore non sapeva dire *quale* flusso stesse
+    # eseguendo, quindi la provenienza non era registrabile nemmeno volendo.
+    # Sono l'attribuzione che finisce su ogni Message inviato dal grafo, e la
+    # dimensione su cui la pagina Statistiche affetta le bolle.
+    automation_id: UUID | None = None
+    profile_id: UUID | None = None
+    # L'ultimo messaggio in uscita del thread: da quale automazione e da quale
+    # nodo. Precalcolati in `_resolve_context` così la condizione
+    # `last_touch_node` resta pura (niente IO dentro la valutazione) e funziona
+    # anche come clausola di un `condition_group` sul percorso sincrono.
+    last_touch_node_key: str | None = None
+    last_touch_automation_id: UUID | None = None
     # Last inbound (customer) message time — the ADR 0015 re-engagement signal the
     # stale-cadence guard compares against the episode anchor at each resume.
     last_inbound_at: datetime | None = None
@@ -153,6 +171,13 @@ class RunContext:
             "within_24h_window": self.within_window,
             "minutes_of_day": _utc_minutes_of_day(),
             "last_message": self.last_message,
+            # Confronti per stringa: la config del nodo arriva dal JSON del
+            # canvas, dove gli uuid sono testo.
+            "profile_id": str(self.profile_id) if self.profile_id else "",
+            "last_touch_node_key": self.last_touch_node_key or "",
+            "last_touch_automation_id": (
+                str(self.last_touch_automation_id) if self.last_touch_automation_id else ""
+            ),
         }
 
     def as_template_context(self) -> dict[str, str]:
@@ -231,7 +256,7 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
             for auto in await repo.list_enabled_by_trigger(
                 merchant_id=ev.merchant_id, trigger_type=trigger
             ):
-                if not _trigger_config_match(auto.trigger_config, ev.properties):
+                if not _trigger_config_match(auto.trigger_config, ev.properties, event=ev):
                     continue
                 await redis.enqueue_job(
                     "automation_run",
@@ -251,16 +276,36 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"events": len(events), "dispatched": dispatched}
 
 
-def _trigger_config_match(trigger_config: dict[str, Any] | None, properties: Any) -> bool:
+def _trigger_config_match(
+    trigger_config: dict[str, Any] | None,
+    properties: Any,
+    *,
+    event: AnalyticsEvent | None = None,
+) -> bool:
     """Per-trigger dispatch filter (ADR 0016): a trigger node may pin the CRM
     pipeline/stage it listens to (`pipeline_id` / `stage_id` in trigger_config);
     an event carrying a different value is not for this flow. An empty config
-    value means no filter on that key."""
+    value means no filter on that key.
+
+    Da 0047 il filtro accetta anche `profile_id`, ed è il punto in cui conviene
+    restringere una campagna. Un `message_received` non ha nessun filtro
+    naturale: un flusso sottoscritto parte su OGNI messaggio in ingresso del
+    merchant, di ogni conversazione. Filtrare qui significa non accodare proprio
+    il job — mentre la stessa condizione messa nel grafo lo accoda, costruisce le
+    dipendenze AI (che include una query di storico) e solo dopo lo scarta.
+    """
     cfg = trigger_config or {}
     props = properties if isinstance(properties, dict) else {}
     for key in ("pipeline_id", "stage_id"):
         wanted = str(cfg.get(key) or "").strip()
         if wanted and str(props.get(key) or "") != wanted:
+            return False
+    wanted_profile = str(cfg.get("profile_id") or "").strip()
+    if wanted_profile:
+        # La colonna dell'evento è la fonte di verità; `properties` resta come
+        # ripiego per gli emettitori che non sono ancora stati aggiornati.
+        actual = str(getattr(event, "profile_id", None) or props.get("profile_id") or "")
+        if actual != wanted_profile:
             return False
     return True
 
@@ -333,7 +378,17 @@ async def automation_run(
         run_ctx.api_key = wa.api_key
         run_ctx.waba_base_url = wa.waba_base_url
         run_ctx.trigger_type = automation.trigger_type or ""
-        ai_deps = await _build_ai_reply_deps(ctx, session, automation, run_ctx, UUID(merchant_id))
+        # L'attribuzione degli invii di questo walk. `_resolve_context` non può
+        # saperlo (risolve lead/conversazione, non il flusso): è qui che il
+        # contesto viene legato all'automazione che lo sta percorrendo.
+        run_ctx.automation_id = automation.id
+        # Pigre di proposito: costruirle qui costava una query di storico e due
+        # letture di config per ogni run di un flusso con nodi AI — cioè per ogni
+        # messaggio in ingresso del merchant su un trigger `message_received`,
+        # anche quando i cancelli deterministici spengono il ramo subito dopo.
+        ai_deps = _LazyAiDeps(
+            lambda: _build_ai_reply_deps(ctx, session, automation, run_ctx, UUID(merchant_id))
+        )
 
         start = start_keys if start_keys is not None else _trigger_successors(automation)
         sender = build_whatsapp_sender(
@@ -391,7 +446,7 @@ async def _walk(
     start_keys: list[str],
     sender: Any,
     templates: WhatsAppTemplateRepository,
-    ai_deps: AiReplyDeps | None = None,
+    ai_deps: AiReplyDeps | _LazyAiDeps | None = None,
     session: AsyncSession | None = None,
     settings: Any = None,
 ) -> tuple[int, list[tuple[int, list[str]]]]:
@@ -421,8 +476,14 @@ async def _walk(
             cfg = node.config or {}
             if node.type == "ai_check":
                 passed = await _evaluate_ai_check(cfg, run_ctx, ai_deps, label=node.node_key)
-            elif node.type == "condition_group" and _group_has_ai_clause(cfg):
-                passed = await _evaluate_group_async(cfg, run_ctx, ai_deps, label=node.node_key)
+            elif node.type == "has_outcome":
+                passed = await _evaluate_has_outcome(
+                    cfg, run_ctx, session=session, label=node.node_key
+                )
+            elif node.type == "condition_group" and _group_has_async_clause(cfg):
+                passed = await _evaluate_group_async(
+                    cfg, run_ctx, ai_deps, session=session, label=node.node_key
+                )
             else:
                 passed = evaluate_condition(node.type, cfg, run_ctx.as_condition_context())
             queue.extend(outgoing_targets(edges, key, branch="true" if passed else "false"))
@@ -477,10 +538,17 @@ async def _send_proactive(
     decision: Any,
     session: AsyncSession | None,
     sender_type: str,
+    node_key: str | None = None,
 ) -> None:
     """Send a proactive automation message, persisting the Message row when we
     have a conversation + session (so it shows in the inbox and delivery
-    callbacks attach via wa_message_id). Falls back to a plain send otherwise."""
+    callbacks attach via wa_message_id). Falls back to a plain send otherwise.
+
+    `node_key` è il tocco: distinguere il DM iniziale dal reminder a 7 giorni è
+    ciò che rende leggibile un funnel per-tocco, ed è anche il cancello
+    deterministico che permette di riconoscere "sta rispondendo *a quella*
+    domanda" senza spendere una chiamata all'LLM.
+    """
     if session is not None and run_ctx.conversation_id is not None:
         await send_and_persist_decision(
             sender,
@@ -490,6 +558,9 @@ async def _send_proactive(
             conversation_id=run_ctx.conversation_id,
             merchant_id=run_ctx.merchant_id,
             sender_type=sender_type,
+            automation_id=run_ctx.automation_id,
+            automation_node_key=node_key,
+            profile_id=run_ctx.profile_id,
         )
     else:
         await send_decision(sender, to_phone=run_ctx.phone, decision=decision)
@@ -501,7 +572,7 @@ async def _do_action(
     *,
     sender: Any,
     templates: WhatsAppTemplateRepository,
-    ai_deps: AiReplyDeps | None = None,
+    ai_deps: AiReplyDeps | _LazyAiDeps | None = None,
     session: AsyncSession | None = None,
     settings: Any = None,
 ) -> bool:
@@ -518,6 +589,10 @@ async def _do_action(
         )
     if node.type == "set_lead_field":
         return await _do_set_lead_field(node, cfg, run_ctx, session=session, settings=settings)
+    if node.type == "emit_outcome":
+        return await _do_emit_outcome(node, cfg, run_ctx, session=session)
+    if node.type == "set_conversation_profile":
+        return await _do_set_conversation_profile(node, cfg, run_ctx, session=session)
     if node.type == "human_handoff":
         return await _do_human_handoff(node, cfg, run_ctx, session=session)
     if node.type == "notify_slack":
@@ -558,6 +633,7 @@ async def _do_action(
             decision=decision,
             session=session,
             sender_type="automation",
+            node_key=node.node_key,
         )
         return True
 
@@ -579,6 +655,7 @@ async def _do_action(
             decision=OutboundDecision(mode=MODE_TEXT, text=text),
             session=session,
             sender_type="automation",
+            node_key=node.node_key,
         )
         return True
 
@@ -621,6 +698,7 @@ async def _do_action(
             decision=decision,
             session=session,
             sender_type="automation",
+            node_key=node.node_key,
         )
         return True
 
@@ -634,10 +712,11 @@ async def _do_ai_reply(
     *,
     sender: Any,
     templates: WhatsAppTemplateRepository,
-    ai_deps: AiReplyDeps | None,
+    ai_deps: AiReplyDeps | _LazyAiDeps | None,
     session: AsyncSession | None = None,
 ) -> bool:
     """Generate a proactive AI message, send it (24h gate), dispatch AI actions."""
+    ai_deps = await _deps_of(ai_deps)
     if ai_deps is None or run_ctx.conversation_id is None:
         logger.info("automation.ai_reply.skipped", node=node.node_key, reason="no_context")
         return False
@@ -712,6 +791,7 @@ async def _do_ai_reply(
             decision=decision,
             session=session,
             sender_type="automation_ai",
+            node_key=node.node_key,
         )
         sent_ok = True
 
@@ -732,6 +812,42 @@ async def _do_ai_reply(
     return sent_ok
 
 
+class _LazyAiDeps:
+    """Costruisce le dipendenze AI **alla prima richiesta**, non prima del walk.
+
+    Prima erano assemblate in cima a `automation_run` per ogni flusso contenente
+    un nodo AI, e questo include una `list_history(limit=30)` più due letture di
+    config. Su un trigger `message_received` significa pagarle a ogni messaggio
+    in ingresso del merchant, anche quando i cancelli deterministici spengono il
+    ramo prima di arrivare all'`ai_check` — cioè quasi sempre, se i cancelli
+    fanno il loro lavoro. Differendole, chi non raggiunge un nodo AI non paga
+    nulla.
+
+    Memoizza: un flusso con un `ai_check` e un `ai_reply` le costruisce una volta.
+    """
+
+    __slots__ = ("_built", "_deps", "_factory")
+
+    def __init__(self, factory: Callable[[], Awaitable[AiReplyDeps | None]]) -> None:
+        self._factory = factory
+        self._deps: AiReplyDeps | None = None
+        self._built = False
+
+    async def resolve(self) -> AiReplyDeps | None:
+        if not self._built:
+            self._deps = await self._factory()
+            self._built = True
+        return self._deps
+
+
+async def _deps_of(source: AiReplyDeps | _LazyAiDeps | None) -> AiReplyDeps | None:
+    """Normalizza il parametro `ai_deps`, che può essere già risolto (i test lo
+    passano così) oppure pigro."""
+    if source is None or isinstance(source, AiReplyDeps):
+        return source
+    return await source.resolve()
+
+
 async def _build_ai_reply_deps(
     ctx: dict[str, Any],
     session: AsyncSession,
@@ -750,8 +866,17 @@ async def _build_ai_reply_deps(
     if runtime is None:
         return None
     messages = await MessageRepository(session).list_history(run_ctx.conversation_id, limit=30)
-    system_prompt = await build_cascade_system_prompt(session=session, merchant_id=merchant_id)
-    playbook = await resolve_playbook_runtime(session, merchant_id)
+    # Il profilo attivo va applicato ANCHE qui, non solo sull'inbound: è il
+    # rischio n.1 dichiarato da ADR 0022. Aggiornare solo il percorso inbound
+    # farebbe sì che l'`ai_reply` di un'automazione ignori il profilo che
+    # l'automazione stessa ha appena caricato — cioè proprio il caso d'uso
+    # "Consulenza telefonica caricata da un'automazione".
+    system_prompt = await build_cascade_system_prompt(
+        session=session, merchant_id=merchant_id, profile_id=run_ctx.profile_id
+    )
+    playbook = await resolve_playbook_runtime(
+        session, merchant_id, profile_id=run_ctx.profile_id
+    )
     return AiReplyDeps(
         orchestrator=runtime.orchestrator,
         dispatcher=runtime.action_dispatcher,
@@ -779,6 +904,15 @@ def _group_has_ai_clause(cfg: dict[str, Any]) -> bool:
     )
 
 
+def _group_has_async_clause(cfg: dict[str, Any]) -> bool:
+    """True se il gruppo contiene una clausola che richiede IO (`ai_check` o
+    `has_outcome`) e va quindi valutato dal percorso asincrono."""
+    return any(
+        isinstance(c, dict) and str(c.get("type", "")) in _ASYNC_CONDITION_TYPES
+        for c in (cfg.get("clauses") or [])
+    )
+
+
 def _flow_uses_ai(automation: AutomationFlow) -> bool:
     """True if any node needs the LLM: an ai_reply/ai_check node, or a
     condition_group whose clauses include an ai_check."""
@@ -790,17 +924,61 @@ def _flow_uses_ai(automation: AutomationFlow) -> bool:
     return False
 
 
+async def _evaluate_has_outcome(
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    session: AsyncSession | None,
+    label: str,
+) -> bool:
+    """Il lead ha già raggiunto l'esito indicato?
+
+    È il cancello più efficace davanti a un `ai_check`: usato negato, una
+    conversazione che ha già confermato esce definitivamente dal perimetro e non
+    costa più nessuna chiamata al modello.
+
+    Fallisce **chiusa** (False) come `ai_check`: senza sessione o senza lead non
+    possiamo affermare che l'esito ci sia. Attenzione che con il ramo negato
+    questo significa "prosegui" — che è il comportamento giusto, perché
+    l'idempotenza vera sta comunque nell'indice unique a valle.
+    """
+    if session is None or run_ctx.lead_id is None:
+        logger.info("automation.has_outcome.skipped", node=label, reason="no_context")
+        return False
+    raw = str(cfg.get("outcome_id") or "").strip()
+    if not raw:
+        return False
+    try:
+        outcome_id = UUID(raw)
+    except ValueError:
+        logger.warning("automation.has_outcome.bad_id", node=label, outcome_id=raw)
+        return False
+    scope_conversation = str(cfg.get("scope") or "lead") == "conversation"
+    return await OutcomeRepository(session).has_outcome(
+        lead_id=run_ctx.lead_id,
+        outcome_id=outcome_id,
+        conversation_id=run_ctx.conversation_id if scope_conversation else None,
+    )
+
+
 async def _evaluate_group_async(
     cfg: dict[str, Any],
     run_ctx: RunContext,
-    ai_deps: AiReplyDeps | None,
+    ai_deps: AiReplyDeps | _LazyAiDeps | None,
     *,
+    session: AsyncSession | None = None,
     label: str,
 ) -> bool:
     """Async variant of ai_core `_evaluate_group` for a condition_group whose clauses
     may include `ai_check` (each AI clause = one LLM yes/no call). Atomic clauses
     reuse the sync `evaluate_condition`. Per-clause `negate` is honoured; an empty
-    group or an unknown clause type fails closed. AND/OR from `operator`."""
+    group or an unknown clause type fails closed. AND/OR from `operator`.
+
+    Con l'operatore `and` le clausole vengono valutate in ordine e si esce alla
+    prima falsa (short-circuit): mettere i cancelli deterministici prima
+    dell'`ai_check` nella lista è quindi ciò che evita la chiamata al modello,
+    non solo un'ottimizzazione estetica.
+    """
     clauses = cfg.get("clauses") or []
     if not clauses:
         return False
@@ -814,18 +992,28 @@ async def _evaluate_group_async(
         ctype = str(clause.get("type", ""))
         if ctype == "ai_check":
             value = await _evaluate_ai_check(clause, run_ctx, ai_deps, label=f"{label}[{i}]")
+        elif ctype == "has_outcome":
+            value = await _evaluate_has_outcome(
+                clause, run_ctx, session=session, label=f"{label}[{i}]"
+            )
         elif ctype in _ATOMIC_CONDITION_TYPES:
             value = evaluate_condition(ctype, clause, context)
         else:
             value = False
         results.append(not value if clause.get("negate") else value)
+        # Short-circuit: niente senso valutare (e pagare) le clausole successive
+        # quando l'esito del gruppo è già determinato.
+        if operator == "and" and not results[-1]:
+            return False
+        if operator == "or" and results[-1]:
+            return True
     return any(results) if operator == "or" else all(results)
 
 
 async def _evaluate_ai_check(
     cfg: dict[str, Any],
     run_ctx: RunContext,
-    ai_deps: AiReplyDeps | None,
+    ai_deps: AiReplyDeps | _LazyAiDeps | None,
     *,
     label: str,
 ) -> bool:
@@ -835,11 +1023,12 @@ async def _evaluate_ai_check(
     Builds a minimal context (lead info + last 10 messages) and asks the LLM
     to return {"result": true|false}. Fails closed (False) on any error.
     """
-    if ai_deps is None or run_ctx.conversation_id is None:
-        logger.info("automation.ai_check.skipped", node=label, reason="no_deps")
-        return False
     prompt = str(cfg.get("prompt", "")).strip()
-    if not prompt:
+    if not prompt or run_ctx.conversation_id is None:
+        return False
+    ai_deps = await _deps_of(ai_deps)
+    if ai_deps is None:
+        logger.info("automation.ai_check.skipped", node=label, reason="no_deps")
         return False
     model_override = str(cfg.get("model") or "") or None
 
@@ -1001,6 +1190,126 @@ async def _set_ghl_contact_field(
         logger.warning("automation.set_lead_field.failed", node=node.node_key, error=str(e))
     finally:
         await client.close()
+
+
+async def _do_emit_outcome(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    session: AsyncSession | None,
+) -> bool:
+    """Registra un esito sul lead. Non invia nulla → ritorna False.
+
+    Scrive un fatto, non incrementa un contatore: la bolla della pagina
+    Statistiche è un COUNT su queste righe. L'operazione è idempotente per
+    costruzione (`ON CONFLICT DO NOTHING` contro gli indici unique parziali di
+    0047), il che è indispensabile qui — il motore è stateless (ADR 0015) e
+    ri-esegue lo stesso ramo a ogni inbound, con la conferma del lead ancora
+    dentro la finestra di storico che l'`ai_check` legge.
+
+    Porta con sé i timbri (`profile_id`, `automation_id`, `automation_node_key`)
+    così l'esito è affettabile per profilo e per campagna come tutto il resto.
+    """
+    if session is None or run_ctx.lead_id is None:
+        logger.info("automation.emit_outcome.skipped", node=node.node_key, reason="no_context")
+        return False
+    raw = str(cfg.get("outcome_id") or "").strip()
+    try:
+        outcome_id = UUID(raw)
+    except ValueError:
+        logger.warning("automation.emit_outcome.bad_id", node=node.node_key, outcome_id=raw)
+        return False
+
+    outcomes = OutcomeRepository(session)
+    definition = await outcomes.get_definition(outcome_id)
+    if definition is None or not definition.enabled:
+        # Statistica cancellata o disattivata mentre il grafo la referenziava
+        # ancora: si salta invece di scrivere una riga orfana.
+        logger.info(
+            "automation.emit_outcome.skipped",
+            node=node.node_key,
+            reason="unknown_or_disabled_outcome",
+            outcome_id=raw,
+        )
+        return False
+
+    confidence = cfg.get("confidence")
+    created = await outcomes.record(
+        tenant_id=run_ctx.tenant_id,
+        merchant_id=run_ctx.merchant_id,
+        outcome_id=outcome_id,
+        lead_id=run_ctx.lead_id,
+        conversation_id=run_ctx.conversation_id,
+        cardinality=definition.cardinality,
+        source="automation",
+        profile_id=run_ctx.profile_id,
+        automation_id=run_ctx.automation_id,
+        automation_node_key=node.node_key,
+        confidence=float(confidence) if isinstance(confidence, int | float) else None,
+        value=dict(cfg.get("value") or {}),
+    )
+    logger.info(
+        "automation.emit_outcome",
+        node=node.node_key,
+        outcome=definition.key,
+        created=created,
+    )
+    return False
+
+
+async def _do_set_conversation_profile(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    session: AsyncSession | None,
+) -> bool:
+    """Carica un profilo di conversazione (ADR 0022). Non invia nulla → False.
+
+    Aggiorna il puntatore vivo su `conversations.profile_id`; il turno successivo
+    lo legge come livello 0 della cascata. Il `run_ctx` viene aggiornato in
+    memoria così i nodi *successivi* di questa stessa passata (incluso un
+    `ai_reply`) usano già il profilo appena caricato — altrimenti il caso
+    "carica Consulenza e poi rispondi" userebbe ancora il profilo vecchio.
+    """
+    if session is None or run_ctx.conversation_id is None:
+        logger.info(
+            "automation.set_conversation_profile.skipped", node=node.node_key, reason="no_context"
+        )
+        return False
+    raw = str(cfg.get("profile_id") or "").strip()
+    try:
+        profile_id = UUID(raw)
+    except ValueError:
+        logger.warning(
+            "automation.set_conversation_profile.bad_id", node=node.node_key, profile_id=raw
+        )
+        return False
+
+    profile = await ConversationProfileRepository(session).get(profile_id)
+    if profile is None or not profile.enabled or profile.merchant_id not in (
+        None,
+        run_ctx.merchant_id,
+    ):
+        logger.info(
+            "automation.set_conversation_profile.skipped",
+            node=node.node_key,
+            reason="unknown_or_foreign_profile",
+            profile_id=raw,
+        )
+        return False
+
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.id == run_ctx.conversation_id)
+        .values(profile_id=profile_id)
+    )
+    run_ctx.profile_id = profile_id
+    logger.info(
+        "automation.set_conversation_profile", node=node.node_key, profile=profile.key
+    )
+    return False
 
 
 async def _do_human_handoff(
@@ -1165,6 +1474,9 @@ async def _resolve_context(
     within = is_within_24h(conv.last_inbound_at, now) if conv else False
     score = lead.score if lead else 0
     last_message = await _latest_inbound_text(session, conv.id) if conv else ""
+    touch_node, touch_automation = (
+        await _latest_outbound_attribution(session, conv.id) if conv else (None, None)
+    )
     # Bot silenced on this thread? (human takeover / soft-pause). Same gate the
     # inbound auto-reply path uses — an `ai_reply` node must respect it.
     ai_paused = conv is not None and (
@@ -1186,8 +1498,35 @@ async def _resolve_context(
         tenant_id=tenant_id,
         merchant_id=merchant_id,
         ai_paused=ai_paused,
+        # Profilo attivo sulla conversazione (ADR 0022). Letto qui e non
+        # all'invio perché i `wait` ri-eseguono `_resolve_context`: una
+        # continuazione differita vede il profilo *aggiornato*, non quello che
+        # c'era quando il flusso è partito.
+        profile_id=conv.profile_id if conv else None,
+        last_touch_node_key=touch_node,
+        last_touch_automation_id=touch_automation,
         last_inbound_at=conv.last_inbound_at if conv else None,
     )
+
+
+async def _latest_outbound_attribution(
+    session: AsyncSession, conversation_id: UUID
+) -> tuple[str | None, UUID | None]:
+    """Nodo e automazione dell'ultimo messaggio in uscita del thread.
+
+    Alimenta la condizione `last_touch_node`, cioè il cancello "sta rispondendo
+    *a quel* tocco". Una query servita da `ix_messages_conv_created`.
+    """
+    stmt = (
+        select(Message.automation_node_key, Message.automation_id)
+        .where(Message.conversation_id == conversation_id, Message.direction == "out")
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        return (None, None)
+    return (row[0], row[1])
 
 
 async def _latest_conversation_for_lead(

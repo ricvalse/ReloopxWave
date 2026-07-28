@@ -20,7 +20,14 @@ from config_resolver import (
     DashboardConfig,
     MetricDefinitionSchema,
 )
-from db import AnalyticsRepository, MerchantRepository, event_catalog
+from db import (
+    AnalyticsRepository,
+    MerchantRepository,
+    MessageFilter,
+    OutcomeRepository,
+    StatsRepository,
+    event_catalog,
+)
 from db.models import AnalyticsEvent, Objection
 from integrations import SupabaseStorage
 from shared import (
@@ -35,6 +42,14 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 _MERCHANT_FILTER: Any = Query(default=None, description="Admin-only: target merchant_id")
+# Le due dimensioni di attribuzione introdotte da 0047: restringono ogni bolla
+# della pagina Statistiche al profilo e/o alla campagna selezionati.
+_PROFILE_FILTER: Any = Query(
+    default=None, description="Restringe ogni bolla al profilo di conversazione indicato"
+)
+_AUTOMATION_FILTER: Any = Query(
+    default=None, description="Restringe le bolle a una singola automazione (campagna)"
+)
 
 
 class MerchantKpisOut(BaseModel):
@@ -271,13 +286,22 @@ async def event_catalog_list(
 class MetricValueOut(BaseModel):
     id: str
     label: str
-    event_type: str
+    source: str
     window_days: int
     value: int
+    # Riferimento risolto della metrica, per il FE (quale evento / quale esito).
+    event_type: str | None = None
+    outcome_id: str | None = None
+    # Solo per le bolle `outcome`: quanti dei conteggiati vengono da una sorgente
+    # certa (webhook / marcatura umana) invece che da un'inferenza dell'LLM.
+    # Permette alla bolla di dire "312, di cui 180 verificati" invece di
+    # presentare un numero inferito come se fosse un fatto.
+    verified: int | None = None
 
 
 class MetricsOut(BaseModel):
     since_days: int
+    profile_id: UUID | None = None
     metrics: list[MetricValueOut]
 
 
@@ -301,7 +325,7 @@ def assemble_metric_values(
     *,
     since_days: int,
 ) -> list[MetricValueOut]:
-    """Mappa i conteggi sulle definizioni, preservando l'ordine configurato.
+    """Mappa i conteggi delle metriche `event` sulle definizioni.
 
     Un event_type senza righe nella finestra vale 0 (non sparisce dalla
     dashboard): una metrica a zero è un'informazione, un buco è un bug.
@@ -314,12 +338,37 @@ def assemble_metric_values(
             MetricValueOut(
                 id=d.id,
                 label=d.label,
+                source="event",
                 event_type=d.event_type,
                 window_days=window,
-                value=int(counts.get(d.event_type, 0)),
+                value=int(counts.get(d.event_type or "", 0)),
             )
         )
     return values
+
+
+async def _value_for_messages_metric(
+    stats: StatsRepository,
+    d: MetricDefinitionSchema,
+    *,
+    merchant_id: UUID,
+    since: datetime,
+    profile_id: UUID | None,
+    automation_id: UUID | None,
+) -> int:
+    filters = MessageFilter(
+        direction=d.direction,
+        sender_types=tuple(d.sender_types),
+        automation_id=automation_id,
+        automation_node_key=d.automation_node_key,
+        profile_id=profile_id,
+        has_reply=d.has_reply,
+    )
+    if d.aggregation == "count_unique":
+        return await stats.count_distinct_conversations(
+            merchant_id=merchant_id, since=since, filters=filters
+        )
+    return await stats.count_messages(merchant_id=merchant_id, since=since, filters=filters)
 
 
 @router.get("/metrics", response_model=MetricsOut)
@@ -328,13 +377,20 @@ async def merchant_metrics(
     session: DBSession,
     since_days: int = Query(30, ge=1, le=365),
     merchant_id: UUID | None = _MERCHANT_FILTER,
+    profile_id: UUID | None = _PROFILE_FILTER,
+    automation_id: UUID | None = _AUTOMATION_FILTER,
 ) -> MetricsOut:
-    """Calcola le metriche configurate per il merchant (ADR 0021).
+    """Calcola le bolle configurate per il merchant (ADR 0021 + 0047).
 
-    Le definizioni vengono dal config cascade (`dashboard.metrics`): il merchant
-    eredita quelle d'agenzia finché non le sovrascrive. Ogni metrica è un
-    conteggio di `event_type` sulla finestra globale `since_days`, salvo che la
-    definizione porti un `window_days` proprio.
+    Le definizioni vengono dal config cascade (`dashboard.metrics`). Con
+    `profile_id` la risoluzione passa per il **livello 0** della cascata, quindi
+    un profilo può avere un proprio set di bolle e non solo dati filtrati: è così
+    che la pagina "divisa per profili" funziona su due assi — *quali* bolle vedi,
+    e *su quali dati*.
+
+    Le tre sorgenti hanno tre query diverse: `event` conta `analytics_events`
+    (una query per finestra), `messages` conta i messaggi con filtri strutturali,
+    `outcome` conta i fatti in `lead_outcomes`.
     """
     target = _resolve_kpi_merchant(ctx, merchant_id)
 
@@ -343,24 +399,79 @@ async def merchant_metrics(
         if merchant is None or merchant.tenant_id != ctx.tenant_id:
             raise NotFoundError("Merchant not found", merchant_id=str(target))
 
-    raw = await ConfigResolver(session).resolve(ConfigKey.DASHBOARD_METRICS, merchant_id=target)
+    raw = await ConfigResolver(session).resolve(
+        ConfigKey.DASHBOARD_METRICS, merchant_id=target, profile_id=profile_id
+    )
     definitions = DashboardConfig(metrics=raw).metrics if raw else DashboardConfig().metrics
 
-    repo = AnalyticsRepository(session)
     now = datetime.now(tz=UTC)
+    event_defs = [d for d in definitions if d.source == "event"]
+    message_defs = [d for d in definitions if d.source == "messages"]
+    outcome_defs = [d for d in definitions if d.source == "outcome"]
 
-    # Una query per finestra distinta (nel caso comune: una sola).
+    # --- event: una query per finestra distinta (nel caso comune, una sola) ---
+    repo = AnalyticsRepository(session)
     counts_by_window: dict[int, dict[str, int]] = {}
-    for window, defs in group_metrics_by_window(definitions, since_days=since_days).items():
+    for window, defs in group_metrics_by_window(event_defs, since_days=since_days).items():
         counts_by_window[window] = await repo.event_counts(
             merchant_id=target,
             since=now - timedelta(days=window),
-            event_types=[d.event_type for d in defs],
+            event_types=[d.event_type for d in defs if d.event_type],
+            profile_id=profile_id,
+            automation_id=automation_id,
+        )
+    by_id = {
+        v.id: v
+        for v in assemble_metric_values(event_defs, counts_by_window, since_days=since_days)
+    }
+
+    # --- messages: una query per bolla (filtri strutturali diversi) ----------
+    stats = StatsRepository(session)
+    for d in message_defs:
+        window = d.window_days or since_days
+        by_id[d.id] = MetricValueOut(
+            id=d.id,
+            label=d.label,
+            source="messages",
+            window_days=window,
+            value=await _value_for_messages_metric(
+                stats,
+                d,
+                merchant_id=target,
+                since=now - timedelta(days=window),
+                profile_id=profile_id,
+                automation_id=automation_id,
+            ),
         )
 
+    # --- outcome: una query per finestra, raggruppata per esito --------------
+    outcomes = OutcomeRepository(session)
+    for window, defs in group_metrics_by_window(outcome_defs, since_days=since_days).items():
+        wanted = [UUID(d.outcome_id) for d in defs if d.outcome_id]
+        counts = await outcomes.count_by_outcome(
+            merchant_id=target,
+            since=now - timedelta(days=window),
+            outcome_ids=wanted,
+            profile_id=profile_id,
+            automation_id=automation_id,
+        )
+        for d in defs:
+            row = counts.get(UUID(d.outcome_id)) if d.outcome_id else None
+            by_id[d.id] = MetricValueOut(
+                id=d.id,
+                label=d.label,
+                source="outcome",
+                outcome_id=d.outcome_id,
+                window_days=window,
+                value=row.total if row else 0,
+                verified=row.verified if row else 0,
+            )
+
+    # Ordine configurato, non ordine di calcolo.
     return MetricsOut(
         since_days=since_days,
-        metrics=assemble_metric_values(definitions, counts_by_window, since_days=since_days),
+        profile_id=profile_id,
+        metrics=[by_id[d.id] for d in definitions if d.id in by_id],
     )
 
 

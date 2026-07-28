@@ -230,6 +230,10 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
                 conversation_id=conv.id,
                 merchant_id=cand.merchant_id,
                 sender_type="appointment_reminder",
+                # Nessuna automazione dietro (è uno scheduler), ma il profilo
+                # sì: senza, questi invii sparirebbero dalle statistiche non
+                # appena si seleziona un profilo nella pagina.
+                profile_id=conv.profile_id,
             )
         finally:
             await client.close()

@@ -202,6 +202,9 @@ async def send_and_persist_decision(
     merchant_id: UUID,
     role: str = "agent",
     sender_type: str = "automation",
+    automation_id: UUID | None = None,
+    automation_node_key: str | None = None,
+    profile_id: UUID | None = None,
 ) -> str:
     """Send a proactive decision AND persist the matching outbound Message row.
 
@@ -210,6 +213,12 @@ async def send_and_persist_decision(
     so the WhatsApp delivery callback (delivered/read/failed) can attach to the
     row via `wa_message_id` instead of being dropped as `row_missing`. Reuses the
     same persistence shape as the bot-reply/composer pipeline.
+
+    `automation_id` / `automation_node_key` / `profile_id` sono l'attribuzione
+    (migrazione 0047): è qui che passa ogni invio proattivo del sistema, quindi è
+    l'unico punto in cui la provenienza può essere registrata. Senza, "quanti
+    messaggi ha inviato questa campagna" non è rispondibile — né dagli eventi né
+    dai messaggi.
 
     Returns the WhatsApp message id (also stored on the row).
     """
@@ -238,6 +247,10 @@ async def send_and_persist_decision(
         wa_message_id=wa_message_id or None,
         role=role,
         status="sent",
+        sender_type=sender_type,
+        automation_id=automation_id,
+        automation_node_key=automation_node_key,
+        profile_id=profile_id,
         meta=meta,
     )
     return wa_message_id

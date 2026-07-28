@@ -3,7 +3,7 @@
 import { cn } from '@reloop/ui';
 import { memo } from 'react';
 import { formatBubbleTime } from '../lib/time';
-import { isAutomationSender, type Message } from '../types';
+import { isAutomationSender, senderTypeOf, type Message } from '../types';
 import { MessageMedia } from './message-media';
 import { StatusTicks } from './status-ticks';
 
@@ -35,8 +35,11 @@ const META_SPACER_WIDTH_NO_TICKS = 44;
 function MessageBubbleImpl({ message, grouped, onRetry }: MessageBubbleProps) {
   const isOut = message.direction === 'out';
   const isFailed = message.status === 'failed';
-  const isFromPhone = message.meta?.sender_type === 'phone';
-  const isFromAutomation = isAutomationSender(message.meta?.sender_type);
+  // Colonna con fallback sul JSONB: durante la finestra di deploy convivono
+  // righe scritte da versioni diverse del backend.
+  const senderType = senderTypeOf(message);
+  const isFromPhone = senderType === 'phone';
+  const isFromAutomation = isAutomationSender(senderType);
   const originLabel = isFromPhone ? 'Da telefono' : isFromAutomation ? 'Automazione' : null;
   const showTicks = isOut;
   const spacer = showTicks ? META_SPACER_WIDTH : META_SPACER_WIDTH_NO_TICKS;
@@ -129,7 +132,7 @@ export const MessageBubble = memo(MessageBubbleImpl, (prev, next) => {
     prev.message.status === next.message.status &&
     prev.message.read_at === next.message.read_at &&
     prev.message.delivered_at === next.message.delivered_at &&
-    prev.message.meta?.sender_type === next.message.meta?.sender_type &&
+    senderTypeOf(prev.message) === senderTypeOf(next.message) &&
     // The two-phase media write lands `storage_path` (and maybe `error` /
     // `transcription`) via a Realtime UPDATE — without these the bubble would
     // never re-render to swap the "Caricamento…" placeholder for the image.

@@ -19,7 +19,7 @@ def _resolver_cls(values: dict):
         def __init__(self, session, redis=None) -> None:
             pass
 
-        async def resolve(self, key, *, merchant_id):
+        async def resolve(self, key, *, merchant_id, profile_id=None):
             return values.get(key)
 
     return _R

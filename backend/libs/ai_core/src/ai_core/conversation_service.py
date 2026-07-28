@@ -313,6 +313,13 @@ class _ReplyContext:
     # Loaded from storage in `generate_and_send_reply`; threaded into the
     # orchestrator so the model actually sees the image. None for text turns.
     current_image: ImagePart | None = None
+    # Profilo di conversazione attivo (ADR 0022). Catturato in entrambi i punti
+    # di costruzione del contesto — quello inline e quello del flush debounce —
+    # perché è da qui che il resolver riceve il livello 0 della cascata. È anche
+    # il timbro che finisce sulla risposta dell'assistente, così le statistiche
+    # per profilo comprendono i turni conversazionali e non solo gli invii
+    # proattivi.
+    conv_profile_id: UUID | None = None
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -443,6 +450,7 @@ async def build_cascade_system_prompt(
     merchant_id: UUID,
     prior_sentiment: str | None = None,
     customer_message: str | None = None,
+    profile_id: UUID | None = None,
 ) -> str:
     """Build the per-merchant system prompt from the config cascade.
 
@@ -460,12 +468,18 @@ async def build_cascade_system_prompt(
     hint, gated by `bot.sentiment_adaptation_enabled`. `customer_message` (the
     current inbound text) is matched against the merchant's playground
     corrections; the top matches are injected as mandatory overrides (UC-08).
+
+    `profile_id` inserisce il livello 0 della cascata (ADR 0022): il profilo
+    sovrascrive i knob di persona/tono e `bot.system_prompt_additions` sopra la
+    configurazione del merchant, che resta condivisa (business info, KB,
+    booking). Con `None` il prompt è byte-identico a prima dei profili — su cui
+    esiste un golden test.
     """
     resolver = ConfigResolver(session)
 
     async def _str(key: ConfigKey) -> str | None:
         try:
-            value = await resolver.resolve(key, merchant_id=merchant_id)
+            value = await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
         except Exception:
             return None
         if isinstance(value, str) and value.strip():
@@ -474,7 +488,7 @@ async def build_cascade_system_prompt(
 
     async def _list(key: ConfigKey) -> list[str]:
         try:
-            value = await resolver.resolve(key, merchant_id=merchant_id)
+            value = await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
         except Exception:
             return []
         if isinstance(value, list):
@@ -483,7 +497,7 @@ async def build_cascade_system_prompt(
 
     async def _examples(key: ConfigKey) -> list[tuple[str, str]]:
         try:
-            value = await resolver.resolve(key, merchant_id=merchant_id)
+            value = await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
         except Exception:
             return []
         out: list[tuple[str, str]] = []
@@ -498,7 +512,7 @@ async def build_cascade_system_prompt(
 
     async def _bool(key: ConfigKey, *, default: bool) -> bool:
         try:
-            value = await resolver.resolve(key, merchant_id=merchant_id)
+            value = await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
         except Exception:
             return default
         return value if isinstance(value, bool) else default
@@ -994,12 +1008,21 @@ class ConversationService:
                             "storage_path": None,
                         }
                     }
+                # Attribuzione last-touch (0047): a quale invio in uscita sta
+                # rispondendo questo messaggio. Va risolto PRIMA dell'INSERT,
+                # perché la regola guarda l'ultimo messaggio della conversazione
+                # e dopo l'inserimento l'ultimo sarebbe questo stesso. Una query
+                # servita da `ix_messages_conv_created`; se il thread è già in
+                # entrata torna None e non si attribuisce niente.
+                reply_target = await msgs.resolve_reply_target(conv.id)
                 persisted = await msgs.persist_user_message(
                     conversation_id=conv.id,
                     merchant_id=resolved.merchant_id,
                     content=text,
                     wa_message_id=wa_message_id,
                     variant_id=conv.variant_id,
+                    reply_to_message_id=reply_target.id if reply_target else None,
+                    profile_id=conv.profile_id,
                     meta=message_meta,
                 )
                 # Download + store the media (best-effort) and patch the row's
@@ -1077,6 +1100,7 @@ class ConversationService:
                     subject_type="conversation",
                     subject_id=conv.id,
                     variant_id=conv.variant_id,
+                    profile_id=conv.profile_id,
                     properties=received_props,
                 )
             await convs.touch_last_message(conv.id)
@@ -1085,6 +1109,7 @@ class ConversationService:
             # the ORM objects detach after the commit below.
             conv_id = conv.id
             conv_variant_id = conv.variant_id
+            conv_profile_id = conv.profile_id
             conv_context_summary = conv.context_summary
             lead_id = lead.id
             lead_score = lead.score
@@ -1134,6 +1159,7 @@ class ConversationService:
                 phone_number_id=phone_number_id,
                 text=text,
                 conv_current_state=conv_current_state,
+                conv_profile_id=conv_profile_id,
                 latest_wa_message_id=wa_message_id,
                 proactive_reply_to=_trailing_proactive_text(history),
             )
@@ -1242,6 +1268,7 @@ class ConversationService:
                 phone_number_id=phone_number_id,
                 text=effective_text,
                 conv_current_state=conv.current_state,
+                conv_profile_id=conv.profile_id,
                 latest_wa_message_id=wa_message_id,
                 lead_avg_latency_seconds=lead.avg_response_latency_seconds,
                 proactive_reply_to=_trailing_proactive_text(history),
@@ -1311,6 +1338,7 @@ class ConversationService:
                 variant_id=rc.conv_variant_id,
                 prior_sentiment=rc.lead_sentiment,
                 customer_message=rc.text,
+                profile_id=rc.conv_profile_id,
             )
 
             # Inject already-known lead data so the bot personalizes without re-asking.
@@ -1387,7 +1415,12 @@ class ConversationService:
             # Playbook runtime (ADR 0018) — resolved once; gates the FSM hint,
             # scoring/pipeline side effects, action allowlist and directives.
             # Defaults reproduce today's sales behavior.
-            caps = await resolve_playbook_runtime(session, resolved.merchant_id)
+            # Il profilo attivo è il livello 0 della cascata (ADR 0022): è
+            # esattamente il playbook — obiettivo, direttive, azioni permesse,
+            # `mode` — che un profilo modula.
+            caps = await resolve_playbook_runtime(
+                session, resolved.merchant_id, profile_id=rc.conv_profile_id
+            )
 
             # FSM: load current state, inject hint into system prompt. Suppress the
             # GREETING "accogli il lead per la prima volta / presentati" hint when the
@@ -1708,6 +1741,7 @@ class ConversationService:
                     tokens_out=response.tokens_out,
                     latency_ms=response.latency_ms,
                     variant_id=rc.conv_variant_id,
+                    profile_id=rc.conv_profile_id,
                 )
                 await convs.touch_last_message(rc.conv_id)
 
@@ -1718,6 +1752,7 @@ class ConversationService:
                     subject_type="conversation",
                     subject_id=rc.conv_id,
                     variant_id=rc.conv_variant_id,
+                    profile_id=rc.conv_profile_id,
                     properties={
                         "role": "assistant",
                         "model": response.model,
@@ -2095,6 +2130,7 @@ class ConversationService:
         variant_id: str | None = None,
         prior_sentiment: str | None = None,
         customer_message: str | None = None,
+        profile_id: UUID | None = None,
     ) -> str:
         """Resolve the system prompt for this turn (UC-09 aware).
 
@@ -2105,6 +2141,11 @@ class ConversationService:
         deliberately bypassed for variant prompts, to keep experiments clean;
         playground corrections likewise apply only to the cascade fallback).
         Otherwise the config-cascade prompt below is used as the fallback.
+
+        Profilo e A/B sono **ortogonali** (ADR 0022): se la conversazione ha un
+        variant che fa swap del body, quel body vince e il profilo agisce solo
+        su playbook/azioni/FSM; senza variant, il profilo modula la cascata
+        normalmente attraverso il fallback qui sotto.
         """
         from ai_core.prompt_manager import PromptManager
 
@@ -2117,6 +2158,7 @@ class ConversationService:
                 merchant_id=merchant_id,
                 prior_sentiment=prior_sentiment,
                 customer_message=customer_message,
+                profile_id=profile_id,
             ),
         )
 
@@ -2127,6 +2169,7 @@ class ConversationService:
         merchant_id: UUID,
         prior_sentiment: str | None = None,
         customer_message: str | None = None,
+        profile_id: UUID | None = None,
     ) -> str:
         """Thin wrapper over the module-level `build_cascade_system_prompt`.
 
@@ -2139,6 +2182,7 @@ class ConversationService:
             merchant_id=merchant_id,
             prior_sentiment=prior_sentiment,
             customer_message=customer_message,
+            profile_id=profile_id,
         )
 
     async def _store_policy_lines(self, session: Any, merchant_id: UUID) -> list[str]:

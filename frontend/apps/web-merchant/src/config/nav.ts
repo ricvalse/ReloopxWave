@@ -7,6 +7,7 @@ import {
   Database,
   FileWarning,
   FlaskConical,
+  Gauge,
   HelpCircle,
   LayoutTemplate,
   MessageSquare,
@@ -60,7 +61,10 @@ export const merchantNav: NavSection[] = [
   },
   {
     title: 'Report',
-    items: [{ href: '/reports/objections', label: 'Obiezioni', icon: FileWarning }],
+    items: [
+      { href: '/statistiche', label: 'Statistiche', icon: Gauge },
+      { href: '/reports/objections', label: 'Obiezioni', icon: FileWarning },
+    ],
   },
   {
     title: 'Sistema',
