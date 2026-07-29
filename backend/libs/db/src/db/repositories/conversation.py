@@ -4,10 +4,36 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, cast, delete, func, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Integer,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, ConversationProfile, Lead, Merchant
+
+
+def _open_handoff() -> ColumnElement[bool]:
+    """SQL predicate for "a human owns this thread": handed off and not resolved.
+
+    The single source of truth for the handoff-open test, mirrored by
+    `ai_paused` in the automation engine. Anything that speaks to the customer
+    on its own initiative must exclude these rows.
+    """
+    return Conversation.handoff_at.is_not(None) & Conversation.handoff_resolved_at.is_(None)
+
+
+def _bot_owns_thread() -> ColumnElement[bool]:
+    """Inverse of `_open_handoff()` — safe to send proactively."""
+    return ~_open_handoff()
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -179,6 +205,11 @@ class ConversationRepository:
         `no_answer_fired_for` anchor so the caller emits `lead.no_answer` once per
         silence episode. Only conversations with a real inbound (`last_inbound_at`)
         can go silent on the lead, so we require it.
+
+        Threads under human control are excluded: after a handoff the operator
+        owns the conversation, and a "ci sei ancora?" follow-up landing on top of
+        a human who is mid-call with the customer is exactly the silence the
+        handoff was supposed to buy.
         """
         now = datetime.now(tz=UTC)
         idle_cutoff = now - timedelta(minutes=min_idle_minutes)
@@ -209,6 +240,7 @@ class ConversationRepository:
                 Conversation.last_message_at.is_not(None),
                 Conversation.last_message_at < idle_cutoff,
                 Conversation.last_inbound_at.is_not(None),
+                _bot_owns_thread(),
             )
             .limit(500)  # safety cap per tick
         )
@@ -412,6 +444,10 @@ class ConversationRepository:
         row lock serializes them and only one UPDATE matches. Returns True when
         this caller won the claim — losers must NOT send another handoff message
         (the customer already got one) nor re-notify the operator.
+
+        `handoff_summary` is overwritten, not coalesced: it is the AI's brief for
+        *this* episode, and inheriting the previous one would put a stale summary
+        in the operator's Slack alert.
         """
         result = await self._session.execute(
             text(
@@ -421,16 +457,15 @@ class ConversationRepository:
                     handoff_at = now(),
                     handoff_resolved_at = NULL,
                     handoff_reason = :reason,
-                    handoff_summary = coalesce(:summary, handoff_summary),
-                    meta = jsonb_set(
-                        jsonb_set(
-                            jsonb_set(
-                                coalesce(meta, '{}'::jsonb),
-                                '{escalated}', 'true'::jsonb
-                            ),
-                            '{escalated_at}', to_jsonb(now()::text)
-                        ),
-                        '{escalation_reason}', to_jsonb(:reason::text)
+                    handoff_summary = :summary,
+                    meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                        'escalated', true,
+                        'escalated_at', now()::text,
+                        'escalation_reason', :reason::text,
+                        -- Where the funnel was before the operator took over, so
+                        -- resolving can put the bot back on the same step instead
+                        -- of restarting it from qualification.
+                        'state_before_handoff', coalesce(current_state, 'QUALIFYING')
                     )
                 WHERE id = :conversation_id AND auto_reply = true
                 RETURNING id
@@ -439,6 +474,81 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
         )
         return result.scalar_one_or_none() is not None
+
+    async def claim_manual_handoff(self, conversation_id: UUID, *, reason: str) -> bool:
+        """Handoff opened by a human, not by the AI (operator replies from the inbox).
+
+        Same state as `claim_handoff` minus the AI brief, plus one difference that
+        matters: the SLA anchor is pre-burned. The overdue sweep asks "has anyone
+        picked this thread up?", and here the answer is yes by construction — the
+        operator is the one who opened it. Without this, every manual reply would
+        schedule a "handoff waiting" alert against the very person handling it.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET auto_reply = false,
+                    handoff_at = now(),
+                    handoff_resolved_at = NULL,
+                    handoff_reason = :reason,
+                    meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                        'escalated', true,
+                        'escalated_at', now()::text,
+                        'escalation_reason', :reason::text,
+                        'state_before_handoff', coalesce(current_state, 'QUALIFYING'),
+                        'handoff_sla_fired_for', now()::text
+                    )
+                WHERE id = :conversation_id AND auto_reply = true
+                RETURNING id
+                """
+            ),
+            {"conversation_id": str(conversation_id), "reason": reason},
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def resolve_handoff(self, conversation_id: UUID) -> None:
+        """Give the thread back to the bot — the exact inverse of a claim.
+
+        Every field a claim touched has to be undone together. Flipping only
+        `auto_reply` leaves the episode open (`handoff_resolved_at IS NULL`),
+        which reads as "a human owns this" to the automation engine's `ai_paused`
+        gate and to the overdue sweep: the thread answers inbound messages but
+        stays permanently invisible to proactive automations, and keeps
+        generating SLA alerts nobody can clear.
+
+        `current_state` is restored too: ESCALATED is a sticky terminal FSM state
+        whose prompt hint tells the model "the conversation is with a human
+        operator, do not reply automatically". Left in place, the bot resumes
+        with instructions not to. The claim stashed the pre-handoff step in
+        `meta.state_before_handoff`, so the funnel picks up where it left off.
+        """
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET auto_reply = true,
+                    ai_disabled_until = NULL,
+                    handoff_resolved_at = now(),
+                    current_state = CASE
+                        WHEN current_state = 'ESCALATED'
+                        -- nullif: never restore ESCALATED onto itself, that would
+                        -- re-arm the terminal state the reset exists to clear.
+                        THEN coalesce(
+                            nullif(meta ->> 'state_before_handoff', 'ESCALATED'),
+                            'QUALIFYING'
+                        )
+                        ELSE current_state
+                    END,
+                    meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                        'escalated', false,
+                        'handoff_resolved_at', now()::text
+                    )
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
 
     async def record_reminder_sent(self, conversation_id: UUID) -> None:
         """Atomically increment reminders_sent and stamp last_reminder_at in conversation.meta.
@@ -486,7 +596,7 @@ class ConversationRepository:
         )
 
     async def list_overdue_handoffs(
-        self, *, min_overdue_minutes: int, limit: int = 500
+        self, *, min_overdue_minutes: int, limit: int = 500, max_age_hours: int = 24
     ) -> list[HandoffOverdueCandidate]:
         """Cross-tenant scan of open handoffs older than `min_overdue_minutes`.
 
@@ -494,9 +604,23 @@ class ConversationRepository:
         (the same predicate the automation engine uses for `ai_paused`). Returns
         the `handoff_sla_fired_for` anchor so the caller emits the overdue trigger
         once per handoff episode (edge-triggered, mirroring no-answer).
+
+        Two bounds keep the pool finite. Nothing ever resolves a handoff on the
+        merchant's behalf, so without them every escalation the platform has ever
+        made stays a candidate forever:
+
+        - `status = 'active'`: the idle-close sweep closes silent threads without
+          touching the handoff columns, and an SLA alert on a conversation that
+          has been closed for weeks helps nobody.
+        - `max_age_hours`: a handoff older than a day is a triage problem, not an
+          SLA breach. The bound also stops the retroactive burst — a merchant who
+          enables an overdue automation today would otherwise get one alert for
+          every unresolved handoff in their history, because the emitter
+          deliberately leaves the anchor unburned while nobody is listening.
         """
         now = datetime.now(tz=UTC)
         cutoff = now - timedelta(minutes=min_overdue_minutes)
+        floor = now - timedelta(hours=max_age_hours)
         sla_fired = Conversation.meta["handoff_sla_fired_for"].astext
         stmt = (
             select(
@@ -512,6 +636,8 @@ class ConversationRepository:
                 Conversation.handoff_at.is_not(None),
                 Conversation.handoff_resolved_at.is_(None),
                 Conversation.handoff_at < cutoff,
+                Conversation.handoff_at >= floor,
+                Conversation.status == "active",
                 # Exclude already-alerted handoffs in SQL (not just the Python edge
                 # gate) so the pool self-drains: otherwise unresolved-but-alerted
                 # rows accumulate forever and, past the 500 cap, could starve fresh

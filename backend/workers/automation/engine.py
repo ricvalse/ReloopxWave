@@ -104,6 +104,10 @@ EVENT_TO_TRIGGER: dict[str, str] = {
 _CURSOR_KEY = "automation:dispatch:cursor"
 _DISPATCH_LIMIT = 1000
 _DEDUP_TTL = 60 * 60 * 24  # 24h — bounds duplicate runs for the same (flow, event)
+# The claim a run holds while it is still executing. Long enough to cover a walk
+# (including Slack's retry budget), short enough that a crashed run frees the key
+# before the dispatcher's lookback window closes on the event.
+_DEDUP_PENDING_TTL = 300
 # `occurred_at` is the emitting transaction's START (Postgres now() default) but
 # the row only becomes visible at COMMIT: a long emitter transaction (e.g. the
 # GHL crm-create handler) can land *behind* a cursor another event already
@@ -116,6 +120,11 @@ _WARM_SCORE = 40
 # V1 default pipeline-advance threshold surfaced to the AI in `ai_reply` (the
 # inbound path resolves this from config; the automation engine uses the default).
 _ADVANCE_SCORE = 60
+# Node types that put a message in front of the customer. Gated on `ai_paused`
+# (human takeover / soft-pause / open handoff) in `_do_action`, and the reason a
+# run needs a resolvable WhatsApp channel at all. Keep in sync with the
+# message-sending branches of `_do_action` / `ACTION_TYPES`.
+_CUSTOMER_FACING_NODES = frozenset({"ai_reply", "send", "send_template", "send_message"})
 
 
 @dataclass(slots=True)
@@ -331,8 +340,14 @@ async def automation_run(
     redis = ctx["redis"]
     settings = ctx["settings"]
 
-    if dedup is not None and not await redis.set(
-        f"auto:dedup:{dedup}", "1", nx=True, ex=_DEDUP_TTL
+    # Claimed short first, promoted to the full window only once the run has
+    # actually finished. Taking the 24h key up front meant a run that died
+    # halfway — Slack unreachable, a DB blip — burned its own dedup key and the
+    # notification was gone for a day, silently. With a short claim the
+    # dispatcher's re-scan can pick the event up again on the next tick.
+    dedup_key = f"auto:dedup:{dedup}" if dedup is not None else None
+    if dedup_key is not None and not await redis.set(
+        dedup_key, "1", nx=True, ex=_DEDUP_PENDING_TTL
     ):
         return {"skipped": "duplicate"}
 
@@ -371,12 +386,18 @@ async def automation_run(
             return {"skipped": "episode_ended"}
 
         integrations = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
+        # Only a flow that actually messages the customer needs a WhatsApp
+        # channel. Requiring one unconditionally meant a pure-notification flow
+        # (handoff → Slack) never ran for a merchant whose channel wasn't
+        # resolvable — precisely the merchant most likely to be handling threads
+        # by hand, and the one an operator alert exists for.
+        needs_channel = any(n.type in _CUSTOMER_FACING_NODES for n in automation.nodes)
         wa = await integrations.resolve_whatsapp(run_ctx.wa_phone_number_id)
-        if wa is None:
+        if wa is None and needs_channel:
             return {"skipped": "no_channel"}
 
-        run_ctx.api_key = wa.api_key
-        run_ctx.waba_base_url = wa.waba_base_url
+        run_ctx.api_key = wa.api_key if wa else ""
+        run_ctx.waba_base_url = wa.waba_base_url if wa else None
         run_ctx.trigger_type = automation.trigger_type or ""
         # L'attribuzione degli invii di questo walk. `_resolve_context` non può
         # saperlo (risolve lead/conversazione, non il flusso): è qui che il
@@ -391,10 +412,14 @@ async def automation_run(
         )
 
         start = start_keys if start_keys is not None else _trigger_successors(automation)
-        sender = build_whatsapp_sender(
-            phone_number_id=wa.phone_number_id,
-            api_key=wa.api_key,
-            waba_base_url=wa.waba_base_url,
+        sender = (
+            build_whatsapp_sender(
+                phone_number_id=wa.phone_number_id,
+                api_key=wa.api_key,
+                waba_base_url=wa.waba_base_url,
+            )
+            if wa is not None
+            else None
         )
         try:
             sent, deferrals = await _walk(
@@ -408,7 +433,8 @@ async def automation_run(
                 settings=settings,
             )
         finally:
-            await sender.close()
+            if sender is not None:
+                await sender.close()
 
     # Schedule wait-node continuations after the session closes. Each continuation
     # carries a deterministic dedup key derived from this run's key + the resume
@@ -428,6 +454,11 @@ async def automation_run(
             episode_anchor=episode_anchor,
             _defer_by=timedelta(minutes=max(0, minutes)),
         )
+
+    # The run made it: hold the key for the full window so a re-scan of the same
+    # event (the 120s lookback, an ARQ re-delivery) can't run the graph twice.
+    if dedup_key is not None:
+        await redis.expire(dedup_key, _DEDUP_TTL)
 
     logger.info(
         "automation.run",
@@ -577,6 +608,15 @@ async def _do_action(
     settings: Any = None,
 ) -> bool:
     cfg = node.config or {}
+    # A human owns this thread — nothing addressed to the customer goes out over
+    # their head. The gate used to live inside `_do_ai_reply` only, so a flow
+    # whose node was a plain `send` (a reminder, a re-engagement nudge) still
+    # messaged a customer the operator was actively handling. Internal nodes
+    # (`notify_slack`, `set_lead_field`, `human_handoff`, conditions) keep
+    # running: they are how the operator gets told about the thread at all.
+    if node.type in _CUSTOMER_FACING_NODES and run_ctx.ai_paused:
+        logger.info("automation.action.skipped", node=node.node_key, reason="takeover")
+        return False
     if node.type == "ai_reply":
         return await _do_ai_reply(
             node,
@@ -1403,14 +1443,32 @@ async def _do_notify_slack(
         return False
 
     is_overdue = run_ctx.trigger_type == "conversation_handoff_overdue"
+    is_handoff_trigger = is_overdue or run_ctx.trigger_type == "conversation_escalated"
     reason: str | None = None
     summary: str | None = None
     overdue_minutes: int | None = None
     if run_ctx.conversation_id is not None:
         conv = await session.get(Conversation, run_ctx.conversation_id)
         if conv is not None:
-            reason = conv.handoff_reason
-            summary = conv.handoff_summary
+            handoff_open = conv.handoff_at is not None and conv.handoff_resolved_at is None
+            # The alert travels behind a queue, a cron tick and a retry: by the
+            # time it would land, an operator may already have taken the thread
+            # and given it back. Telling them a resolved handoff is waiting is
+            # worse than saying nothing — it trains people to ignore the channel.
+            if is_handoff_trigger and not handoff_open:
+                logger.info(
+                    "automation.notify_slack.skipped",
+                    node=node.node_key,
+                    reason="handoff_resolved",
+                )
+                return False
+            # Only describe a handoff when there is one. A `notify_slack` node
+            # placed under an unrelated trigger (booking_created, say) would
+            # otherwise inherit the reason/summary of some past escalation and
+            # announce a handoff that isn't happening.
+            if handoff_open:
+                reason = conv.handoff_reason
+                summary = conv.handoff_summary
             if is_overdue and conv.handoff_at is not None:
                 delta = datetime.now(tz=UTC) - conv.handoff_at
                 overdue_minutes = max(0, int(delta.total_seconds() / 60))
@@ -1427,8 +1485,29 @@ async def _do_notify_slack(
         custom_text=custom,
         overdue_minutes=overdue_minutes,
     )
-    delivered = await send_slack_notification(webhook.secret, notification)
-    logger.info("automation.notify_slack", node=node.node_key, delivered=delivered)
+    async def _mark_broken(status: int, body: str) -> None:
+        await integrations.mark_provider_broken(
+            merchant_id=run_ctx.merchant_id,
+            provider="slack",
+            error=f"HTTP {status}: {body}",
+        )
+        logger.warning(
+            "automation.notify_slack.webhook_dead",
+            node=node.node_key,
+            merchant_id=str(run_ctx.merchant_id),
+            status=status,
+        )
+
+    delivered = await send_slack_notification(
+        webhook.secret, notification, on_permanent_failure=_mark_broken
+    )
+    logger.info(
+        "automation.notify_slack",
+        node=node.node_key,
+        merchant_id=str(run_ctx.merchant_id),
+        conversation_id=str(run_ctx.conversation_id) if run_ctx.conversation_id else None,
+        delivered=delivered,
+    )
     return False
 
 

@@ -196,6 +196,13 @@ class TurnContext:
     # "scrive note interne con sentiment e dati raccolti").
     lead_sentiment: str | None = None
     collected_data: dict[str, Any] | None = None
+    # True when the caller already won the atomic handoff claim for this turn
+    # (the inbound reply policy claims *before* sending, so the handoff message
+    # goes out exactly once). `EscalateHumanHandler` then only records the
+    # episode. Left False — as on the automation `ai_reply` path, which has no
+    # reply policy — the handler takes the claim itself and stays silent if it
+    # loses, so no path can open a second handoff on the same thread.
+    handoff_claimed: bool = False
 
 
 # ---- The sender protocol — workers inject a real WhatsApp client, tests inject a fake
@@ -968,12 +975,18 @@ class ConversationService:
             # every file — only the first one flips the thread.
             if force_handoff_reason:
                 auto_reply_on = False
-                handoff_already_pending = (
-                    not conv.auto_reply
-                    and conv.handoff_at is not None
-                    and conv.handoff_resolved_at is None
+                # Atomic claim rather than read-check-write on `conv`: a 10-video
+                # album fans out to concurrent jobs that all read `auto_reply =
+                # true` before any of them commits, so the old check let every
+                # one of them emit `conversation.escalated` — N operator
+                # notifications for one handoff. `WHERE auto_reply = true` lets
+                # exactly one through.
+                claimed = await ConversationRepository(session).claim_handoff(
+                    conv.id, reason=force_handoff_reason, summary=None
                 )
-                if not handoff_already_pending:
+                if claimed:
+                    # Keep the in-session ORM copy consistent with the row the
+                    # claim just wrote — later code in this transaction reads it.
                     conv.auto_reply = False
                     conv.handoff_at = datetime.now(UTC)
                     conv.handoff_reason = force_handoff_reason
@@ -1664,10 +1677,20 @@ class ConversationService:
             # never suppress the winning reply — the customer must get a reply
             # even if silent-handoff is configured.
             suppress_reply = False
+            handoff_claimed = False
             escalate_action = next(
                 (a for a in response.actions if a.kind == "escalate_human"), None
             )
             if escalate_action is not None:
+                # One escalation per turn. A model that repeats the action in the
+                # same JSON would otherwise dispatch the handler twice — two
+                # `conversation.escalated` rows, two Slack pings for one handoff
+                # (the dispatcher dedupes per event id, which does not help here).
+                response.actions = [
+                    a
+                    for a in response.actions
+                    if a.kind != "escalate_human" or a is escalate_action
+                ]
                 escalation_enabled = await self._resolve_bool(
                     session, resolved.merchant_id, ConfigKey.ESCALATION_ENABLED, default=True
                 )
@@ -1693,6 +1716,7 @@ class ConversationService:
                         a for a in response.actions if a.kind != "escalate_human"
                     ]
                 else:
+                    handoff_claimed = True
                     silent = await self._resolve_bool(
                         session,
                         resolved.merchant_id,
@@ -1866,6 +1890,9 @@ class ConversationService:
             variant_id=rc.conv_variant_id,
             lead_sentiment=sentiment or rc.lead_sentiment,
             collected_data={"name": rc.lead_name, "email": rc.lead_email},
+            # The reply policy above already claimed (and only left the action in
+            # place if it won), so the handler must not claim a second time.
+            handoff_claimed=handoff_claimed,
         )
 
         # UC-05 — always-on cumulative scoring. Derive behavioural signals from

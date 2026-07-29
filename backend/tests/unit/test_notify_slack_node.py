@@ -56,8 +56,20 @@ class _FakeSession:
         return self._conv
 
 
-def _conv(reason: str = "angry", summary: str | None = "brief", handoff_at: Any = None) -> Any:
-    return SimpleNamespace(handoff_reason=reason, handoff_summary=summary, handoff_at=handoff_at)
+def _conv(
+    reason: str = "angry",
+    summary: str | None = "brief",
+    handoff_at: Any = None,
+    handoff_resolved_at: Any = None,
+) -> Any:
+    return SimpleNamespace(
+        handoff_reason=reason,
+        handoff_summary=summary,
+        # An open episode by default — `handoff_at` defaults to None only because
+        # most tests don't care about the elapsed time, so fill it in here.
+        handoff_at=handoff_at or datetime.now(tz=UTC),
+        handoff_resolved_at=handoff_resolved_at,
+    )
 
 
 def _node(node_type: str, config: dict | None = None) -> Any:
@@ -78,7 +90,7 @@ def _patch_integrations(monkeypatch: pytest.MonkeyPatch, *, secret: Any) -> None
 def _capture_sends(monkeypatch: pytest.MonkeyPatch) -> list:
     sent: list = []
 
-    async def fake_send(url: str, notif: Any, *, http: Any = None) -> bool:
+    async def fake_send(url: str, notif: Any, **kw: Any) -> bool:
         sent.append((url, notif))
         return True
 
@@ -110,7 +122,7 @@ async def test_notify_slack_sends_default_kind_with_deep_link(
         monkeypatch, secret=SimpleNamespace(secret="https://hooks.slack.com/x", meta={})
     )
     sent = _capture_sends(monkeypatch)
-    rc = _run_ctx()
+    rc = _run_ctx(trigger_type="conversation_escalated")
     cfg = {"text": "Handoff {name}"}
 
     ok = await engine._do_notify_slack(
@@ -142,6 +154,63 @@ async def test_notify_slack_overdue_kind_and_minutes(monkeypatch: pytest.MonkeyP
     _, notif = sent[0]
     assert notif.kind == "handoff_overdue"
     assert notif.overdue_minutes is not None and notif.overdue_minutes >= 19
+
+
+async def test_notify_slack_skips_when_the_handoff_was_already_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The alert travels behind a queue and a cron tick. If the operator already
+    took the thread and gave it back in the meantime, pinging them about a
+    waiting handoff trains them to ignore the channel."""
+    _patch_integrations(
+        monkeypatch, secret=SimpleNamespace(secret="https://hooks.slack.com/x", meta={})
+    )
+    sent = _capture_sends(monkeypatch)
+    conv = _conv(
+        handoff_at=datetime.now(tz=UTC) - timedelta(minutes=40),
+        handoff_resolved_at=datetime.now(tz=UTC) - timedelta(minutes=5),
+    )
+
+    ok = await engine._do_notify_slack(
+        _node("notify_slack"),
+        {},
+        _run_ctx(trigger_type="conversation_handoff_overdue"),
+        session=_FakeSession(conv),
+        settings=_settings(),
+    )
+
+    assert ok is False
+    assert sent == []
+
+
+async def test_notify_slack_under_a_non_handoff_trigger_does_not_claim_a_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A notify_slack node wired under, say, `booking_created` must not inherit
+    the reason/summary of some past escalation and announce a handoff."""
+    _patch_integrations(
+        monkeypatch, secret=SimpleNamespace(secret="https://hooks.slack.com/x", meta={})
+    )
+    sent = _capture_sends(monkeypatch)
+    conv = _conv(
+        reason="angry",
+        summary="brief di un handoff vecchio",
+        handoff_at=datetime.now(tz=UTC) - timedelta(days=3),
+        handoff_resolved_at=datetime.now(tz=UTC) - timedelta(days=3),
+    )
+
+    await engine._do_notify_slack(
+        _node("notify_slack", {"text": "Nuova prenotazione di {name}"}),
+        {"text": "Nuova prenotazione di {name}"},
+        _run_ctx(trigger_type="booking_created"),
+        session=_FakeSession(conv),
+        settings=_settings(),
+    )
+
+    assert len(sent) == 1
+    _, notif = sent[0]
+    assert notif.reason is None
+    assert notif.summary is None
 
 
 # --- human_handoff emit + anti-loop ----------------------------------------

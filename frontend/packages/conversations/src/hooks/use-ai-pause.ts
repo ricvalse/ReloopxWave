@@ -39,7 +39,10 @@ function restoreSnapshot(
   }
 }
 
-async function authedPost(
+/** POST to a conversation endpoint with the caller's Supabase JWT. Shared with
+ *  the bot takeover switch (`use-toggle-auto-reply`), which hits the same
+ *  ai-resume / ai-takeover pair. */
+export async function authedConversationPost(
   supabase: ReturnType<typeof useConversationsContext>['supabase'],
   apiBaseUrl: string,
   path: string,
@@ -77,7 +80,7 @@ export function useAiPause() {
 
   return useMutation({
     mutationFn: ({ conversationId, hours }: { conversationId: string; hours: number }) =>
-      authedPost(supabase, apiBaseUrl, `/conversations/${conversationId}/ai-pause`, { hours }, getAccessToken),
+      authedConversationPost(supabase, apiBaseUrl, `/conversations/${conversationId}/ai-pause`, { hours }, getAccessToken),
     onMutate: async ({ conversationId, hours }) => {
       const snapshot = snapshotConversations(queryClient);
       const until = new Date(Date.now() + hours * 3_600_000).toISOString();
@@ -104,7 +107,7 @@ export function useAiResume() {
 
   return useMutation({
     mutationFn: ({ conversationId }: { conversationId: string }) =>
-      authedPost(supabase, apiBaseUrl, `/conversations/${conversationId}/ai-resume`, undefined, getAccessToken),
+      authedConversationPost(supabase, apiBaseUrl, `/conversations/${conversationId}/ai-resume`, undefined, getAccessToken),
     onMutate: async ({ conversationId }) => {
       const snapshot = snapshotConversations(queryClient);
       patchConversation(queryClient, conversationId, {
