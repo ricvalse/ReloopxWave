@@ -415,8 +415,14 @@ export const SECTIONS: SectionDef[] = [
         label: 'Messaggio di passaggio',
         kind: 'textarea',
         placeholder: 'es. “Ti metto subito in contatto con un nostro operatore.” (vuoto = lascia scrivere al bot)',
+        help: 'Vuoto: il messaggio lo scrive il bot. Ignorato se il passaggio silenzioso è attivo.',
       },
-      { key: 'escalation.silent_handoff', label: 'Passaggio silenzioso (nessun messaggio al cliente)', kind: 'bool' },
+      {
+        key: 'escalation.silent_handoff',
+        label: 'Passaggio silenzioso (nessun messaggio al cliente)',
+        kind: 'bool',
+        help: 'Il cliente non riceve nulla e il bot esce dalla chat. L’operatore viene comunque avvisato (es. su Slack).',
+      },
       {
         key: 'escalation.critical_keywords',
         label: 'Parole chiave critiche',
