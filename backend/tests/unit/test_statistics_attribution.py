@@ -311,3 +311,47 @@ def test_gate_conditions_require_their_reference() -> None:
 
         nodes, edges = _graph(node_type, "condition", good)
         assert validate_graph(nodes, edges).ok, node_type
+
+
+# ---- Delta di un profilo (ADR 0022) ----------------------------------------
+
+
+def test_profile_delta_written_by_the_ui_is_valid_and_readable() -> None:
+    """La shape che scrive l'editor per-profilo deve validare E essere leggibile.
+
+    È un delta **parziale**: contiene solo i knob sovrascritti, tutto il resto è
+    ereditato dal merchant. Se qualcuno cambiasse l'annidamento (o il nome di una
+    chiave) il profilo continuerebbe a salvarsi ma smetterebbe di avere effetto —
+    un fallimento silenzioso, non un errore.
+    """
+    from config_resolver import BotConfigSchema
+    from config_resolver.resolver import _lookup
+
+    bag = {
+        "conversation": {
+            "playbook": {
+                "mode": "off",
+                "goal": "Raccogliere disponibilità e motivazione del candidato.",
+                "directives": ["Non proporre mai appuntamenti commerciali"],
+                "actions": {"enabled": ["escalate_human"]},
+            }
+        },
+        "bot": {"system_prompt_additions": "Parla come un recruiter.", "tone": "professionale"},
+    }
+    BotConfigSchema.model_validate(bag)
+
+    assert _lookup(bag, "conversation.playbook.mode") == "off"
+    assert _lookup(bag, "conversation.playbook.actions.enabled") == ["escalate_human"]
+    assert _lookup(bag, "bot.system_prompt_additions") == "Parla come un recruiter."
+    # Una chiave non sovrascritta non deve risolvere: è ciò che fa scattare
+    # l'ereditarietà dal livello sottostante della cascata.
+    assert _lookup(bag, "bot.language") is None
+
+
+def test_profile_overrides_reject_an_unknown_key() -> None:
+    """Un profilo che scrive una chiave inesistente verrebbe ignorato in
+    silenzio dal resolver: meglio un 422 al salvataggio."""
+    from config_resolver import BotConfigSchema
+
+    with pytest.raises(ValidationError):
+        BotConfigSchema.model_validate({"bot": {"chiave_inventata": 1}})

@@ -15,6 +15,7 @@ import {
 } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
+import { flatten, inflate, type FormState } from './override-bag';
 
 type TonePreset = components['schemas']['TonePreset'];
 type SuggestedRules = components['schemas']['SuggestedRules'];
@@ -22,8 +23,6 @@ type SuggestedRules = components['schemas']['SuggestedRules'];
 type BotConfig = components['schemas']['BotConfigSchema'];
 type OverridesOut = components['schemas']['OverridesOut'];
 
-type OverrideBag = Record<string, Record<string, unknown>>;
-type FormState = Record<string, unknown>; // flat, dotted keys
 
 type FieldKind =
   | 'int'
@@ -1158,42 +1157,3 @@ function RuleChips({
 
 // ---- helpers --------------------------------------------------------------
 
-function flatten(
-  obj: Record<string, unknown>,
-  prefix = '',
-  out: FormState = {},
-): FormState {
-  for (const [key, value] of Object.entries(obj)) {
-    const path = prefix ? `${prefix}.${key}` : key;
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value)
-    ) {
-      flatten(value as Record<string, unknown>, path, out);
-    } else {
-      out[path] = value;
-    }
-  }
-  return out;
-}
-
-function inflate(flat: FormState): OverrideBag {
-  const out: OverrideBag = {};
-  for (const [path, value] of Object.entries(flat)) {
-    if (value === null || value === undefined) continue;
-    const parts = path.split('.');
-    if (parts.length === 0) continue;
-    const leaf = parts[parts.length - 1] as string;
-    let node: Record<string, unknown> = out as unknown as Record<string, unknown>;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const seg = parts[i] as string;
-      if (!Object.prototype.hasOwnProperty.call(node, seg) || typeof node[seg] !== 'object') {
-        node[seg] = {};
-      }
-      node = node[seg] as Record<string, unknown>;
-    }
-    node[leaf] = value;
-  }
-  return out;
-}

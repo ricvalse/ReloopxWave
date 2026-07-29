@@ -15,6 +15,7 @@ import {
   toast,
 } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
+import { ProfileBehaviorEditor } from './profile-behavior-editor';
 import type { ConversationProfile } from './types';
 
 /** Profili di conversazione (ADR 0022).
@@ -28,6 +29,7 @@ export function ProfilesEditor({ profiles }: { profiles: ConversationProfile[] }
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const invalidate = () =>
     void queryClient.invalidateQueries({ queryKey: ['conversation-profiles'] });
@@ -138,32 +140,43 @@ export function ProfilesEditor({ profiles }: { profiles: ConversationProfile[] }
           ) : (
             <ul className="space-y-2">
               {profiles.map((p) => (
-                <li
-                  key={p.id}
-                  className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2"
-                >
-                  <span className="font-medium">{p.name}</span>
-                  <code className="text-xs text-muted-foreground">{p.key}</code>
-                  {p.is_default ? <Badge>Default</Badge> : null}
-                  {p.is_library ? <Badge variant="secondary">Libreria agenzia</Badge> : null}
-                  {!p.enabled ? <Badge variant="outline">Disattivato</Badge> : null}
-                  {p.description ? (
-                    <span className="w-full text-xs text-muted-foreground">{p.description}</span>
-                  ) : null}
-                  {!p.is_library ? (
-                    <div className="ml-auto flex gap-1">
-                      {!p.is_default ? (
+                <li key={p.id} className="rounded-md border border-border p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{p.name}</span>
+                    <code className="text-xs text-muted-foreground">{p.key}</code>
+                    {p.is_default ? <Badge>Default</Badge> : null}
+                    {p.is_library ? <Badge variant="secondary">Libreria agenzia</Badge> : null}
+                    {!p.enabled ? <Badge variant="outline">Disattivato</Badge> : null}
+                    {p.description ? (
+                      <span className="w-full text-xs text-muted-foreground">{p.description}</span>
+                    ) : null}
+                    {!p.is_library ? (
+                      <div className="ml-auto flex gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setDefaultMutation.mutate(p.id)}
+                          onClick={() => setOpenId(openId === p.id ? null : p.id)}
                         >
-                          Rendi default
+                          {openId === p.id ? 'Chiudi' : 'Istruzioni'}
                         </Button>
-                      ) : null}
-                      <Button variant="ghost" size="sm" onClick={() => toggleMutation.mutate(p)}>
-                        {p.enabled ? 'Disattiva' : 'Riattiva'}
-                      </Button>
+                        {!p.is_default ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDefaultMutation.mutate(p.id)}
+                          >
+                            Rendi default
+                          </Button>
+                        ) : null}
+                        <Button variant="ghost" size="sm" onClick={() => toggleMutation.mutate(p)}>
+                          {p.enabled ? 'Disattiva' : 'Riattiva'}
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                  {openId === p.id ? (
+                    <div className="mt-3">
+                      <ProfileBehaviorEditor profile={p} />
                     </div>
                   ) : null}
                 </li>
