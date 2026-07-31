@@ -1359,9 +1359,10 @@ async def _do_human_handoff(
     *,
     session: AsyncSession | None,
 ) -> bool:
-    """Hand the conversation to a human operator, reusing the takeover state the AI
-    escalation uses (mark_escalated: auto_reply off + handoff_at). Flips the run's
-    `ai_paused` so any downstream ai_reply node skips. Sends no message → False."""
+    """Hand the conversation to a human operator, reusing the takeover the AI
+    escalation uses (`claim_handoff`: auto_reply off + handoff_at, atomically).
+    Flips the run's `ai_paused` so any downstream ai_reply node skips. Sends no
+    message → False."""
     if session is None or run_ctx.conversation_id is None:
         logger.info("automation.human_handoff.skipped", node=node.node_key, reason="no_context")
         return False
