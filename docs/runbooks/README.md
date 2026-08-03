@@ -11,6 +11,7 @@ Operational procedures — one file per scenario. Keep them terse and copy-paste
 - `supabase-restore-drill.md` — PITR / restore drill (trimestrale, sez. 13.6).
 - `fine-tune-deploy.md` — esecuzione della pipeline FT, promozione del modello, gestione fallimenti (anonymizer/spaCy/OpenAI).
 - `ghl-reauth.md` — re-autenticazione GoHighLevel quando il token di una location è scaduto/revocato.
+- `statistiche-e-profili.md` — come configurare le bolle della pagina Statistiche (automatiche e personalizzate), dichiarare un esito e cablarlo in un'automazione, creare profili di conversazione e caricarli da un flusso. Include l'ordine dei cancelli davanti a una condizione AI (è la voce di costo) e la diagnosi quando un numero non torna.
 
 ## Note operative cross-runbook
 
