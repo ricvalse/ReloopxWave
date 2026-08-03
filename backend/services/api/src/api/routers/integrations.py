@@ -645,6 +645,11 @@ async def slack_connect(
         secret=url,
         meta={"created_via": "merchant"},
     )
+    # Same zero-config seed as the OAuth callback. Without it, pasting a webhook
+    # by hand produced a green "Connesso" card and no automation at all: the
+    # merchant believed handoff alerts were live and found out otherwise by
+    # losing a customer.
+    await _seed_handoff_slack_automation(session, merchant_id)
     logger.info(
         "integrations.slack.connected",
         actor_id=str(ctx.actor_id),
@@ -777,12 +782,23 @@ async def _seed_handoff_slack_automation(session: Any, merchant_id: UUID) -> Non
     """Zero-config: on the first Slack connect, create an enabled
     `conversation_escalated → notify_slack` automation so handoff alerts work
     without touching the canvas. Idempotent — skips when the merchant already has
-    any automation on the `conversation_escalated` trigger (enabled or not), so a
-    reconnect never duplicates it and a disabled one is never resurrected.
+    an automation that actually notifies Slack on handoff, so a reconnect never
+    duplicates it and a disabled one is never resurrected.
+
+    The test is "has a `notify_slack` node", not "has something on the
+    `conversation_escalated` trigger": a merchant who had already drawn an
+    unrelated flow on that trigger (a courtesy message to the customer, say)
+    would otherwise be told Slack was connected and never receive a single
+    alert, because the seed silently declined to run.
     """
     repo = AutomationRepository(session)
     existing = await repo.list_for_merchant(merchant_id)
-    if any(a.trigger_type == "conversation_escalated" for a in existing):
+    already_notifies = any(
+        a.trigger_type == "conversation_escalated"
+        and any(n.type == "notify_slack" for n in a.nodes)
+        for a in existing
+    )
+    if already_notifies:
         return
     flow = await repo.create(
         merchant_id=merchant_id,

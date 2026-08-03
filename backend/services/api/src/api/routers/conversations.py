@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from api.dependencies.session import CurrentContext, DBSession
-from db import WhatsAppTemplateRepository
+from db import ConversationRepository, WhatsAppTemplateRepository
 from db.models.conversation import Conversation, Message
 from integrations.supabase_storage import SupabaseStorage
 from shared import PermissionDeniedError, get_logger, get_settings
@@ -288,9 +288,12 @@ async def send_message(
     # already returned, so this only runs on a genuinely new human message.
     actor = str(ctx.actor_id) if ctx.actor_id is not None else None
     if conv.auto_reply:
-        conv.auto_reply = False
-        conv.handoff_at = datetime.now(UTC)
-        conv.handoff_reason = "manual_reply"
+        # Via the repository so the episode is opened exactly like every other
+        # handoff — including clearing a previous `handoff_resolved_at`, without
+        # which the second takeover on a thread would be invisible to the
+        # overdue sweep, and pre-burning the SLA anchor (the operator is already
+        # here; alerting them that nobody has picked this up is noise).
+        await ConversationRepository(session).claim_manual_handoff(conv.id, reason="manual_reply")
     conv.assigned_to = actor
 
     await session.flush()
@@ -407,7 +410,12 @@ async def resume_ai(
     session: DBSession,
 ) -> dict[str, Any]:
     """Hand the thread back to the bot: clear the soft-pause, re-enable
-    auto-reply and mark the handoff resolved. Used by the "Riattiva AI" button."""
+    auto-reply, close the handoff episode and lift the ESCALATED FSM state.
+
+    The whole inverse of a handoff claim lives in `resolve_handoff` — going
+    through the repository (rather than setting fields here) is what keeps the
+    UI's bot switch from producing a half-resolved thread.
+    """
     if ctx.merchant_id is None and ctx.role != "agency_admin":
         raise PermissionDeniedError("Merchant context required", error_code="no_merchant_context")
     conv = (
@@ -416,11 +424,47 @@ async def resume_ai(
     if conv is None:
         raise HTTPException(status_code=404, detail="conversation not found")
 
-    conv.ai_disabled_until = None
-    conv.auto_reply = True
-    conv.handoff_resolved_at = datetime.now(UTC)
+    await ConversationRepository(session).resolve_handoff(conversation_id)
     await session.commit()
+    await session.refresh(conv)
     logger.info("conversations.ai_resumed", conversation_id=str(conversation_id))
+    return _conv_to_dict(conv)
+
+
+@router.post("/{conversation_id}/ai-takeover")
+async def takeover_ai(
+    conversation_id: UUID,
+    ctx: CurrentContext,
+    session: DBSession,
+) -> dict[str, Any]:
+    """Take the thread off the bot permanently — the operator owns it from here.
+
+    The counterpart of `ai-resume` for the inbox bot switch. Flipping
+    `conversations.auto_reply` straight from the client (the old behaviour) left
+    `handoff_at` unset, so nothing downstream — the overdue sweep, the "da
+    gestire" triage, the automation `ai_paused` gate — could tell an operator
+    was on the thread.
+    """
+    if ctx.merchant_id is None and ctx.role != "agency_admin":
+        raise PermissionDeniedError("Merchant context required", error_code="no_merchant_context")
+    conv = (
+        await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    ).scalar_one_or_none()
+    if conv is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    claimed = await ConversationRepository(session).claim_manual_handoff(
+        conversation_id, reason="manual_takeover"
+    )
+    if ctx.actor_id is not None:
+        conv.assigned_to = str(ctx.actor_id)
+    await session.commit()
+    await session.refresh(conv)
+    logger.info(
+        "conversations.ai_takeover",
+        conversation_id=str(conversation_id),
+        claimed=claimed,
+    )
     return _conv_to_dict(conv)
 
 

@@ -5,14 +5,20 @@ complaint / legal action, or explicitly asks to talk to a person. This handler:
   1. Respects the merchant's `escalation.enabled` config — the agency can lock
      escalation off, in which case we leave the thread on the bot.
   2. Takes the bot off the thread (`conversation.auto_reply = False`) so the
-     human agent owns the conversation from here on.
-  3. Stamps escalation metadata on the conversation and emits a
-     `conversation.escalated` analytics event — the merchant inbox surfaces it
-     via Realtime.
+     human agent owns the conversation from here on — via the atomic
+     `claim_handoff`, unless the caller already won the claim for this turn
+     (`turn_ctx.handoff_claimed`, set by the inbound reply policy which must
+     claim *before* it sends).
+  3. Emits a `conversation.escalated` analytics event — the merchant inbox
+     surfaces it via Realtime and the automation engine turns it into the
+     `conversation_escalated` trigger (Slack alerts, ADR 0020).
 
 The user-facing handoff line is produced by the orchestrator's `reply_text`
 (already sent before this handler runs); this handler only flips state and
 notifies, it does not send another WhatsApp message.
+
+Whoever loses the claim returns without emitting: exactly one episode, one
+operator notification (ADR 0017).
 """
 
 from __future__ import annotations
@@ -53,7 +59,15 @@ class EscalateHumanHandler:
             )
             # Only skip when explicitly disabled — escalating is the safe default
             # (better to hand a hot/angry lead to a human than to miss it).
-            if enabled is False:
+            #
+            # `handoff_claimed` overrides it: the caller already took the thread
+            # off the bot. That happens on a hard LLM failure, where the reply
+            # policy claims even with escalation locked off, as a safety net. If
+            # we returned here the thread would be silent forever, the customer
+            # would be holding a message promising an operator, and nobody would
+            # have been told — the disabled switch would suppress the alert for a
+            # takeover it did not prevent.
+            if enabled is False and not turn_ctx.handoff_claimed:
                 logger.info(
                     "escalate_human.disabled",
                     merchant_id=str(turn_ctx.merchant_id),
@@ -64,7 +78,19 @@ class EscalateHumanHandler:
             reason = action.payload.get("reason")
             summary = action.payload.get("customer_message_summary")
             convs = ConversationRepository(session)
-            await convs.mark_escalated(turn_ctx.conversation_id, reason=reason, summary=summary)
+            # No reply policy ran ahead of us (proactive `ai_reply` node): take the
+            # claim here. Losing means another turn already handed this thread off
+            # — recording a second episode would reset `handoff_at`, re-arm the SLA
+            # and fire a duplicate operator notification.
+            if not turn_ctx.handoff_claimed and not await convs.claim_handoff(
+                turn_ctx.conversation_id, reason=reason, summary=summary
+            ):
+                logger.info(
+                    "escalate_human.already_handed_off",
+                    merchant_id=str(turn_ctx.merchant_id),
+                    conversation_id=str(turn_ctx.conversation_id),
+                )
+                return
 
             analytics = AnalyticsRepository(session)
             await analytics.emit(

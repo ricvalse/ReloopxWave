@@ -973,6 +973,101 @@ async def test_escalation_disabled_keeps_bot_reply_no_handoff_message(
     assert conv.handoff_at is None
 
 
+async def test_silent_handoff_says_nothing_to_the_customer_but_notifies_the_operator(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Passaggio silenzioso = silenzioso *verso il cliente*, non verso di noi.
+
+    Il cliente non riceve niente e il bot esce dal thread, ma l'azione
+    `escalate_human` viene comunque dispatchata: è lei a emettere
+    `conversation.escalated`, cioè l'evento da cui parte la notifica Slack. Se
+    tacesse anche quella, l'handoff sarebbe una conversazione abbandonata senza
+    che nessuno lo sappia.
+    """
+    from ai_core import conversation_service as cs
+    from config_resolver import ConfigKey
+
+    svc, sender, dispatcher, conv, _lead = service
+
+    async def per_key_bool(self, session, merchant_id, key, *, default):
+        if key is ConfigKey.ESCALATION_SILENT_HANDOFF:
+            return True
+        return True
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
+
+    escalations: list = []
+
+    async def spy_escalate(action, ctx):
+        escalations.append(ctx)
+
+    dispatcher.register("escalate_human", spy_escalate)
+
+    svc._orchestrator.run = AsyncMock(
+        return_value=_escalate_response(reply_text="Ti passo a un operatore.")
+    )
+
+    await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="Voglio parlare con una persona",
+        wa_message_id="wamid.silent.1",
+    )
+
+    assert sender.calls == []  # niente sul filo
+    assert conv.auto_reply is False  # e il bot esce dal thread
+    assert len(escalations) == 1  # ma l'operatore viene avvisato
+    # Il claim è già stato vinto dalla reply-policy: l'handler non deve ritentarlo.
+    assert escalations[0].handoff_claimed is True
+
+
+async def test_configured_handoff_message_wins_over_the_model_text(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Con il campo «Messaggio di passaggio» compilato esce esattamente quel
+    testo, non quello che si è inventato il modello — ed è comunque un handoff
+    vero: bot fuori dal thread e operatore notificato."""
+    from ai_core import conversation_service as cs
+    from config_resolver import ConfigKey
+
+    svc, sender, dispatcher, conv, _lead = service
+
+    async def per_key_bool(self, session, merchant_id, key, *, default):
+        # Escalation attiva, ma NON silenziosa: il messaggio deve uscire.
+        return key is not ConfigKey.ESCALATION_SILENT_HANDOFF
+
+    async def per_key_str(self, session, merchant_id, key):
+        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+            return "Ti metto subito in contatto con un nostro operatore."
+        return None
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
+    monkeypatch.setattr(cs.ConversationService, "_resolve_optional_str", per_key_str)
+
+    escalations: list = []
+
+    async def spy_escalate(action, ctx):
+        escalations.append(ctx)
+
+    dispatcher.register("escalate_human", spy_escalate)
+
+    svc._orchestrator.run = AsyncMock(
+        return_value=_escalate_response(reply_text="Testo improvvisato dal modello.")
+    )
+
+    await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="Voglio parlare con una persona",
+        wa_message_id="wamid.custom.1",
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Ti metto subito in contatto con un nostro operatore."
+    assert conv.auto_reply is False
+    assert len(escalations) == 1
+
+
 async def test_force_handoff_media_burst_emits_single_escalation_event(
     monkeypatch: pytest.MonkeyPatch, service
 ) -> None:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, String, cast, func, select, text, update
+from sqlalchemy import DateTime, Integer, String, cast, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -221,6 +221,8 @@ class LeadRepository:
                 Conversation.wa_phone_number_id,
                 Conversation.auto_reply,
                 Conversation.last_inbound_at,
+                Conversation.handoff_at,
+                Conversation.handoff_resolved_at,
             )
             .distinct(Conversation.lead_id)
             .order_by(Conversation.lead_id, Conversation.last_message_at.desc())
@@ -259,6 +261,13 @@ class LeadRepository:
                 Lead.opted_out_at.is_(None),
                 Lead.status != "erased",
                 last_conv.c.auto_reply.is_(True),
+                # `auto_reply` alone isn't enough: a thread whose bot switch was
+                # flipped back on without closing the handoff episode is still an
+                # operator's thread. Require the episode to be resolved too.
+                or_(
+                    last_conv.c.handoff_at.is_(None),
+                    last_conv.c.handoff_resolved_at.is_not(None),
+                ),
             )
             .limit(500)
         )

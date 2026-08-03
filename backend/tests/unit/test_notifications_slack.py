@@ -62,22 +62,47 @@ def test_overdue_layout_shows_minutes() -> None:
     assert payload["blocks"][0]["text"]["text"].endswith("42 min")
 
 
-def test_custom_text_substitutes_placeholders_and_skips_blocks() -> None:
+def test_custom_text_substitutes_placeholders_and_keeps_the_deep_link() -> None:
     payload = build_slack_payload(_notif(custom_text="Handoff {name} ({phone}): {reason}"))
-    assert payload == {"text": "Handoff Mario Rossi (393331112233): cliente arrabbiato"}
-    assert "blocks" not in payload
+    assert payload["text"] == "Handoff Mario Rossi (393331112233): cliente arrabbiato"
+    # Writing your own copy must not cost the one-click way into the thread.
+    actions = next(b for b in payload["blocks"] if b["type"] == "actions")
+    assert actions["elements"][0]["url"] == "https://portal.example/conversations/abc"
 
 
-def test_detail_prefers_summary_over_last_message() -> None:
+def test_custom_text_without_deep_link_stays_plain() -> None:
+    payload = build_slack_payload(_notif(custom_text="Handoff {name}", inbox_url=None))
+    assert payload == {"text": "Handoff Mario Rossi"}
+
+
+def test_custom_text_escapes_substituted_values_not_the_template() -> None:
+    """The merchant's own mrkdwn survives; what the customer wrote does not get
+    to inject link syntax or an @channel ping into an operator channel."""
+    payload = build_slack_payload(
+        _notif(
+            custom_text="*Handoff* di {name}: {last_message}",
+            lead_name="Mario",
+            last_message="<https://evil.example|clicca>",
+            inbox_url=None,
+        )
+    )
+    assert payload["text"].startswith("*Handoff* di Mario")  # template formatting kept
+    assert "&lt;https://evil.example" in payload["text"]
+    assert "<https://evil.example|clicca>" not in payload["text"]
+
+
+def test_summary_and_last_message_are_both_shown() -> None:
+    """They answer different questions — why it escalated, and what the customer
+    actually said. Showing only the brief hid the message it was written about."""
     payload = build_slack_payload(_notif(summary="riassunto AI", last_message="ultimo msg"))
     quotes = [
-        b
+        b["text"]["text"]
         for b in payload["blocks"]
-        if b["type"] == "section" and "text" in b and b["text"]["text"].startswith(">")
+        if b["type"] == "section" and "text" in b and ">" in b["text"]["text"]
     ]
-    assert quotes
-    assert "riassunto AI" in quotes[0]["text"]["text"]
-    assert "ultimo msg" not in quotes[0]["text"]["text"]
+    joined = "\n".join(quotes)
+    assert "Riassunto AI" in joined and "riassunto AI" in joined
+    assert "Ultimo messaggio" in joined and "ultimo msg" in joined
 
 
 def test_no_inbox_url_no_button() -> None:
@@ -108,10 +133,17 @@ def test_untrusted_content_is_mrkdwn_escaped() -> None:
     detail = next(
         b
         for b in payload["blocks"]
-        if b["type"] == "section" and "text" in b and b["text"]["text"].startswith(">")
+        if b["type"] == "section" and "text" in b and ">" in b["text"]["text"]
     )
     assert "&lt;https://evil.example" in detail["text"]["text"]
     assert "<https://evil.example|clicca>" not in detail["text"]["text"]
+
+
+def test_fallback_text_names_the_lead() -> None:
+    """The `text` field is what shows on a phone lock screen: identical for every
+    alert, it forced the operator to open Slack to learn who it was about."""
+    payload = build_slack_payload(_notif())
+    assert "Mario Rossi" in payload["text"]
 
 
 # --- dispatch --------------------------------------------------------------

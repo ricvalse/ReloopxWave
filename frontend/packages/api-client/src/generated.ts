@@ -926,9 +926,39 @@ export interface paths {
         /**
          * Resume Ai
          * @description Hand the thread back to the bot: clear the soft-pause, re-enable
-         *     auto-reply and mark the handoff resolved. Used by the "Riattiva AI" button.
+         *     auto-reply, close the handoff episode and lift the ESCALATED FSM state.
+         *
+         *     The whole inverse of a handoff claim lives in `resolve_handoff` — going
+         *     through the repository (rather than setting fields here) is what keeps the
+         *     UI's bot switch from producing a half-resolved thread.
          */
         post: operations["resume_ai_conversations__conversation_id__ai_resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{conversation_id}/ai-takeover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Takeover Ai
+         * @description Take the thread off the bot permanently — the operator owns it from here.
+         *
+         *     The counterpart of `ai-resume` for the inbox bot switch. Flipping
+         *     `conversations.auto_reply` straight from the client (the old behaviour) left
+         *     `handoff_at` unset, so nothing downstream — the overdue sweep, the "da
+         *     gestire" triage, the automation `ai_paused` gate — could tell an operator
+         *     was on the thread.
+         */
+        post: operations["takeover_ai_conversations__conversation_id__ai_takeover_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6619,6 +6649,41 @@ export interface operations {
             };
         };
     };
+    takeover_ai_conversations__conversation_id__ai_takeover_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reschedule_appointments__appointment_id__reschedule_post: {
         parameters: {
             query?: never;
@@ -9032,6 +9097,7 @@ export enum ApiPaths {
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
     pause_ai_conversations__conversation_id__ai_pause_post = "/conversations/{conversation_id}/ai-pause",
     resume_ai_conversations__conversation_id__ai_resume_post = "/conversations/{conversation_id}/ai-resume",
+    takeover_ai_conversations__conversation_id__ai_takeover_post = "/conversations/{conversation_id}/ai-takeover",
     reschedule_appointments__appointment_id__reschedule_post = "/appointments/{appointment_id}/reschedule",
     cancel_appointments__appointment_id__cancel_post = "/appointments/{appointment_id}/cancel",
     merchant_kpis_analytics_merchant_kpis_get = "/analytics/merchant/kpis",

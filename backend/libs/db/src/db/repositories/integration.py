@@ -356,6 +356,24 @@ class IntegrationRepository:
         await self._session.flush()
         return (result.rowcount or 0) > 0
 
+    async def mark_provider_broken(
+        self, *, merchant_id: UUID, provider: str, error: str
+    ) -> bool:
+        """Flip a provider row to `status='error'` and record why.
+
+        Called when the remote end has told us the credential is dead — a Slack
+        webhook whose channel was archived or whose app was removed answers 4xx
+        forever. Without this the integrations page kept showing "Connesso" for a
+        webhook that had not delivered anything in weeks, so nobody went looking.
+        """
+        integration = await self._get(provider, merchant_id)
+        if integration is None:
+            return False
+        integration.status = "error"
+        integration.meta = {**(integration.meta or {}), "last_error": error[:500]}
+        await self._session.flush()
+        return True
+
     async def list_status(self, merchant_id: UUID) -> list[IntegrationStatus]:
         stmt = select(Integration).where(Integration.merchant_id == merchant_id)
         rows = (await self._session.execute(stmt)).scalars()
