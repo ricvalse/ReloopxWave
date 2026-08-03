@@ -73,8 +73,6 @@ class TestReminderCandidateOptimalHour:
             wa_phone_number_id="360:111",
             wa_contact_phone="+39123456789",
             last_message_at=now - timedelta(hours=3),
-            reminders_sent=0,
-            last_reminder_at=None,
             last_inbound_at=now - timedelta(hours=3),
             optimal_send_hour=optimal_send_hour,
         )

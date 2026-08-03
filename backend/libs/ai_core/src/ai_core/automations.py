@@ -503,9 +503,10 @@ def resolve_send_node_at(
 # Send plan — timing sourced from the graph (ADR 0011 / audit A2)
 # --------------------------------------------------------------------------- #
 
-# Max number of `send` nodes a system flow may chain — mirrors the config_resolver
-# schema ranges (max_followups 1-4, max_attempts 1-5, reminder_schedule max 5) and
-# the schedulers' hardcoded scan ceilings.
+# Max number of `send` nodes a system flow may chain. Erano allineati alle
+# vecchie chiavi `no_answer.max_followups` / `reactivation.max_attempts`: la
+# prima non esiste più (la cadenza vive sul grafo), quindi oggi questi sono
+# semplicemente il tetto di sicurezza del validatore.
 NO_ANSWER_MAX_SENDS = 4
 REACTIVATION_MAX_SENDS = 5
 BOOKING_MAX_REMINDERS = 5

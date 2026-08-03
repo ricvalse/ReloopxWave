@@ -10,11 +10,34 @@ def test_system_defaults_cover_every_key() -> None:
 
 
 def test_bot_config_schema_applies_bounds() -> None:
-    cfg = BotConfigSchema.model_validate(
-        {"no_answer": {"first_reminder_min": 120, "max_followups": 2}}
-    )
-    assert cfg.no_answer.first_reminder_min == 120
+    cfg = BotConfigSchema.model_validate({"escalation": {"sla_minutes": 30}})
+    assert cfg.escalation.sla_minutes == 30
     assert cfg.scoring.hot_threshold == 80  # default
+
+
+def test_no_answer_section_is_gone() -> None:
+    """La cadenza dei follow-up vive sulla lavagnetta (ADR 0014/0015): le vecchie
+    chiavi `no_answer.*` erano esposte nel pannello merchant senza che nessuno le
+    leggesse. Restare rifiutate è ciò che impedisce di ri-esporle per sbaglio."""
+    assert "no_answer" not in BotConfigSchema.model_fields
+    assert not [k for k in ConfigKey if k.value.startswith("no_answer.")]
+    with pytest.raises(ValidationError):
+        BotConfigSchema.model_validate({"no_answer": {"first_reminder_min": 120}})
+
+
+def test_handoff_knobs_are_configurable() -> None:
+    """I due parametri dell'handoff erano fuori dalla cascata: la SLA viveva in una
+    variabile d'ambiente globale (stessa per ogni merchant) e la pausa dopo un
+    messaggio dal telefono era una costante nel codice."""
+    cfg = BotConfigSchema.model_validate(
+        {"escalation": {"sla_minutes": 45, "phone_echo_pause_minutes": 30}}
+    )
+    assert cfg.escalation.sla_minutes == 45
+    assert cfg.escalation.phone_echo_pause_minutes == 30
+    # Un valore non positivo spingerebbe il cutoff nel futuro e farebbe risultare
+    # scaduto ogni handoff aperto: il bound lo impedisce a monte.
+    with pytest.raises(ValidationError):
+        BotConfigSchema.model_validate({"escalation": {"sla_minutes": 0}})
 
 
 def test_persona_defaults() -> None:

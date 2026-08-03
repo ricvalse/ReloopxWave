@@ -70,9 +70,10 @@ from shared import get_logger
 
 logger = get_logger(__name__)
 
-# How long the bot stays soft-paused after the merchant replies from their phone
-# (360dialog Coexistence). Reset on every echo; auto-resumes when it elapses.
-_PHONE_ECHO_PAUSE = timedelta(hours=2)
+# Ripiego se `escalation.phone_echo_pause_minutes` non risolve: quanto il bot
+# resta in pausa dopo una risposta scritta a mano dal telefono del merchant
+# (360dialog Coexistence). Reset a ogni eco; riparte da solo alla scadenza.
+_PHONE_ECHO_PAUSE_FALLBACK_MIN = 120
 
 # How many of the most-recent messages we pull as LLM context. Deliberately
 # WIDER than the default AGENT_CONTEXT_COMPRESS_THRESHOLD (30) so the context
@@ -2095,10 +2096,19 @@ class ConversationService:
                         "wa.phone_echo.media_failed", error=str(e), wa_message_id=wa_message_id
                     )
             await convs.touch_last_message(conv.id)
-            # The merchant just answered from their phone: soft-pause the bot for
-            # a couple of hours so it doesn't talk over the human. Reset on every
-            # echo (each manual reply extends the window); auto-resumes after.
-            conv.ai_disabled_until = datetime.now(UTC) + _PHONE_ECHO_PAUSE
+            # The merchant just answered from their phone: soft-pause the bot so
+            # it doesn't talk over the human. Reset on every echo (each manual
+            # reply extends the window); auto-resumes after. Quanto dura è una
+            # scelta di presidio, non una costante: un negozio che risponde a
+            # mano tutto il giorno la vuole lunga, uno che interviene di rado la
+            # vuole corta.
+            pause_minutes = await self._resolve_int(
+                session,
+                resolved.merchant_id,
+                ConfigKey.ESCALATION_PHONE_ECHO_PAUSE_MINUTES,
+                default=_PHONE_ECHO_PAUSE_FALLBACK_MIN,
+            )
+            conv.ai_disabled_until = datetime.now(UTC) + timedelta(minutes=pause_minutes)
 
         logger.info(
             "uc01.phone_echo.persisted",

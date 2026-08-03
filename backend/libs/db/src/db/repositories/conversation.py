@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, cast, delete, func, or_, select, text, update
+from sqlalchemy import DateTime, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Conversation, ConversationProfile, Lead, Merchant
@@ -28,8 +28,6 @@ class ReminderCandidate:
     wa_phone_number_id: str
     wa_contact_phone: str
     last_message_at: datetime
-    reminders_sent: int
-    last_reminder_at: datetime | None
     # Last inbound (customer) message — drives the 24h window decision AND the
     # no-answer episode anchor (ADR 0015): the trigger fires once per silence
     # episode, re-arming only when the lead sends a new inbound. May be None on
@@ -168,25 +166,26 @@ class ConversationRepository:
             .values(last_inbound_at=now)
         )
 
-    async def list_reminder_candidates(
-        self, *, min_idle_minutes: int = 30
-    ) -> list[ReminderCandidate]:
+    async def list_reminder_candidates(self, *, min_idle_minutes: int) -> list[ReminderCandidate]:
         """Cross-tenant scan of conversations silent long enough to be a no-answer.
 
         ADR 0015: the scheduler is a pure edge-triggered emitter — it no longer
         tracks per-attempt cadence (that lives in the automation graph now), it
-        just surfaces conversations idle past a conservative floor, plus the
+        just surfaces conversations idle past a floor, plus the
         `no_answer_fired_for` anchor so the caller emits `lead.no_answer` once per
         silence episode. Only conversations with a real inbound (`last_inbound_at`)
         can go silent on the lead, so we require it.
+
+        `min_idle_minutes` non ha default di proposito: era 30, e una costante
+        qui dentro sovrascriveva silenziosamente il `delay_minutes` che il
+        merchant aveva impostato sul nodo trigger — qualunque valore sotto la
+        mezz'ora non poteva funzionare. Ora il chiamante lo deriva dal minimo
+        davvero configurato (`AutomationRepository.enabled_trigger_delays`), e
+        questa query si limita a essere il filtro grezzo.
         """
         now = datetime.now(tz=UTC)
         idle_cutoff = now - timedelta(minutes=min_idle_minutes)
 
-        reminders_sent_expr = cast(
-            func.coalesce(Conversation.meta["reminders_sent"].astext, "0"),
-            Integer,
-        )
         stmt = (
             select(
                 Conversation.id,
@@ -196,8 +195,6 @@ class ConversationRepository:
                 Conversation.wa_contact_phone,
                 Conversation.last_message_at,
                 Conversation.last_inbound_at,
-                reminders_sent_expr.label("reminders_sent"),
-                Conversation.meta["last_reminder_at"].astext.label("last_reminder_at"),
                 Conversation.meta["no_answer_fired_for"].astext.label("no_answer_fired_for"),
                 Lead.optimal_send_hour,
                 Lead.name.label("lead_name"),
@@ -210,7 +207,12 @@ class ConversationRepository:
                 Conversation.last_message_at < idle_cutoff,
                 Conversation.last_inbound_at.is_not(None),
             )
-            .limit(500)  # safety cap per tick
+            # Cap di sicurezza per tick. `order_by` esplicito: senza, una
+            # piattaforma con più di 500 candidati restituirebbe un insieme
+            # arbitrario a ogni giro e una conversazione poteva non uscire mai.
+            # Le più vecchie prima = quelle che aspettano da più tempo.
+            .order_by(Conversation.last_message_at)
+            .limit(500)
         )
         rows = await self._session.execute(stmt)
 
@@ -224,8 +226,6 @@ class ConversationRepository:
                     wa_phone_number_id=row["wa_phone_number_id"] or "",
                     wa_contact_phone=row["wa_contact_phone"] or "",
                     last_message_at=row["last_message_at"],
-                    reminders_sent=int(row["reminders_sent"]),
-                    last_reminder_at=_parse_iso(row["last_reminder_at"]),
                     last_inbound_at=row["last_inbound_at"],
                     optimal_send_hour=row["optimal_send_hour"],
                     lead_name=row["lead_name"],
@@ -234,14 +234,29 @@ class ConversationRepository:
             )
         return results
 
-    async def close_idle_active(self, *, min_idle_minutes: int, limit: int = 500) -> list[UUID]:
+    async def close_idle_active(
+        self,
+        *,
+        min_idle_minutes: int,
+        followup_floor_by_merchant: dict[UUID, int] | None = None,
+        limit: int = 500,
+    ) -> list[UUID]:
         """Close active conversations with no activity for `min_idle_minutes`.
 
         There is no explicit 'conversation closed' event in the WhatsApp flow, so
         we approximate close = prolonged silence. Returns the ids that were
         closed so the caller can enqueue UC-13 objection extraction for each.
-        The threshold must sit *after* the follow-up window (UC-03) so we don't
-        cut off pending reminders.
+
+        **La chiusura deve stare dopo la finestra di follow-up (UC-03)**, perché
+        `list_reminder_candidates` guarda solo le conversazioni `active`: chiudere
+        per prime le silenziose significa rendere il trigger "nessuna risposta"
+        irraggiungibile. Il docstring qui sopra affermava questa invariante ma
+        nessuno la faceva rispettare, e con `conversation.idle_close_minutes` a
+        120 e il default del nodo trigger anch'esso a 120 le due soglie
+        coincidevano: qualunque automazione con ritardo ≥ 120 minuti non è mai
+        partita. Ora l'invariante è esplicita — `followup_floor_by_merchant`
+        porta, per merchant, il ritardo più lungo configurato sulla lavagnetta
+        (più un margine), e una conversazione non si chiude prima di quello.
 
         Chiudere la conversazione è anche la **fine dell'episodio** nel senso di
         ADR 0022, quindi è qui che il profilo caricato da un'automazione decade e
@@ -249,22 +264,37 @@ class ConversationRepository:
         e non a uno stato di run è coerente col motore stateless (ADR 0015): non
         c'è nessun altro punto che sappia dire "l'episodio è finito".
         """
-        cutoff = datetime.now(tz=UTC) - timedelta(minutes=min_idle_minutes)
-        ids = list(
-            (
-                await self._session.execute(
-                    select(Conversation.id)
-                    .where(
-                        Conversation.status == "active",
-                        Conversation.last_message_at.is_not(None),
-                        Conversation.last_message_at < cutoff,
-                    )
-                    .limit(limit)
+        floors = followup_floor_by_merchant or {}
+        now = datetime.now(tz=UTC)
+        cutoff = now - timedelta(minutes=min_idle_minutes)
+        rows = (
+            await self._session.execute(
+                select(
+                    Conversation.id,
+                    Conversation.merchant_id,
+                    Conversation.last_message_at,
                 )
+                .where(
+                    Conversation.status == "active",
+                    Conversation.last_message_at.is_not(None),
+                    Conversation.last_message_at < cutoff,
+                )
+                .order_by(Conversation.last_message_at)
+                .limit(limit)
             )
-            .scalars()
-            .all()
-        )
+        ).all()
+
+        # Il filtro per-merchant sta in Python e non in SQL di proposito: i floor
+        # sono pochi (uno per merchant con un'automazione no_answer attiva) e
+        # tradurli in un CASE correlato renderebbe la query illeggibile senza
+        # risparmiare nulla su un batch già limitato a `limit` righe.
+        ids: list[UUID] = []
+        for conv_id, merchant_id, last_message_at in rows:
+            floor = floors.get(merchant_id)
+            if floor is not None and now - last_message_at < timedelta(minutes=floor):
+                continue
+            ids.append(conv_id)
+
         if ids:
             await self._session.execute(
                 update(Conversation).where(Conversation.id.in_(ids)).values(status="closed")
@@ -439,32 +469,6 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
         )
         return result.scalar_one_or_none() is not None
-
-    async def record_reminder_sent(self, conversation_id: UUID) -> None:
-        """Atomically increment reminders_sent and stamp last_reminder_at in conversation.meta.
-
-        Uses jsonb_set with the existing counter so concurrent workers don't clobber each other.
-        """
-        await self._session.execute(
-            text(
-                """
-                UPDATE conversations
-                SET meta = jsonb_set(
-                    jsonb_set(
-                        coalesce(meta, '{}'::jsonb),
-                        '{reminders_sent}',
-                        to_jsonb(
-                            coalesce((meta ->> 'reminders_sent')::int, 0) + 1
-                        )
-                    ),
-                    '{last_reminder_at}',
-                    to_jsonb(now()::text)
-                )
-                WHERE id = :conversation_id
-                """
-            ),
-            {"conversation_id": str(conversation_id)},
-        )
 
     async def mark_no_answer_fired(self, conversation_id: UUID, anchor: datetime) -> None:
         """Stamp the `last_inbound_at` anchor a `lead.no_answer` trigger was emitted

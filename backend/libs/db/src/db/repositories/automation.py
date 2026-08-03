@@ -55,6 +55,47 @@ class AutomationRepository:
         )
         return list((await self._session.execute(stmt)).scalars())
 
+    async def enabled_trigger_delays(
+        self, *, trigger_type: str, default_minutes: int
+    ) -> dict[UUID, list[int]]:
+        """Ritardi (`delay_minutes`) dei nodi trigger abilitati, per merchant.
+
+        Scansione cross-tenant: la usano gli sweep, che girano fuori da una
+        sessione tenant. Serve a due cose che devono restare d'accordo fra loro:
+
+          * l'emettitore no-answer prende il **minimo** globale come pavimento
+            della scansione, così un ritardo di 10 minuti funziona davvero e una
+            piattaforma senza automazioni no_answer non scansiona affatto;
+          * lo sweep di chiusura prende il **massimo per merchant** come soglia
+            minima di inattività, così non chiude una conversazione che ha
+            ancora un follow-up in arrivo (era il bug: chiusura e follow-up
+            avevano entrambi 120 minuti e la chiusura vinceva).
+
+        Un nodo trigger senza `delay_minutes` esplicito vale `default_minutes`.
+        """
+        stmt = (
+            select(
+                AutomationFlow.merchant_id,
+                AutomationNode.config["delay_minutes"].astext,
+            )
+            .join(AutomationNode, AutomationNode.automation_id == AutomationFlow.id)
+            .where(
+                AutomationFlow.trigger_type == trigger_type,
+                AutomationFlow.enabled.is_(True),
+                AutomationNode.kind == "trigger",
+            )
+        )
+        out: dict[UUID, list[int]] = {}
+        for merchant_id, raw in (await self._session.execute(stmt)).all():
+            try:
+                minutes = int(raw) if raw is not None else default_minutes
+            except (TypeError, ValueError):
+                minutes = default_minutes
+            if minutes <= 0:
+                minutes = default_minutes
+            out.setdefault(merchant_id, []).append(minutes)
+        return out
+
     async def create(
         self,
         *,

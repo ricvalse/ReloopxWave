@@ -85,14 +85,11 @@ const TEMPLATE_SECTIONS: TSection[] = [
       { key: 'scoring.cold_threshold', label: 'Cold threshold', kind: 'int', min: 0, max: 50 },
     ],
   },
-  {
-    title: 'No answer (UC-03)',
-    fields: [
-      { key: 'no_answer.first_reminder_min', label: '1° reminder (min)', kind: 'int', min: 30, max: 480 },
-      { key: 'no_answer.second_reminder_min', label: '2° reminder (min)', kind: 'int', min: 720, max: 2880 },
-      { key: 'no_answer.max_followups', label: 'Max follow-up', kind: 'int', min: 1, max: 4 },
-    ],
-  },
+  // La sezione "No answer (UC-03)" viveva qui con tre campi (1°/2° reminder,
+  // max follow-up) che nessuna riga di backend leggeva più: la cadenza dei
+  // follow-up sta interamente sulla lavagnetta del merchant (ADR 0014/0015).
+  // Erano peggio che inutili — impostarli o bloccarli in un template dava
+  // l'impressione di governare un comportamento che governava il grafo.
   {
     title: 'Riattivazione (UC-06)',
     fields: [
@@ -177,6 +174,20 @@ const TEMPLATE_SECTIONS: TSection[] = [
         key: 'escalation.critical_keywords',
         label: 'Parole chiave critiche (una per riga)',
         kind: 'tags',
+      },
+      {
+        key: 'escalation.sla_minutes',
+        label: 'SLA handoff (min)',
+        kind: 'int',
+        min: 1,
+        max: 1440,
+      },
+      {
+        key: 'escalation.phone_echo_pause_minutes',
+        label: 'Pausa bot dopo risposta dal telefono (min)',
+        kind: 'int',
+        min: 5,
+        max: 10080,
       },
       { key: 'privacy.retention_months', label: 'Retention (mesi)', kind: 'int', min: 6, max: 60 },
     ],

@@ -135,10 +135,10 @@ class Settings(BaseSettings):
     # 0 disables the limiter. Fail-open if Redis is unreachable.
     rate_limit_public_per_min: int = 120
 
-    # Minutes an open human handoff may sit unresolved before the handoff_sla_sweep
-    # cron emits `conversation.handoff_overdue` (drives an operator alert, e.g.
-    # Slack). Per-episode edge-triggered, so it fires at most once per handoff.
-    handoff_sla_minutes: int = 15
+    # NB: la soglia SLA dell'handoff non sta più qui. Era `handoff_sla_minutes`,
+    # un unico valore per l'intera piattaforma; ora è `escalation.sla_minutes`
+    # nella cascata di configurazione, quindi ogni merchant la imposta dal
+    # pannello in base al proprio presidio.
 
     # Slack "Add to Slack" OAuth app (incoming-webhook scope) — one shared Reloop
     # app that each merchant installs in their own workspace. Register the redirect

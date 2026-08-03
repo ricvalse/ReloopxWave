@@ -424,6 +424,22 @@ const SECTIONS: SectionDef[] = [
         rows: 3,
         help: 'Parole che forzano il passaggio al modello di escalation, una per riga. Vuoto = vocabolario predefinito. Utile se una parola predefinita (es. “concorrenza”) è normale nel tuo settore.',
       },
+      {
+        key: 'escalation.sla_minutes',
+        label: 'Avvisami se nessuno risponde entro (min)',
+        kind: 'int',
+        min: 1,
+        max: 1440,
+        help: 'Quanto può restare aperto un passaggio a operatore prima che scatti l’avviso — è ciò che fa partire l’automazione «Handoff in ritardo» (es. la notifica su Slack). Prima era un valore unico per tutta la piattaforma, non modificabile.',
+      },
+      {
+        key: 'escalation.phone_echo_pause_minutes',
+        label: 'Pausa del bot dopo una risposta dal telefono (min)',
+        kind: 'int',
+        min: 5,
+        max: 10080,
+        help: 'Se rispondi a mano dall’app WhatsApp sul telefono, il bot resta zitto per questo tempo per non parlarti sopra. Ogni risposta manuale fa ripartire il conteggio.',
+      },
     ],
   },
   {
@@ -446,7 +462,7 @@ const SECTIONS: SectionDef[] = [
 
 // Sezioni nascoste dal pannello Configurazione. Le definizioni restano in
 // SECTIONS sopra: per riattivarne una basta togliere la chiave da questo set.
-// Le sezioni operative (no_answer/reactivation/scoring/booking) sono ora
+// Le sezioni operative (reactivation/scoring/booking) sono ora
 // esposte: erano il gap percepito più grande rispetto alla console di Amalia.
 // Restano nascoste solo quelle gestite altrove o puramente tecniche.
 const HIDDEN_SECTIONS = new Set<string>([
