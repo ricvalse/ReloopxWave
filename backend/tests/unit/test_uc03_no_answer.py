@@ -40,8 +40,6 @@ def _candidate(**over: Any) -> ReminderCandidate:
         wa_phone_number_id="PNID-1",
         wa_contact_phone="39333000000",
         last_message_at=now - timedelta(hours=3),
-        reminders_sent=0,
-        last_reminder_at=None,
         last_inbound_at=now - timedelta(hours=3),
         no_answer_fired_for=None,
     )

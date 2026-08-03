@@ -21,12 +21,12 @@ class _StrictModel(BaseModel):
 
 
 class ConfigKey(StrEnum):
-    # UC-03 No answer
-    NO_ANSWER_FIRST_REMINDER_MIN = "no_answer.first_reminder_min"
-    NO_ANSWER_SECOND_REMINDER_MIN = "no_answer.second_reminder_min"
-    NO_ANSWER_MAX_FOLLOWUPS = "no_answer.max_followups"
-    NO_ANSWER_FIRST_REMINDER_TEXT = "no_answer.first_reminder_text"
-    NO_ANSWER_SECOND_REMINDER_TEXT = "no_answer.second_reminder_text"
+    # UC-03 No answer — la cadenza dei follow-up vive INTERAMENTE sulla
+    # lavagnetta (ADR 0014/0015): il ritardo sta in `delay_minutes` sul nodo
+    # trigger, il contenuto in `free_text`/template sui nodi `send`. Le vecchie
+    # chiavi `no_answer.*` (first/second_reminder_min, max_followups e i due
+    # testi) sono state rimosse qui: erano rimaste esposte nel pannello merchant
+    # senza che nessuna riga di codice le leggesse più.
 
     # UC-06 Reactivation
     REACTIVATION_DORMANT_DAYS = "reactivation.dormant_days"
@@ -86,6 +86,15 @@ class ConfigKey(StrEnum):
     # code default vocabulary (CRITICAL_KEYWORDS). A tenant whose domain reuses a
     # default word innocently (e.g. "concorrenza" in recruiting) can override it.
     ESCALATION_CRITICAL_KEYWORDS = "escalation.critical_keywords"
+    # Minuti oltre i quali un handoff ancora aperto è "in ritardo": il cron
+    # `handoff_sla_sweep` emette `conversation.handoff_overdue`, che è ciò che
+    # fa scattare l'avviso all'operatore (es. il nodo Slack). Era una variabile
+    # d'ambiente globale — stesso valore per ogni merchant della piattaforma —
+    # e nessun merchant poteva adattarla ai propri orari di presidio.
+    ESCALATION_SLA_MINUTES = "escalation.sla_minutes"
+    # Minuti di silenzio del bot dopo che un umano ha scritto dall'app del
+    # telefono (mirroring 360dialog Coexistence). Era hardcoded a 2 ore.
+    ESCALATION_PHONE_ECHO_PAUSE_MINUTES = "escalation.phone_echo_pause_minutes"
 
     # Privacy
     PRIVACY_RETENTION_MONTHS = "privacy.retention_months"
@@ -279,11 +288,6 @@ _DEFAULT_OBJECTION_CATEGORIES = [
 
 
 SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
-    ConfigKey.NO_ANSWER_FIRST_REMINDER_MIN: 120,
-    ConfigKey.NO_ANSWER_SECOND_REMINDER_MIN: 1440,
-    ConfigKey.NO_ANSWER_MAX_FOLLOWUPS: 2,
-    ConfigKey.NO_ANSWER_FIRST_REMINDER_TEXT: None,
-    ConfigKey.NO_ANSWER_SECOND_REMINDER_TEXT: None,
     ConfigKey.REACTIVATION_DORMANT_DAYS: 90,
     ConfigKey.REACTIVATION_INTERVAL_DAYS: 7,
     ConfigKey.REACTIVATION_MAX_ATTEMPTS: 3,
@@ -318,6 +322,8 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.ESCALATION_HANDOFF_MESSAGE: None,
     ConfigKey.ESCALATION_SILENT_HANDOFF: False,
     ConfigKey.ESCALATION_CRITICAL_KEYWORDS: None,
+    ConfigKey.ESCALATION_SLA_MINUTES: 15,
+    ConfigKey.ESCALATION_PHONE_ECHO_PAUSE_MINUTES: 120,
     ConfigKey.PRIVACY_RETENTION_MONTHS: 24,
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
@@ -382,7 +388,6 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
 class BotConfigSchema(_StrictModel):
     """Typed view over the JSONB override bag — validated at write time."""
 
-    no_answer: NoAnswerConfig = Field(default_factory=lambda: NoAnswerConfig())
     reactivation: ReactivationConfig = Field(default_factory=lambda: ReactivationConfig())
     pipeline: PipelineConfig = Field(default_factory=lambda: PipelineConfig())
     scoring: ScoringConfig = Field(default_factory=lambda: ScoringConfig())
@@ -401,15 +406,6 @@ class BotConfigSchema(_StrictModel):
     conversation: ConversationConfig = Field(default_factory=lambda: ConversationConfig())
     ghl: GHLConfig = Field(default_factory=lambda: GHLConfig())
     dashboard: DashboardConfig = Field(default_factory=lambda: DashboardConfig())
-
-
-class NoAnswerConfig(_StrictModel):
-    first_reminder_min: int = Field(120, ge=30, le=480)
-    second_reminder_min: int = Field(1440, ge=720, le=2880)
-    max_followups: int = Field(2, ge=1, le=4)
-    # Optional text overrides; None falls back to the worker's built-in copy.
-    first_reminder_text: str | None = Field(default=None, max_length=1000)
-    second_reminder_text: str | None = Field(default=None, max_length=1000)
 
 
 class ReactivationConfig(_StrictModel):
@@ -525,6 +521,13 @@ class EscalationConfig(_StrictModel):
     # Keywords that force the escalation model route. None = code default
     # vocabulary (CRITICAL_KEYWORDS). [] = disable keyword-forced escalation.
     critical_keywords: list[str] | None = Field(default=None, max_length=40)
+    # Soglia di "handoff in ritardo". Il minimo di 1 minuto è deliberato: sotto
+    # lo zero il cutoff finirebbe nel futuro (`now - -5min`) e ogni handoff
+    # aperto risulterebbe scaduto — la stessa guardia che lo sweep applicava a
+    # mano quando il valore arrivava dall'ambiente.
+    sla_minutes: int = Field(15, ge=1, le=1440)
+    # Quanto il bot resta zitto dopo un messaggio scritto a mano dal telefono.
+    phone_echo_pause_minutes: int = Field(120, ge=5, le=10080)
 
 
 class PrivacyConfig(_StrictModel):

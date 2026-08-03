@@ -19,7 +19,15 @@ CACHE_TTL_SECONDS = 60
 # Suffix for the whole-bag cache entry written by `resolve_all`. Namespaced
 # per merchant exactly like the per-key entries (`cfg:{merchant_id}:{key}`),
 # so the `cfg:{merchant_id}:*` invalidation scan covers it too.
-RESOLVED_CACHE_KEY = "__resolved__"
+# Il suffisso è versionato perché il bag cachato è una fotografia dell'insieme
+# di `ConfigKey` esistenti al momento della scrittura. Quando una chiave viene
+# **rimossa**, un bag vecchio letto dalla cache la contiene ancora, e
+# `BotConfigSchema` (che ha `extra="forbid"` e viene applicato anche in lettura su
+# `GET /bot-config/{id}/resolved`) fallirebbe la validazione finché la voce non
+# scade. Bumpare questo suffisso rende i bag vecchi irraggiungibili: scadono da
+# soli senza essere mai più letti. Da alzare a ogni rimozione di chiave.
+# v2: rimozione delle chiavi `no_answer.*` (ADR 0024).
+RESOLVED_CACHE_KEY = "__resolved_v2__"
 
 # Process-wide Redis client, set once at startup (API lifespan / worker
 # startup) via `set_shared_redis`. Any `ConfigResolver` built without an

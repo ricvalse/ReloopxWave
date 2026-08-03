@@ -2467,7 +2467,6 @@ export interface components {
          * @description Typed view over the JSONB override bag — validated at write time.
          */
         BotConfigSchema: {
-            no_answer?: components["schemas"]["NoAnswerConfig"];
             reactivation?: components["schemas"]["ReactivationConfig"];
             pipeline?: components["schemas"]["PipelineConfig"];
             scoring?: components["schemas"]["ScoringConfig"];
@@ -2835,6 +2834,16 @@ export interface components {
             silent_handoff: boolean;
             /** Critical Keywords */
             critical_keywords?: string[] | null;
+            /**
+             * Sla Minutes
+             * @default 15
+             */
+            sla_minutes: number;
+            /**
+             * Phone Echo Pause Minutes
+             * @default 120
+             */
+            phone_echo_pause_minutes: number;
         };
         /** EventCatalogEntryOut */
         EventCatalogEntryOut: {
@@ -3380,28 +3389,6 @@ export interface components {
             profile_id?: string | null;
             /** Metrics */
             metrics: components["schemas"]["MetricValueOut"][];
-        };
-        /** NoAnswerConfig */
-        NoAnswerConfig: {
-            /**
-             * First Reminder Min
-             * @default 120
-             */
-            first_reminder_min: number;
-            /**
-             * Second Reminder Min
-             * @default 1440
-             */
-            second_reminder_min: number;
-            /**
-             * Max Followups
-             * @default 2
-             */
-            max_followups: number;
-            /** First Reminder Text */
-            first_reminder_text?: string | null;
-            /** Second Reminder Text */
-            second_reminder_text?: string | null;
         };
         /** OAuthStartResponse */
         OAuthStartResponse: {

@@ -10,6 +10,14 @@ Idempotency is edge-triggered, not Redis-based: the emission is anchored on the
 conversation's `last_inbound_at` (`no_answer_fired_for`). We fire once and
 suppress until the lead sends a new inbound (advancing `last_inbound_at`), which
 re-arms the trigger for the next silence episode.
+
+Vincolo di ordinamento con lo sweep di chiusura (`close_conversations.py`): la
+scansione qui vede solo conversazioni `active`, quindi la chiusura per
+inattività **deve** avvenire dopo il follow-up più lungo configurato. Le due
+soglie erano indipendenti ed entrambe a 120 minuti, il che rendeva
+irraggiungibile qualunque trigger con ritardo ≥ 120. Oggi il legame è esplicito:
+entrambi gli sweep leggono i ritardi dallo stesso posto
+(`AutomationRepository.enabled_trigger_delays`).
 """
 
 from __future__ import annotations
@@ -31,16 +39,30 @@ from shared import get_logger
 
 logger = get_logger(__name__)
 
-# Conservative floor: a conversation must be silent at least this long before it
-# can count as a "no answer". The merchant's real first-reminder delay is set on
-# the trigger node (`delay_minutes`) and/or a leading `wait` in the graph.
-_MIN_IDLE_MINUTES = 30
+# Ritardo attribuito a un nodo trigger che non ne dichiara uno (l'editor ne
+# scrive sempre uno, ma un grafo importato o modificato a mano può non averlo).
+DEFAULT_DELAY_MINUTES = 120
+
+# Pavimento assoluto della scansione. Non è una regola di prodotto — è solo il
+# valore minimo sotto il quale non ha senso scandire ogni 15 minuti, visto che
+# il cron non può reagire più in fretta del proprio tick.
+_SCAN_FLOOR_MINUTES = 5
 
 
 async def followup_no_answer(ctx: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
-    candidates = await _scan_candidates()
-    logger.info("uc03.scan", count=len(candidates))
+    delays = await _enabled_delays()
+    if not delays:
+        # Nessun merchant ha un'automazione "nessuna risposta" attiva: non c'è
+        # niente da emettere, e la scansione della tabella conversations si può
+        # saltare del tutto.
+        return {"candidates": 0, "emitted": 0, "skipped": "no_enabled_automations"}
+
+    # Il pavimento è il ritardo più corto davvero configurato sulla piattaforma:
+    # ogni candidato viene poi ri-filtrato con la soglia del proprio merchant.
+    floor = max(_SCAN_FLOOR_MINUTES, min(min(v) for v in delays.values()))
+    candidates = await _scan_candidates(floor)
+    logger.info("uc03.scan", count=len(candidates), floor_min=floor)
 
     emitted = 0
     for cand in candidates:
@@ -50,10 +72,17 @@ async def followup_no_answer(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"candidates": len(candidates), "emitted": emitted}
 
 
-async def _scan_candidates() -> list[ReminderCandidate]:
+async def _enabled_delays() -> dict[Any, list[int]]:
+    async with session_scope() as session:
+        return await AutomationRepository(session).enabled_trigger_delays(
+            trigger_type="no_answer", default_minutes=DEFAULT_DELAY_MINUTES
+        )
+
+
+async def _scan_candidates(min_idle_minutes: int) -> list[ReminderCandidate]:
     async with session_scope() as session:
         repo = ConversationRepository(session)
-        return await repo.list_reminder_candidates(min_idle_minutes=_MIN_IDLE_MINUTES)
+        return await repo.list_reminder_candidates(min_idle_minutes=min_idle_minutes)
 
 
 async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
@@ -105,11 +134,11 @@ async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
 def _threshold_minutes(autos: list[AutomationFlow]) -> int:
     """Smallest `no_answer` trigger delay across the enabled automations — the
     trigger fires as soon as the earliest-configured one wants it. Falls back to
-    the idle floor when no trigger sets an explicit `delay_minutes`."""
+    `DEFAULT_DELAY_MINUTES` when no trigger sets an explicit `delay_minutes`."""
     values: list[int] = []
     for auto in autos:
         trigger = next((n for n in auto.nodes if n.kind == "trigger"), None)
         delay = (trigger.config or {}).get("delay_minutes") if trigger else None
         if isinstance(delay, (int, float)) and delay > 0:
             values.append(int(delay))
-    return min(values) if values else _MIN_IDLE_MINUTES
+    return min(values) if values else DEFAULT_DELAY_MINUTES
