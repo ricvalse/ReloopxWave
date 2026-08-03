@@ -1,6 +1,6 @@
 """Attribuzione a tre dimensioni + profili di conversazione + esiti tracciabili
 
-Revision ID: 0047_attribution_profiles_outcomes
+Revision ID: 0047_attribution_profiles
 Revises: 0046_whatsapp_media_bucket
 Create Date: 2026-07-28
 
@@ -51,7 +51,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0047_attribution_profiles_outcomes"
+revision: str = "0047_attribution_profiles"
 down_revision: str | Sequence[str] | None = "0046_whatsapp_media_bucket"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

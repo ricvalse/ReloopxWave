@@ -36,7 +36,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0048_drop_no_answer_config_keys"
-down_revision: str | Sequence[str] | None = "0047_attribution_profiles_outcomes"
+down_revision: str | Sequence[str] | None = "0047_attribution_profiles"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
