@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Button,
@@ -11,16 +12,12 @@ import {
   EmptyState,
   SkeletonTable,
 } from '@reloop/ui';
-import { FileText, RefreshCw, Trash2 } from 'lucide-react';
+import { Eye, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
+import { KnowledgeBaseDocViewer, type KbDoc } from './kb-doc-viewer';
 
-type Doc = {
-  id: string;
-  title: string;
-  source: string;
-  status: string;
-  chunk_count: number;
+type Doc = KbDoc & {
   status_detail?: string | null;
   last_error?: string | null;
 };
@@ -28,6 +25,7 @@ type Doc = {
 export function KnowledgeBaseDocList() {
   const { merchantId } = useMerchantId();
   const queryClient = useQueryClient();
+  const [viewing, setViewing] = useState<Doc | null>(null);
 
   const query = useQuery({
     enabled: !!merchantId,
@@ -132,6 +130,15 @@ export function KnowledgeBaseDocList() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        title="Visualizza"
+                        disabled={!merchantId}
+                        onClick={() => setViewing(d)}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         title="Re-indicizza"
                         disabled={
                           !merchantId ||
@@ -186,6 +193,12 @@ export function KnowledgeBaseDocList() {
             Errore nell&apos;eliminazione del documento.
           </p>
         ) : null}
+        {/* Il Dialog è in portal: sta qui solo per prossimità al call-site. */}
+        <KnowledgeBaseDocViewer
+          merchantId={merchantId}
+          doc={viewing}
+          onClose={() => setViewing(null)}
+        />
       </CardContent>
     </Card>
   );

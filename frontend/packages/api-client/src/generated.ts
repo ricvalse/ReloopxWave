@@ -514,6 +514,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/knowledge-base/{merchant_id}/docs/{doc_id}/view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View Doc
+         * @description Minta un URL a breve scadenza per aprire il documento caricato.
+         *
+         *     Il bucket `kb-documents` è privato e sotto RLS Storage, ma il token HS256
+         *     dell'impersonation agenzia→merchant non firma una read Storage: firmiamo
+         *     qui con la **service role** (che bypassa la RLS del bucket) — quindi il
+         *     guard sul path non è ridondante, è ciò che tiene l'isolamento.
+         *
+         *     Rispetto a `get_message_media_url`, da cui viene il pattern, qui il path è
+         *     di provenienza utente: serve la validazione sul path *normalizzato*
+         *     (`_is_storage_path_in_scope`), non il confronto sul prefisso grezzo.
+         *
+         *     Il client non passa mai un path: lo risolviamo dal DB, merchant-scoped.
+         */
+        get: operations["view_doc_knowledge_base__merchant_id__docs__doc_id__view_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/knowledge-base/{merchant_id}/docs/{doc_id}/chunks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Doc Chunks
+         * @description Il testo indicizzato del documento, in ordine.
+         *
+         *     È quello che il bot legge davvero: l'originale su Storage passa da
+         *     estrazione + normalizzazione prima di diventare chunk, quindi le due viste
+         *     non coincidono. Paginato — un PDF grande produce migliaia di chunk.
+         *
+         *     I bound su `limit`/`offset` sono dichiarati nello schema (422 fuori range)
+         *     invece di essere clampati in silenzio: un client che chiede 500 e ne riceve
+         *     200 senza saperlo avanzerebbe l'offset di 500, saltando 300 chunk.
+         */
+        get: operations["list_doc_chunks_knowledge_base__merchant_id__docs__doc_id__chunks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps": {
         parameters: {
             query?: never;
@@ -3156,6 +3215,20 @@ export interface components {
             /** Resolved */
             resolved: boolean;
         };
+        /** KbChunkOut */
+        KbChunkOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Chunk Index */
+            chunk_index: number;
+            /** Content */
+            content: string;
+            /** Tokens */
+            tokens: number;
+        };
         /** KbDocIn */
         KbDocIn: {
             /** Title */
@@ -3189,6 +3262,28 @@ export interface components {
             status_detail?: string | null;
             /** Last Error */
             last_error?: string | null;
+        };
+        /**
+         * KbDocViewOut
+         * @description Come aprire un documento della KB.
+         *
+         *     ``kind="file"`` → URL firmato a scadenza sul bucket privato; ``kind="url"``
+         *     → il link esterno originale (i doc ``source="url"`` non hanno file).
+         */
+        KbDocViewOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "file" | "url";
+            /** Url */
+            url: string;
+            /** Mime */
+            mime?: string | null;
+            /** Filename */
+            filename?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
         };
         /**
          * LeadCaptureConfig
@@ -5574,6 +5669,77 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    view_doc_knowledge_base__merchant_id__docs__doc_id__view_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbDocViewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_doc_chunks_knowledge_base__merchant_id__docs__doc_id__chunks_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                merchant_id: string;
+                doc_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KbChunkOut"][];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -9092,6 +9258,8 @@ export enum ApiPaths {
     upload_doc_knowledge_base__merchant_id__upload_post = "/knowledge-base/{merchant_id}/upload",
     reindex_knowledge_base__merchant_id__docs__doc_id__reindex_post = "/knowledge-base/{merchant_id}/docs/{doc_id}/reindex",
     delete_doc_knowledge_base__merchant_id__docs__doc_id__delete = "/knowledge-base/{merchant_id}/docs/{doc_id}",
+    view_doc_knowledge_base__merchant_id__docs__doc_id__view_get = "/knowledge-base/{merchant_id}/docs/{doc_id}/view",
+    list_doc_chunks_knowledge_base__merchant_id__docs__doc_id__chunks_get = "/knowledge-base/{merchant_id}/docs/{doc_id}/chunks",
     list_kb_gaps_knowledge_base_merchants__merchant_id__knowledge_base_gaps_get = "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps",
     resolve_kb_gap_knowledge_base_merchants__merchant_id__knowledge_base_gaps__gap_id__resolve_patch = "/knowledge-base/merchants/{merchant_id}/knowledge-base/gaps/{gap_id}/resolve",
     list_faq_catalog__merchant_id__faq_get = "/catalog/{merchant_id}/faq",
