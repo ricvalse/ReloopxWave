@@ -53,7 +53,8 @@ export const TRIGGER_DEFS: TypeDef[] = [
   {
     type: 'no_answer',
     label: 'Nessuna risposta',
-    description: 'Il lead è rimasto in silenzio.',
+    description:
+      'Il lead è rimasto in silenzio, anche se non ha mai scritto. Oltre le 24h dall’ultimo suo messaggio serve un template approvato.',
     fields: [
       { key: 'delay_minutes', label: 'Ritardo 1° follow-up (min)', kind: 'number', placeholder: '120' },
     ],

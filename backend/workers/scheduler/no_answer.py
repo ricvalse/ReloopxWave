@@ -7,9 +7,16 @@ event **once per silence episode**. It sends nothing itself — the response
 the lavagnetta, dispatched by the automation engine off this event.
 
 Idempotency is edge-triggered, not Redis-based: the emission is anchored on the
-conversation's `last_inbound_at` (`no_answer_fired_for`). We fire once and
+episode anchor (`no_answer_fired_for` vs `_episode_anchor`). We fire once and
 suppress until the lead sends a new inbound (advancing `last_inbound_at`), which
 re-arms the trigger for the next silence episode.
+
+Il silenzio vale in due forme (ADR 0025), e per un pezzo ne contava una sola:
+il lead che risponde e poi sparisce (ancora = `last_inbound_at`) **e** il lead
+che a un primo contatto in uscita non risponde mai (ancora = `started_at`). Il
+secondo era escluso da un `last_inbound_at IS NOT NULL` nella scansione, ed è il
+caso più comune di tutti su un merchant che fa outreach: `lead.no_answer` non è
+mai stato emesso in produzione fino a questo fix.
 
 Vincolo di ordinamento con lo sweep di chiusura (`close_conversations.py`): la
 scansione qui vede solo conversazioni `active`, quindi la chiusura per
@@ -86,10 +93,9 @@ async def _scan_candidates(min_idle_minutes: int) -> list[ReminderCandidate]:
 
 
 async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
-    # Edge gate: fire once per silence episode, keyed on last_inbound_at.
-    if cand.last_inbound_at is None:
-        return False
-    if cand.no_answer_fired_for is not None and cand.no_answer_fired_for >= cand.last_inbound_at:
+    # Edge gate: fire once per silence episode, keyed on the episode anchor.
+    anchor = _episode_anchor(cand)
+    if cand.no_answer_fired_for is not None and cand.no_answer_fired_for >= anchor:
         return False
 
     tenant_ctx = TenantContext(
@@ -111,9 +117,7 @@ async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
         if now - cand.last_message_at < timedelta(minutes=threshold_min):
             return False
 
-        await ConversationRepository(session).mark_no_answer_fired(
-            cand.conversation_id, cand.last_inbound_at
-        )
+        await ConversationRepository(session).mark_no_answer_fired(cand.conversation_id, anchor)
         await AnalyticsRepository(session).emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
@@ -124,11 +128,38 @@ async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
                 "idle_minutes": int((now - cand.last_message_at).total_seconds() / 60),
                 # Re-engagement anchor: the engine cancels a stale cadence if the
                 # lead's last_inbound_at advances past this at resume time.
-                "episode_anchor": cand.last_inbound_at.isoformat(),
+                "episode_anchor": anchor.isoformat(),
+                # Distingue i due silenzi nelle statistiche: chi non ha mai
+                # risposto a un primo contatto è un caso diverso da chi ha
+                # risposto e poi è sparito, e i merchant li leggono diversamente.
+                "never_replied": cand.last_inbound_at is None,
             },
         )
         logger.info("uc03.emitted", conversation_id=str(cand.conversation_id))
     return True
+
+
+def _episode_anchor(cand: ReminderCandidate) -> datetime:
+    """L'istante che identifica questo episodio di silenzio (ADR 0025).
+
+    `last_inbound_at` quando il lead ha parlato almeno una volta: l'episodio è il
+    silenzio che segue la sua ultima parola, e un nuovo inbound lo chiude
+    riarmando il trigger. Quando invece non ha MAI risposto si ripiega su
+    `started_at`.
+
+    Il ripiego deve essere un istante **immobile**, ed è il punto delicato di
+    tutto il fix. L'alternativa ovvia — ancorare a `last_message_at` — si
+    autoalimenta: il sollecito che l'automazione manda fa avanzare
+    `last_message_at`, il che riarma il trigger, che dopo altri `delay_minutes`
+    emette di nuovo, all'infinito e senza che il lead abbia fatto nulla.
+    `started_at` non si muove mai (nemmeno alla riapertura di una conversazione
+    chiusa), quindi il lead che non risponde riceve esattamente un sollecito.
+
+    E il riarmo continua a funzionare: se un giorno risponde, `last_inbound_at`
+    diventa più recente di `started_at` e supera l'ancora bruciata, quindi il
+    silenzio successivo è un episodio nuovo.
+    """
+    return cand.last_inbound_at or cand.started_at
 
 
 def _threshold_minutes(autos: list[AutomationFlow]) -> int:

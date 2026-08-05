@@ -40,6 +40,7 @@ def _candidate(**over: Any) -> ReminderCandidate:
         wa_phone_number_id="PNID-1",
         wa_contact_phone="39333000000",
         last_message_at=now - timedelta(hours=3),
+        started_at=now - timedelta(hours=4),
         last_inbound_at=now - timedelta(hours=3),
         no_answer_fired_for=None,
     )
@@ -142,6 +143,109 @@ async def test_skips_when_not_idle_past_threshold(monkeypatch: pytest.MonkeyPatc
     cand = _candidate(
         last_message_at=now - timedelta(minutes=180),
         last_inbound_at=now - timedelta(minutes=180),
+    )
+
+    ok = await no_answer._maybe_emit(cand, now=now)
+
+    assert ok is False
+    assert events == []
+
+
+# --- ADR 0025: il lead che non ha MAI risposto ------------------------------
+#
+# Il caso che il gate `last_inbound_at IS NOT NULL` escludeva: primo contatto in
+# uscita, silenzio totale. È il silenzio più comune su un merchant che fa
+# outreach, e fino al fix non emetteva nulla.
+
+
+async def test_emits_when_lead_never_replied(monkeypatch: pytest.MonkeyPatch) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(240)], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    started = now - timedelta(hours=6)
+    cand = _candidate(
+        started_at=started,
+        last_inbound_at=None,  # gli abbiamo scritto noi, lui non ha mai risposto
+        last_message_at=now - timedelta(hours=5),  # idle 300 min > 240
+        no_answer_fired_for=None,
+    )
+
+    ok = await no_answer._maybe_emit(cand, now=now)
+
+    assert ok is True
+    # L'ancora è `started_at`, non `last_message_at`: è ciò che rende l'emissione
+    # one-shot invece che ciclica (vedi il test qui sotto).
+    assert marks == [(cand.conversation_id, started)]
+    assert events[0]["properties"]["episode_anchor"] == started.isoformat()
+    assert events[0]["properties"]["never_replied"] is True
+
+
+async def test_never_replied_does_not_re_fire_after_our_own_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Il sollecito fa avanzare `last_message_at`: l'ancora NON deve seguirlo.
+
+    È il modo in cui questo fix poteva diventare un loop — mandare il sollecito,
+    riarmare il trigger sul proprio stesso invio, e ricominciare ogni
+    `delay_minutes` per sempre, senza che il lead abbia fatto niente.
+    """
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(240)], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    started = now - timedelta(hours=20)
+    cand = _candidate(
+        started_at=started,
+        last_inbound_at=None,
+        # Il sollecito è partito 5 ore fa e ha bumpato `last_message_at`: la
+        # conversazione è di nuovo "idle da 300 min > 240".
+        last_message_at=now - timedelta(hours=5),
+        no_answer_fired_for=started,  # ancora già bruciata
+    )
+
+    ok = await no_answer._maybe_emit(cand, now=now)
+
+    assert ok is False
+    assert events == [] and marks == []
+
+
+async def test_never_replied_re_arms_once_the_lead_finally_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Se il lead risponde e poi torna in silenzio, è un episodio nuovo."""
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(240)], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    started = now - timedelta(days=2)
+    replied = now - timedelta(hours=6)
+    cand = _candidate(
+        started_at=started,
+        last_inbound_at=replied,  # ha risposto, dopo l'ancora bruciata
+        last_message_at=now - timedelta(hours=5),
+        no_answer_fired_for=started,
+    )
+
+    ok = await no_answer._maybe_emit(cand, now=now)
+
+    assert ok is True
+    assert marks == [(cand.conversation_id, replied)]
+    assert events[0]["properties"]["never_replied"] is False
+
+
+async def test_never_replied_still_respects_the_configured_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marks: list = []
+    events: list = []
+    _patch(monkeypatch, flows=[_fake_flow(240)], marks=marks, events=events)
+    now = datetime.now(tz=UTC)
+    cand = _candidate(
+        started_at=now - timedelta(hours=4),
+        last_inbound_at=None,
+        last_message_at=now - timedelta(minutes=180),  # idle 180 < 240
+        no_answer_fired_for=None,
     )
 
     ok = await no_answer._maybe_emit(cand, now=now)

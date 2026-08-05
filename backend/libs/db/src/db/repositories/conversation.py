@@ -43,10 +43,17 @@ class ReminderCandidate:
     wa_phone_number_id: str
     wa_contact_phone: str
     last_message_at: datetime
+    # Apertura della conversazione. È l'ancora di ripiego quando il lead non ha
+    # MAI risposto (ADR 0025): `last_inbound_at` è NULL, ma `started_at` è
+    # NOT NULL e — cosa che conta — non si muove mai, nemmeno quando il sollecito
+    # che stiamo per mandare fa avanzare `last_message_at`. È quello che rende
+    # l'emissione one-shot anche senza inbound.
+    started_at: datetime
     # Last inbound (customer) message — drives the 24h window decision AND the
     # no-answer episode anchor (ADR 0015): the trigger fires once per silence
-    # episode, re-arming only when the lead sends a new inbound. May be None on
-    # legacy rows created before migration 0014.
+    # episode, re-arming only when the lead sends a new inbound. None quando il
+    # lead non ha mai risposto (caso normale su un primo contatto in uscita), e
+    # su righe legacy anteriori alla migrazione 0014.
     last_inbound_at: datetime | None = None
     # S-05: preferred send hour (0-23) learned by the send-time optimizer.
     optimal_send_hour: int | None = None
@@ -188,8 +195,22 @@ class ConversationRepository:
         tracks per-attempt cadence (that lives in the automation graph now), it
         just surfaces conversations idle past a floor, plus the
         `no_answer_fired_for` anchor so the caller emits `lead.no_answer` once per
-        silence episode. Only conversations with a real inbound (`last_inbound_at`)
-        can go silent on the lead, so we require it.
+        silence episode.
+
+        **Il silenzio conta anche quando il lead non ha MAI risposto** (ADR 0025).
+        Qui si richiedeva `last_inbound_at IS NOT NULL` — "solo una conversazione
+        con un inbound può ammutolirsi" — che però descrive un caso solo: il lead
+        che risponde e poi sparisce. Un primo contatto in uscita a cui non
+        risponde nessuno è l'altro caso, ed è quello che i merchant chiamano
+        davvero "nessuna risposta": su Recruiting DM erano 566 conversazioni
+        attive su 567, tutte invisibili, e `lead.no_answer` non è mai stato
+        emesso in produzione. Il filtro è caduto; l'ancora la sceglie il chiamante
+        (`last_inbound_at` se c'è, altrimenti `started_at`).
+
+        Resta invece `last_message_at IS NOT NULL`: senza un messaggio nostro non
+        c'è nessun silenzio di cui il lead sia responsabile — sono conversazioni
+        create dal CRM su cui non è mai partito niente, e vanno diagnosticate
+        come tali, non sollecitate.
 
         `min_idle_minutes` non ha default di proposito: era 30, e una costante
         qui dentro sovrascriveva silenziosamente il `delay_minutes` che il
@@ -214,6 +235,7 @@ class ConversationRepository:
                 Conversation.wa_phone_number_id,
                 Conversation.wa_contact_phone,
                 Conversation.last_message_at,
+                Conversation.started_at,
                 Conversation.last_inbound_at,
                 Conversation.meta["no_answer_fired_for"].astext.label("no_answer_fired_for"),
                 Lead.optimal_send_hour,
@@ -225,7 +247,6 @@ class ConversationRepository:
                 Conversation.status == "active",
                 Conversation.last_message_at.is_not(None),
                 Conversation.last_message_at < idle_cutoff,
-                Conversation.last_inbound_at.is_not(None),
                 _bot_owns_thread(),
             )
             # Cap di sicurezza per tick. `order_by` esplicito: senza, una
@@ -247,6 +268,7 @@ class ConversationRepository:
                     wa_phone_number_id=row["wa_phone_number_id"] or "",
                     wa_contact_phone=row["wa_contact_phone"] or "",
                     last_message_at=row["last_message_at"],
+                    started_at=row["started_at"],
                     last_inbound_at=row["last_inbound_at"],
                     optimal_send_hour=row["optimal_send_hour"],
                     lead_name=row["lead_name"],
