@@ -272,6 +272,13 @@ async def send_message(
         direction="out",
         content=body.text,
         status="pending",
+        # `sender_type` era omesso e prendeva il default della colonna, `"ai"`:
+        # ogni messaggio scritto a mano da un operatore risultava prodotto dal
+        # bot. Il valore giusto esisteva solo dentro `meta`, dove lo leggeva il
+        # frontend vecchio. Da 0047 la colonna è la fonte di verità ed è quella
+        # che interroga `human_replied_since` per non far rispondere il bot
+        # sopra un operatore alla riapertura degli orari.
+        sender_type="human",
         client_message_id=body.client_message_id,
         meta=meta,
     )

@@ -5,6 +5,7 @@ export * from './primitives/button';
 export * from './primitives/card';
 export * from './patterns/kpi-card';
 export * from './patterns/app-shell';
+export * from './patterns/weekly-hours-editor';
 
 // UI components
 export * from './components/ui/avatar';

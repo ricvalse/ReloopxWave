@@ -15,6 +15,7 @@ from db.repositories.catalog import (
 from db.repositories.conversation import (
     ConversationRepository,
     HandoffOverdueCandidate,
+    OffHoursPendingCandidate,
     ReminderCandidate,
 )
 from db.repositories.flow import (
@@ -73,6 +74,7 @@ __all__ = [
     "GhlSyncEntry",
     "GhlSyncRepository",
     "HandoffOverdueCandidate",
+    "OffHoursPendingCandidate",
     "IntegrationRepository",
     "IntegrationStatus",
     "BusinessClosureRepository",

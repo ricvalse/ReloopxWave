@@ -3930,18 +3930,45 @@ export interface components {
             /** Target Merchant Id */
             target_merchant_id?: string | null;
         };
-        /** ScheduleConfig */
+        /**
+         * ScheduleConfig
+         * @description Quando l'assistente risponde.
+         *
+         *     `active_hours` (stringa "24/7" | "HH:MM-HH:MM", una sola fascia uguale per
+         *     tutti i giorni) è stata rimossa: la migrazione 0049 converte i valori
+         *     salvati in `mode` + `weekly`. Non è stata lasciata come campo inerte perché
+         *     questo repo ha già pagato il prezzo delle chiavi ancora esposte nel
+         *     pannello ma non più lette da nessuno (le `no_answer.*`, rimosse in 0048).
+         */
         ScheduleConfig: {
             /**
-             * Active Hours
-             * @default 24/7
+             * Mode
+             * @default always
+             * @enum {string}
              */
-            active_hours: string;
+            mode: "always" | "business_hours" | "custom";
+            /** Weekly */
+            weekly?: components["schemas"]["ScheduleDay"][];
             /**
              * Off Hours Message
              * @default Grazie per averci contattato! Ti risponderemo al più presto.
              */
             off_hours_message: string;
+            /**
+             * Off Hours Message Once
+             * @default true
+             */
+            off_hours_message_once: boolean;
+            /**
+             * Resume On Open
+             * @default true
+             */
+            resume_on_open: boolean;
+            /**
+             * Apply To Automations
+             * @default false
+             */
+            apply_to_automations: boolean;
             /**
              * Timezone
              * @default Europe/Rome
@@ -3952,6 +3979,42 @@ export interface components {
              * @default 10
              */
             inbound_staleness_min: number;
+        };
+        /**
+         * ScheduleDay
+         * @description Un giorno della settimana-tipo. 0=lunedì … 6=domenica.
+         *
+         *     `enabled=False` è giorno di chiusura e le finestre vengono ignorate: si
+         *     conservano così com'erano, in modo che riattivare il giovedì non costringa
+         *     a riscrivere gli orari che c'erano prima.
+         *
+         *     Più finestre nello stesso giorno esprimono la pausa pranzo senza campi
+         *     dedicati (09:00-13:00 + 15:00-19:00).
+         */
+        ScheduleDay: {
+            /** Day */
+            day: number;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Windows */
+            windows?: components["schemas"]["ScheduleWindow"][];
+        };
+        /**
+         * ScheduleWindow
+         * @description Una fascia di apertura, wall-clock locale del merchant.
+         *
+         *     `end` minore o uguale a `start` significa che la fascia scavalca la
+         *     mezzanotte (22:00-06:00), non che è vuota: è il caso dei servizi notturni,
+         *     ed è gestito dall'evaluator (`ai_core.scheduling`).
+         */
+        ScheduleWindow: {
+            /** Start */
+            start: string;
+            /** End */
+            end: string;
         };
         /** ScoringConfig */
         ScoringConfig: {

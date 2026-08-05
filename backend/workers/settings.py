@@ -48,6 +48,7 @@ from workers.scheduler.handlers import (
     objection_extraction,
     optimize_send_times,
     reactivate_dormant_leads,
+    resume_after_hours,
     send_appointment_reminders,
     sync_appointments,
     sync_ghl_calendar_hours,
@@ -110,6 +111,8 @@ class WorkerSettings:
         integration_health_check,
         # SLA sweep: emit conversation.handoff_overdue for stale open handoffs
         handoff_sla_sweep,
+        # Orari di risposta: risponde alle domande sospese fuori orario
+        resume_after_hours,
         build_analytics_export,
         enforce_retention,
         # queue: scheduler:jobs — UC-02 appointment reconcile poll + reminders
@@ -178,6 +181,13 @@ class WorkerSettings:
         # Handoff SLA: every 5 min, emit conversation.handoff_overdue for handoffs
         # open past handoff_sla_minutes (edge-triggered per handoff episode).
         cron(handoff_sla_sweep, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=120, max_tries=1),
+        # Orari di risposta: ogni 5 minuti riprende le conversazioni lasciate in
+        # sospeso fuori orario il cui merchant è tornato dentro i propri orari.
+        # La cadenza fissa la latenza massima fra apertura e risposta; su
+        # un'attesa che è già durata una notte, cinque minuti sono un
+        # arrotondamento. Gli orari sono rivalutati a ogni passata, quindi una
+        # modifica alla settimana-tipo ha effetto entro un tick.
+        cron(resume_after_hours, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=300, max_tries=1),
         # S-05: compute optimal send hour per lead — weekly (Sunday 06:00 UTC).
         cron(optimize_send_times, weekday=6, hour=6, minute=0, timeout=600, max_tries=1),
     ]

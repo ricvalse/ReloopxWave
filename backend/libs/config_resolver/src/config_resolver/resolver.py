@@ -27,7 +27,11 @@ CACHE_TTL_SECONDS = 60
 # scade. Bumpare questo suffisso rende i bag vecchi irraggiungibili: scadono da
 # soli senza essere mai più letti. Da alzare a ogni rimozione di chiave.
 # v2: rimozione delle chiavi `no_answer.*` (ADR 0024).
-RESOLVED_CACHE_KEY = "__resolved_v2__"
+# v3: rimozione di `schedule.active_hours`, sostituita da `schedule.mode` +
+#     `schedule.weekly` (orari di risposta). Senza il bump, per l'intera durata
+#     della cache il pannello di ogni merchant che aveva toccato quel campo
+#     risponderebbe 500 invece di mostrare gli orari nuovi.
+RESOLVED_CACHE_KEY = "__resolved_v3__"
 
 # Process-wide Redis client, set once at startup (API lifespan / worker
 # startup) via `set_shared_redis`. Any `ConfigResolver` built without an
