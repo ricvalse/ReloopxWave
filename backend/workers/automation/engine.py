@@ -265,6 +265,8 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
             for auto in await repo.list_enabled_by_trigger(
                 merchant_id=ev.merchant_id, trigger_type=trigger
             ):
+                if not _targeted_at(auto, ev.properties):
+                    continue
                 if not _trigger_config_match(auto.trigger_config, ev.properties, event=ev):
                     continue
                 await redis.enqueue_job(
@@ -283,6 +285,23 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
 
     await redis.set(_CURSOR_KEY, max_ts.isoformat())
     return {"events": len(events), "dispatched": dispatched}
+
+
+def _targeted_at(auto: AutomationFlow, properties: Any) -> bool:
+    """Un evento può nominare l'automazione a cui è destinato (ADR 0027).
+
+    Gli emettitori edge-triggered valutano da sé la soglia e i filtri della
+    singola automazione — devono, perché è lì che si brucia l'ancora
+    dell'episodio — e poi emettono un evento **indirizzato**. Senza questo
+    controllo il dispatcher lo riventaglierebbe su tutte le automazioni
+    sottoscritte allo stesso trigger, che è precisamente il comportamento che
+    rendeva inutile il `delay_minutes` della seconda automazione.
+
+    Un evento senza `target_automation_id` resta broadcast, come prima.
+    """
+    props = properties if isinstance(properties, dict) else {}
+    target = str(props.get("target_automation_id") or "").strip()
+    return not target or target == str(auto.id)
 
 
 def _trigger_config_match(
@@ -914,9 +933,7 @@ async def _build_ai_reply_deps(
     system_prompt = await build_cascade_system_prompt(
         session=session, merchant_id=merchant_id, profile_id=run_ctx.profile_id
     )
-    playbook = await resolve_playbook_runtime(
-        session, merchant_id, profile_id=run_ctx.profile_id
-    )
+    playbook = await resolve_playbook_runtime(session, merchant_id, profile_id=run_ctx.profile_id)
     return AiReplyDeps(
         orchestrator=runtime.orchestrator,
         dispatcher=runtime.action_dispatcher,
@@ -1328,9 +1345,14 @@ async def _do_set_conversation_profile(
         return False
 
     profile = await ConversationProfileRepository(session).get(profile_id)
-    if profile is None or not profile.enabled or profile.merchant_id not in (
-        None,
-        run_ctx.merchant_id,
+    if (
+        profile is None
+        or not profile.enabled
+        or profile.merchant_id
+        not in (
+            None,
+            run_ctx.merchant_id,
+        )
     ):
         logger.info(
             "automation.set_conversation_profile.skipped",
@@ -1346,9 +1368,7 @@ async def _do_set_conversation_profile(
         .values(profile_id=profile_id)
     )
     run_ctx.profile_id = profile_id
-    logger.info(
-        "automation.set_conversation_profile", node=node.node_key, profile=profile.key
-    )
+    logger.info("automation.set_conversation_profile", node=node.node_key, profile=profile.key)
     return False
 
 
@@ -1486,6 +1506,7 @@ async def _do_notify_slack(
         custom_text=custom,
         overdue_minutes=overdue_minutes,
     )
+
     async def _mark_broken(status: int, body: str) -> None:
         await integrations.mark_provider_broken(
             merchant_id=run_ctx.merchant_id,

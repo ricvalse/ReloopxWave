@@ -31,8 +31,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from db import (
+    ANCHOR_ANY,
     AnalyticsRepository,
     AutomationRepository,
     ConversationRepository,
@@ -73,8 +75,7 @@ async def followup_no_answer(ctx: dict[str, Any]) -> dict[str, Any]:
 
     emitted = 0
     for cand in candidates:
-        if await _maybe_emit(cand, now=now):
-            emitted += 1
+        emitted += await _maybe_emit(cand, now=now)
 
     return {"candidates": len(candidates), "emitted": emitted}
 
@@ -92,18 +93,25 @@ async def _scan_candidates(min_idle_minutes: int) -> list[ReminderCandidate]:
         return await repo.list_reminder_candidates(min_idle_minutes=min_idle_minutes)
 
 
-async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
-    # Edge gate: fire once per silence episode, keyed on the episode anchor.
-    anchor = _episode_anchor(cand)
-    if cand.no_answer_fired_for is not None and cand.no_answer_fired_for >= anchor:
-        return False
+async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> int:
+    """Emette un `lead.no_answer` **per automazione** che ha davvero titolo a
+    partire su questa conversazione. Ritorna quante ne ha emesse.
 
+    Era una valutazione sola per conversazione: soglia = il minimo dei ritardi
+    del merchant, un'emissione, e il dispatch ventagliava su tutte le automazioni
+    `no_answer`. Con una sola automazione funzionava; con due no, ed è
+    esattamente lo scenario di ADR 0027 (una per template). Con ritardi 60 e 240,
+    l'emissione avveniva a 60, l'ancora si bruciava lì, e quella da 240 non
+    partiva mai — il suo ritardo era ignorato in silenzio.
+    """
+    anchor = _episode_anchor(cand)
     tenant_ctx = TenantContext(
         tenant_id=cand.tenant_id,
         merchant_id=cand.merchant_id,
         role="worker",
         actor_id=cand.merchant_id,
     )
+    emitted = 0
     async with tenant_session(tenant_ctx) as session:
         autos = await AutomationRepository(session).list_enabled_by_trigger(
             merchant_id=cand.merchant_id, trigger_type="no_answer"
@@ -111,32 +119,56 @@ async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> bool:
         if not autos:
             # Nobody is listening — don't emit (and don't burn the anchor, so the
             # trigger fires the moment the merchant enables a no-answer automation).
-            return False
+            return 0
 
-        threshold_min = _threshold_minutes(autos)
-        if now - cand.last_message_at < timedelta(minutes=threshold_min):
-            return False
+        idle = now - cand.last_message_at
+        for auto in autos:
+            if idle < timedelta(minutes=_delay_minutes(auto)):
+                continue
+            if not _source_matches(auto, cand):
+                continue
+            if _already_fired(cand, auto.id, anchor):
+                continue
 
-        await ConversationRepository(session).mark_no_answer_fired(cand.conversation_id, anchor)
-        await AnalyticsRepository(session).emit(
-            tenant_id=cand.tenant_id,
-            merchant_id=cand.merchant_id,
-            event_type="lead.no_answer",
-            subject_type="conversation",
-            subject_id=cand.conversation_id,
-            properties={
-                "idle_minutes": int((now - cand.last_message_at).total_seconds() / 60),
-                # Re-engagement anchor: the engine cancels a stale cadence if the
-                # lead's last_inbound_at advances past this at resume time.
-                "episode_anchor": anchor.isoformat(),
-                # Distingue i due silenzi nelle statistiche: chi non ha mai
-                # risposto a un primo contatto è un caso diverso da chi ha
-                # risposto e poi è sparito, e i merchant li leggono diversamente.
-                "never_replied": cand.last_inbound_at is None,
-            },
-        )
-        logger.info("uc03.emitted", conversation_id=str(cand.conversation_id))
-    return True
+            await ConversationRepository(session).mark_no_answer_fired(
+                cand.conversation_id, auto.id, anchor
+            )
+            await AnalyticsRepository(session).emit(
+                tenant_id=cand.tenant_id,
+                merchant_id=cand.merchant_id,
+                event_type="lead.no_answer",
+                subject_type="conversation",
+                subject_id=cand.conversation_id,
+                properties={
+                    "idle_minutes": int(idle.total_seconds() / 60),
+                    # Re-engagement anchor: the engine cancels a stale cadence if the
+                    # lead's last_inbound_at advances past this at resume time.
+                    "episode_anchor": anchor.isoformat(),
+                    # Distingue i due silenzi nelle statistiche: chi non ha mai
+                    # risposto a un primo contatto è un caso diverso da chi ha
+                    # risposto e poi è sparito, e i merchant li leggono diversamente.
+                    "never_replied": cand.last_inbound_at is None,
+                    # L'evento è già indirizzato: la soglia e il filtro di
+                    # provenienza sono stati valutati qui, quindi il dispatcher
+                    # non deve ri-ventagliare su tutte le automazioni `no_answer`.
+                    "target_automation_id": str(auto.id),
+                    # Provenienza, per le statistiche e per leggere un evento
+                    # senza dover risalire ai messaggi.
+                    "source_template_id": (
+                        str(cand.last_outbound_template_id)
+                        if cand.last_outbound_template_id
+                        else None
+                    ),
+                    "source_template_name": cand.last_outbound_template_name,
+                },
+            )
+            emitted += 1
+            logger.info(
+                "uc03.emitted",
+                conversation_id=str(cand.conversation_id),
+                automation_id=str(auto.id),
+            )
+    return emitted
 
 
 def _episode_anchor(cand: ReminderCandidate) -> datetime:
@@ -162,14 +194,48 @@ def _episode_anchor(cand: ReminderCandidate) -> datetime:
     return cand.last_inbound_at or cand.started_at
 
 
-def _threshold_minutes(autos: list[AutomationFlow]) -> int:
-    """Smallest `no_answer` trigger delay across the enabled automations — the
-    trigger fires as soon as the earliest-configured one wants it. Falls back to
-    `DEFAULT_DELAY_MINUTES` when no trigger sets an explicit `delay_minutes`."""
-    values: list[int] = []
-    for auto in autos:
-        trigger = next((n for n in auto.nodes if n.kind == "trigger"), None)
-        delay = (trigger.config or {}).get("delay_minutes") if trigger else None
-        if isinstance(delay, (int, float)) and delay > 0:
-            values.append(int(delay))
-    return min(values) if values else DEFAULT_DELAY_MINUTES
+def _trigger_config(auto: AutomationFlow) -> dict[str, Any]:
+    """La config del nodo trigger del grafo. È lì che l'editor scrive, non in
+    `AutomationFlow.trigger_config` — che resta la copia usata dal dispatcher."""
+    trigger = next((n for n in auto.nodes if n.kind == "trigger"), None)
+    return (trigger.config if trigger else None) or {}
+
+
+def _delay_minutes(auto: AutomationFlow) -> int:
+    """Il ritardo di QUESTA automazione, non più il minimo del merchant."""
+    delay = _trigger_config(auto).get("delay_minutes")
+    if isinstance(delay, (int, float)) and delay > 0:
+        return int(delay)
+    return DEFAULT_DELAY_MINUTES
+
+
+def _source_matches(auto: AutomationFlow, cand: ReminderCandidate) -> bool:
+    """Il filtro di provenienza (ADR 0027): "non ha risposto **a questo**".
+
+    `source_template_id` vuoto = nessun filtro, cioè il comportamento storico
+    ("questa chat è ferma da X minuti", qualunque cosa sia stato l'ultimo
+    messaggio). Valorizzato, l'automazione parte solo se l'ultimo messaggio in
+    uscita è stato mandato con quel template — non su una risposta dell'AI, non
+    su una frase scritta a mano da un operatore, non su un altro template.
+
+    Il filtro sta qui e non in `_trigger_config_match` — dove vivono quelli dei
+    trigger CRM — perché qui l'ancora viene bruciata: scartare a valle, nel
+    dispatcher, timbrerebbe l'episodio per un'automazione che non doveva
+    nemmeno essere considerata.
+    """
+    wanted = str(_trigger_config(auto).get("source_template_id") or "").strip()
+    if not wanted:
+        return True
+    actual = str(cand.last_outbound_template_id or "")
+    return actual == wanted
+
+
+def _already_fired(cand: ReminderCandidate, automation_id: UUID, anchor: datetime) -> bool:
+    """Questa automazione ha già emesso per questo episodio di silenzio?
+
+    `ANCHOR_ANY` copre le ancore scritte nella forma vecchia, quando il timbro
+    era uno solo per conversazione: valgono per qualunque automazione.
+    """
+    anchors = cand.no_answer_fired_for
+    fired = anchors.get(str(automation_id)) or anchors.get(ANCHOR_ANY)
+    return fired is not None and fired >= anchor

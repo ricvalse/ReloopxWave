@@ -1,13 +1,32 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, DateTime, cast, delete, func, or_, select, text, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    text,
+    true,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Conversation, ConversationProfile, Lead, Merchant
+from db.models import (
+    Conversation,
+    ConversationProfile,
+    Lead,
+    Merchant,
+    Message,
+    WhatsAppTemplate,
+)
 
 
 def _open_handoff() -> ColumnElement[bool]:
@@ -35,6 +54,41 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
+# Chiave jolly nella mappa delle ancore: vale per ogni automazione. Serve solo a
+# leggere la forma vecchia di `meta.no_answer_fired_for`, che era un singolo
+# timestamp per conversazione invece che una mappa per automazione (ADR 0027).
+ANCHOR_ANY = "*"
+
+
+def _parse_anchor_map(raw: object) -> dict[str, datetime]:
+    """Legge `meta.no_answer_fired_for` in entrambe le forme.
+
+    Oggi è una mappa `{automation_id: iso}` — un'ancora per automazione, perché
+    due automazioni "nessuna risposta" con ritardi diversi sono due episodi
+    distinti e non possono condividere un timbro solo. Prima era un singolo
+    timestamp: lo si legge come jolly, valido per qualunque automazione.
+    """
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except ValueError:
+        # Non è JSON valido: è la forma vecchia, un ISO nudo dentro il JSONB.
+        ts = _parse_iso(raw)
+        return {ANCHOR_ANY: ts} if ts else {}
+    if isinstance(decoded, str):  # stringa JSON = forma vecchia
+        ts = _parse_iso(decoded)
+        return {ANCHOR_ANY: ts} if ts else {}
+    if not isinstance(decoded, dict):
+        return {}
+    out: dict[str, datetime] = {}
+    for key, value in decoded.items():
+        ts = _parse_iso(value)
+        if ts is not None:
+            out[str(key)] = ts
+    return out
+
+
 @dataclass(slots=True, frozen=True)
 class ReminderCandidate:
     conversation_id: UUID
@@ -59,9 +113,16 @@ class ReminderCandidate:
     optimal_send_hour: int | None = None
     # Lead display name — feeds `{name}` / `{{contact.name}}` in send-node free text.
     lead_name: str | None = None
-    # ADR 0015 edge-trigger anchor: the `last_inbound_at` we last emitted a
-    # `lead.no_answer` trigger for. None = never fired for this conversation.
-    no_answer_fired_for: datetime | None = None
+    # ADR 0015/0027 edge-trigger anchors, una per automazione: `{automation_id:
+    # ancora}`. Mappa vuota = mai emesso per questa conversazione. La chiave
+    # `ANCHOR_ANY` è la forma vecchia (un'ancora sola per conversazione).
+    no_answer_fired_for: dict[str, datetime] = field(default_factory=dict)
+    # Provenienza dell'ultimo messaggio in uscita (ADR 0027): è ciò che permette
+    # a un'automazione di dire "sollecita solo chi non ha risposto a QUESTO
+    # template". `None` quando l'ultimo outbound non era un template — una
+    # risposta dell'AI, o una frase scritta a mano da un operatore.
+    last_outbound_template_id: UUID | None = None
+    last_outbound_template_name: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -227,6 +288,18 @@ class ConversationRepository:
         now = datetime.now(tz=UTC)
         idle_cutoff = now - timedelta(minutes=min_idle_minutes)
 
+        # L'ultimo messaggio in uscita della conversazione, per la sola parte che
+        # serve: il nome del template con cui è stato mandato. LATERAL e non una
+        # sottoquery correlata nella SELECT perché ne serve più di una colonna, e
+        # gira solo sulle righe che hanno superato i filtri.
+        last_out = (
+            select(Message.meta["template"]["name"].astext.label("template_name"))
+            .where(Message.conversation_id == Conversation.id, Message.direction == "out")
+            .order_by(Message.created_at.desc())
+            .limit(1)
+            .lateral("last_out")
+        )
+
         stmt = (
             select(
                 Conversation.id,
@@ -240,9 +313,20 @@ class ConversationRepository:
                 Conversation.meta["no_answer_fired_for"].astext.label("no_answer_fired_for"),
                 Lead.optimal_send_hour,
                 Lead.name.label("lead_name"),
+                last_out.c.template_name.label("last_outbound_template_name"),
+                WhatsAppTemplate.id.label("last_outbound_template_id"),
             )
             .join(Merchant, Merchant.id == Conversation.merchant_id)
             .outerjoin(Lead, Lead.id == Conversation.lead_id)
+            .outerjoin(last_out, true())
+            # Il nome del template è quello di 360dialog; l'id è ciò che il nodo
+            # trigger memorizza. `(merchant_id, name)` è unico, quindi il join
+            # non può moltiplicare le righe.
+            .outerjoin(
+                WhatsAppTemplate,
+                (WhatsAppTemplate.merchant_id == Conversation.merchant_id)
+                & (WhatsAppTemplate.name == last_out.c.template_name),
+            )
             .where(
                 Conversation.status == "active",
                 Conversation.last_message_at.is_not(None),
@@ -272,7 +356,9 @@ class ConversationRepository:
                     last_inbound_at=row["last_inbound_at"],
                     optimal_send_hour=row["optimal_send_hour"],
                     lead_name=row["lead_name"],
-                    no_answer_fired_for=_parse_iso(row["no_answer_fired_for"]),
+                    no_answer_fired_for=_parse_anchor_map(row["no_answer_fired_for"]),
+                    last_outbound_template_id=row["last_outbound_template_id"],
+                    last_outbound_template_name=row["last_outbound_template_name"],
                 )
             )
         return results
@@ -549,23 +635,51 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id)},
         )
 
-    async def mark_no_answer_fired(self, conversation_id: UUID, anchor: datetime) -> None:
-        """Stamp the `last_inbound_at` anchor a `lead.no_answer` trigger was emitted
-        for (ADR 0015). The scheduler suppresses re-emission until the lead sends a
-        new inbound (advancing `last_inbound_at` past this anchor)."""
+    async def mark_no_answer_fired(
+        self, conversation_id: UUID, automation_id: UUID, anchor: datetime
+    ) -> None:
+        """Timbra l'ancora per cui `lead.no_answer` è stato emesso, **per
+        automazione** (ADR 0015/0027).
+
+        Era un timestamp solo per conversazione. Non regge appena il merchant ha
+        due automazioni "nessuna risposta" con ritardi diversi: la prima a
+        maturare bruciava l'ancora e la seconda non partiva mai. Ora è una mappa
+        `{automation_id: ancora}` e ogni automazione ha il suo episodio.
+
+        Il `CASE` normalizza la forma vecchia: se il valore salvato non è un
+        oggetto (era una stringa ISO), lo si sostituisce con una mappa vuota
+        prima di scriverci dentro — `jsonb_set` su un percorso dentro una stringa
+        non farebbe nulla, e l'ancora andrebbe persa a ogni tick.
+        """
         await self._session.execute(
             text(
                 """
                 UPDATE conversations
                 SET meta = jsonb_set(
-                    coalesce(meta, '{}'::jsonb),
-                    '{no_answer_fired_for}',
-                    to_jsonb(:anchor::text)
+                    CASE
+                      WHEN jsonb_typeof(
+                             coalesce(meta, '{}'::jsonb) -> 'no_answer_fired_for'
+                           ) = 'object'
+                      THEN coalesce(meta, '{}'::jsonb)
+                      ELSE jsonb_set(
+                             coalesce(meta, '{}'::jsonb),
+                             '{no_answer_fired_for}',
+                             '{}'::jsonb,
+                             true
+                           )
+                    END,
+                    ARRAY['no_answer_fired_for', :automation_id],
+                    to_jsonb(:anchor::text),
+                    true
                 )
                 WHERE id = :conversation_id
                 """
             ),
-            {"conversation_id": str(conversation_id), "anchor": anchor.isoformat()},
+            {
+                "conversation_id": str(conversation_id),
+                "automation_id": str(automation_id),
+                "anchor": anchor.isoformat(),
+            },
         )
 
     async def list_overdue_handoffs(
