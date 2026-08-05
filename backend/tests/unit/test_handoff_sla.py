@@ -54,7 +54,7 @@ def _patch(
         def __init__(self, session: Any) -> None: ...
 
         async def resolve(self, key: Any, *, merchant_id: Any) -> Any:
-            assert key is ConfigKey.ESCALATION_SLA_MINUTES
+            assert key is ConfigKey.HANDOFF_SLA_MINUTES
             return sla_minutes
 
     monkeypatch.setattr(handoff_sla, "ConfigResolver", FakeConfigResolver)

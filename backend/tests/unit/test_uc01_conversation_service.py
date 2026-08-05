@@ -759,12 +759,12 @@ async def test_handoff_message_sent_once_for_media_burst(
     svc, sender, _dispatcher, conv, _lead = service
 
     async def per_key_bool(self, session, merchant_id, key, *, default):
-        return key is not ConfigKey.ESCALATION_SILENT_HANDOFF
+        return key is not ConfigKey.HANDOFF_SILENT
 
     monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
 
     async def per_key_str(self, session, merchant_id, key):
-        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+        if key is ConfigKey.HANDOFF_MESSAGE:
             return "Ti metto in contatto con un operatore."
         return None
 
@@ -944,12 +944,12 @@ async def test_escalation_disabled_keeps_bot_reply_no_handoff_message(
     svc, sender, _dispatcher, conv, _lead = service
 
     async def per_key_bool(self, session, merchant_id, key, *, default):
-        return key not in (ConfigKey.ESCALATION_ENABLED, ConfigKey.ESCALATION_SILENT_HANDOFF)
+        return key not in (ConfigKey.HANDOFF_ENABLED, ConfigKey.HANDOFF_SILENT)
 
     monkeypatch.setattr(cs.ConversationService, "_resolve_bool", per_key_bool)
 
     async def per_key_str(self, session, merchant_id, key):
-        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+        if key is ConfigKey.HANDOFF_MESSAGE:
             return "Ti metto in contatto con un operatore."
         return None
 
@@ -990,7 +990,7 @@ async def test_silent_handoff_says_nothing_to_the_customer_but_notifies_the_oper
     svc, sender, dispatcher, conv, _lead = service
 
     async def per_key_bool(self, session, merchant_id, key, *, default):
-        if key is ConfigKey.ESCALATION_SILENT_HANDOFF:
+        if key is ConfigKey.HANDOFF_SILENT:
             return True
         return True
 
@@ -1034,10 +1034,10 @@ async def test_configured_handoff_message_wins_over_the_model_text(
 
     async def per_key_bool(self, session, merchant_id, key, *, default):
         # Escalation attiva, ma NON silenziosa: il messaggio deve uscire.
-        return key is not ConfigKey.ESCALATION_SILENT_HANDOFF
+        return key is not ConfigKey.HANDOFF_SILENT
 
     async def per_key_str(self, session, merchant_id, key):
-        if key is ConfigKey.ESCALATION_HANDOFF_MESSAGE:
+        if key is ConfigKey.HANDOFF_MESSAGE:
             return "Ti metto subito in contatto con un nostro operatore."
         return None
 

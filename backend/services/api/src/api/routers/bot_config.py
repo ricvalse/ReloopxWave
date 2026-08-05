@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.dependencies.auth import require_role
 from api.dependencies.session import CurrentContext, DBSession
 from config_resolver import (
+    LEGACY_KEY_ALIASES,
+    LEGACY_KEY_ALIASES_INVERTED,
     SUGGESTED_RULES,
     TONE_PRESETS,
     BotConfigSchema,
@@ -169,11 +171,9 @@ async def bulk_apply_template(
 
     # Identify which of the requested merchant_ids belong to this tenant.
     valid_ids = set(
-        (
-            await session.execute(
-                select(Merchant.id).where(Merchant.id.in_(payload.merchant_ids))
-            )
-        ).scalars().all()
+        (await session.execute(select(Merchant.id).where(Merchant.id.in_(payload.merchant_ids))))
+        .scalars()
+        .all()
     )
     requested = list(dict.fromkeys(payload.merchant_ids))  # deduplicate, preserve order
 
@@ -404,7 +404,9 @@ async def set_merchant_template(
         await session.execute(select(BotConfig).where(BotConfig.merchant_id == merchant_id))
     ).scalar_one_or_none()
     if row is None:
-        session.add(BotConfig(merchant_id=merchant_id, template_id=payload.template_id, overrides={}))
+        session.add(
+            BotConfig(merchant_id=merchant_id, template_id=payload.template_id, overrides={})
+        )
     else:
         row.template_id = payload.template_id
     await session.flush()
@@ -464,9 +466,23 @@ def _validate_defaults(bag: dict[str, Any]) -> None:
         ) from e
 
 
+def _canonical_config_key(key: str) -> str:
+    """Traduce una chiave legacy nel nome corrente (ADR 0026).
+
+    `locked_keys` è un array di stringhe dotted salvato dall'agenzia. Dopo la
+    rinomina `escalation.*` → `handoff.*` un lock salvato prima non
+    corrisponderebbe più a nessuna `ConfigKey`: il salvataggio del template
+    verrebbe rifiutato con `unknown_locked_keys` e — peggio, perché silenzioso —
+    `_strip_locked_keys` non troverebbe più il path da rimuovere, quindi il
+    lock dell'agenzia smetterebbe di essere applicato senza che nessuno se ne
+    accorga.
+    """
+    return LEGACY_KEY_ALIASES_INVERTED.get(key, key)
+
+
 def _validate_locked_keys(keys: list[str]) -> None:
     known = {k.value for k in ConfigKey}
-    bad = [k for k in keys if k not in known]
+    bad = [k for k in keys if _canonical_config_key(k) not in known]
     if bad:
         raise PermissionDeniedError(f"Unknown config keys: {bad}", error_code="unknown_locked_keys")
 
@@ -479,9 +495,18 @@ def _assert_merchant(ctx: TenantContext, merchant_id: UUID) -> None:
 
 
 def _strip_locked_keys(bag: dict[str, Any], locked: set[str]) -> None:
-    """Mutate `bag` to remove any key path in `locked` (dotted)."""
+    """Mutate `bag` to remove any key path in `locked` (dotted).
+
+    Ogni lock viene rimosso sia con il nome corrente sia con quello legacy: il
+    bag in arrivo dal pannello usa il nome nuovo, ma un bag non ancora migrato
+    può ancora contenere la sezione vecchia (ADR 0026).
+    """
     for path in list(locked):
-        _dotted_delete(bag, path)
+        canonical = _canonical_config_key(path)
+        _dotted_delete(bag, canonical)
+        legacy = LEGACY_KEY_ALIASES.get(canonical)
+        if legacy is not None:
+            _dotted_delete(bag, legacy)
 
 
 def _dotted_set(bag: dict[str, Any], path: str, value: Any) -> None:

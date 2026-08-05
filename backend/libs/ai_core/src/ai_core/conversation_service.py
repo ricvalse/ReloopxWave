@@ -29,6 +29,7 @@ from ai_core.llm import ChatMessage, ImagePart
 from ai_core.orchestrator import (
     ConversationContext,
     ConversationOrchestrator,
+    HandoffPrompt,
     OrchestratorAction,
     OrchestratorResponse,
     ToolExecutor,
@@ -65,7 +66,11 @@ from db import (
     TenantContext,
     tenant_session,
 )
-from db.repositories.services import BusinessClosureRepository, BusinessHourRepository, ServiceRepository
+from db.repositories.services import (
+    BusinessClosureRepository,
+    BusinessHourRepository,
+    ServiceRepository,
+)
 from shared import get_logger
 
 logger = get_logger(__name__)
@@ -244,9 +249,7 @@ class MediaPipeline(Protocol):
         mime: str | None,
     ) -> dict[str, Any]: ...
 
-    async def load_image(
-        self, *, storage_path: str, mime: str | None
-    ) -> ImagePart | None: ...
+    async def load_image(self, *, storage_path: str, mime: str | None) -> ImagePart | None: ...
 
 
 # ---- The entry point workers call ----------------------------------------
@@ -573,6 +576,7 @@ async def build_cascade_system_prompt(
 
     # Chiusure eccezionali future (festivi, ferie, ponti). Best-effort.
     import datetime as _dt
+
     upcoming_closures: list[Any] = []
     try:
         upcoming_closures = await BusinessClosureRepository(session).list(
@@ -646,9 +650,7 @@ async def build_cascade_system_prompt(
     if bookable_services and booking_enabled:
         svc_lines = ["Servizi prenotabili (usa il campo service_id nell'azione book_slot):"]
         for svc in bookable_services:
-            price_str = (
-                f"€{svc.price}" if svc.price is not None else "prezzo su richiesta"
-            )
+            price_str = f"€{svc.price}" if svc.price is not None else "prezzo su richiesta"
             desc_str = f" — {svc.description}" if svc.description else ""
             svc_lines.append(
                 f"- {svc.name} (id: {svc.id}, durata: {svc.duration_min} min, {price_str}{desc_str})"
@@ -1043,11 +1045,7 @@ class ConversationService:
                 # `meta.media`. Never raises — a media failure must not lose the
                 # customer's turn nor block the reply. Images download sub-second;
                 # video/document (handed off) are the only slow case.
-                if (
-                    message_meta is not None
-                    and wa_message_id
-                    and self._media_pipeline is not None
-                ):
+                if message_meta is not None and wa_message_id and self._media_pipeline is not None:
                     try:
                         patch = await self._media_pipeline.fetch_and_store(
                             api_key=resolved.api_key,
@@ -1391,13 +1389,19 @@ class ConversationService:
                             session, resolved.merchant_id, ConfigKey.RAG_HYDE_ENABLED, default=True
                         )
                         rerank_enabled = await self._resolve_bool(
-                            session, resolved.merchant_id, ConfigKey.RAG_RERANK_ENABLED, default=True
+                            session,
+                            resolved.merchant_id,
+                            ConfigKey.RAG_RERANK_ENABLED,
+                            default=True,
                         )
                         rerank_top_k = await self._resolve_int(
                             session, resolved.merchant_id, ConfigKey.RAG_RERANK_TOP_K, default=5
                         )
                         freshness_decay = await self._resolve_float(
-                            session, resolved.merchant_id, ConfigKey.RAG_FRESHNESS_DECAY, default=0.01
+                            session,
+                            resolved.merchant_id,
+                            ConfigKey.RAG_FRESHNESS_DECAY,
+                            default=0.01,
                         )
                         rag = RAGEngine(session, self._embedder, llm_client=self._rag_llm_client())
                         kb_chunks = await rag.retrieve(
@@ -1443,7 +1447,9 @@ class ConversationService:
             # it was the main driver of the bot ignoring the automation's thread and
             # pivoting to a generic "come posso aiutarti". When the playbook disables
             # the FSM (mode "off") no per-turn state hint is injected at all.
-            fsm_state = ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
+            fsm_state = (
+                ConvState(rc.conv_current_state) if rc.conv_current_state else ConvState.GREETING
+            )
             if not caps.fsm_enabled:
                 fsm_hint = ""
             else:
@@ -1463,17 +1469,15 @@ class ConversationService:
             try:
                 async with session.begin_nested():
                     obj_count_row = await session.execute(
-                        sa_select(func.count()).select_from(ObjModel).where(
-                            ObjModel.conversation_id == rc.conv_id
-                        )
+                        sa_select(func.count())
+                        .select_from(ObjModel)
+                        .where(ObjModel.conversation_id == rc.conv_id)
                     )
                     obj_count = obj_count_row.scalar() or 0
             except Exception:
                 obj_count = 0
 
-            recent_user_msgs = [
-                m.content for m in rc.chat_history[-6:] if m.role == "user"
-            ]
+            recent_user_msgs = [m.content for m in rc.chat_history[-6:] if m.role == "user"]
             esc_risk = predict_escalation_risk(
                 turn_count=len(rc.chat_history),
                 lead_score=rc.lead_score,
@@ -1533,7 +1537,10 @@ class ConversationService:
             # than the fetch window survive across turns.
             effective_history = rc.chat_history
             compress_threshold = await self._resolve_int(
-                session, resolved.merchant_id, ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD, default=30
+                session,
+                resolved.merchant_id,
+                ConfigKey.AGENT_CONTEXT_COMPRESS_THRESHOLD,
+                default=30,
             )
             # Clamp so compression stays reachable even if a merchant configures a
             # threshold at/above the fetch window — otherwise it silently degrades
@@ -1596,6 +1603,9 @@ class ConversationService:
                 directives=caps.directives,
                 critical_keywords=caps.critical_keywords,
                 current_image=rc.current_image,
+                handoff=await self._resolve_handoff_prompt(
+                    session, resolved.merchant_id, profile_id=rc.conv_profile_id
+                ),
             )
 
             # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
@@ -1618,7 +1628,10 @@ class ConversationService:
                     response = await self._run_orchestrator(session, ctx, rc)
                     # S-04: coherence guard — retry once if the reply contradicts prior facts
                     coherence_enabled = await self._resolve_bool(
-                        session, resolved.merchant_id, ConfigKey.AGENT_COHERENCE_GUARD_ENABLED, default=True
+                        session,
+                        resolved.merchant_id,
+                        ConfigKey.AGENT_COHERENCE_GUARD_ENABLED,
+                        default=True,
                     )
                     if coherence_enabled:
                         nano_client = self._rag_llm_client()
@@ -1645,7 +1658,7 @@ class ConversationService:
                     llm_failed = True
                     fallback_text = (
                         await self._resolve_optional_str(
-                            session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                            session, resolved.merchant_id, ConfigKey.HANDOFF_MESSAGE
                         )
                         or _LLM_FAILURE_MESSAGE
                     )
@@ -1693,7 +1706,7 @@ class ConversationService:
                     if a.kind != "escalate_human" or a is escalate_action
                 ]
                 escalation_enabled = await self._resolve_bool(
-                    session, resolved.merchant_id, ConfigKey.ESCALATION_ENABLED, default=True
+                    session, resolved.merchant_id, ConfigKey.HANDOFF_ENABLED, default=True
                 )
                 if not escalation_enabled and not llm_failed:
                     # Escalation locked off by the agency: the thread stays on the
@@ -1701,9 +1714,7 @@ class ConversationService:
                     # the handoff copy would promise an operator who never comes —
                     # and would repeat on every following inbound. Drop the action
                     # and let the LLM's own reply go out.
-                    response.actions = [
-                        a for a in response.actions if a.kind != "escalate_human"
-                    ]
+                    response.actions = [a for a in response.actions if a.kind != "escalate_human"]
                 elif not await convs.claim_handoff(
                     rc.conv_id,
                     reason=escalate_action.payload.get("reason"),
@@ -1713,22 +1724,20 @@ class ConversationService:
                     # and the customer already received the handoff message. Stay
                     # silent and drop the action so the operator isn't re-notified.
                     suppress_reply = True
-                    response.actions = [
-                        a for a in response.actions if a.kind != "escalate_human"
-                    ]
+                    response.actions = [a for a in response.actions if a.kind != "escalate_human"]
                 else:
                     handoff_claimed = True
                     silent = await self._resolve_bool(
                         session,
                         resolved.merchant_id,
-                        ConfigKey.ESCALATION_SILENT_HANDOFF,
+                        ConfigKey.HANDOFF_SILENT,
                         default=False,
                     )
                     if silent and not llm_failed:
                         suppress_reply = True
                     elif not llm_failed:
                         handoff_message = await self._resolve_optional_str(
-                            session, resolved.merchant_id, ConfigKey.ESCALATION_HANDOFF_MESSAGE
+                            session, resolved.merchant_id, ConfigKey.HANDOFF_MESSAGE
                         )
                         if handoff_message:
                             response.reply_text = handoff_message
@@ -2132,7 +2141,7 @@ class ConversationService:
             pause_minutes = await self._resolve_int(
                 session,
                 resolved.merchant_id,
-                ConfigKey.ESCALATION_PHONE_ECHO_PAUSE_MINUTES,
+                ConfigKey.HANDOFF_PHONE_ECHO_PAUSE_MINUTES,
                 default=_PHONE_ECHO_PAUSE_FALLBACK_MIN,
             )
             conv.ai_disabled_until = datetime.now(UTC) + timedelta(minutes=pause_minutes)
@@ -2297,6 +2306,39 @@ class ConversationService:
         if isinstance(value, str) and value.strip():
             return value.strip()
         return None
+
+    async def _resolve_handoff_prompt(
+        self, session: Any, merchant_id: UUID, *, profile_id: UUID | None = None
+    ) -> HandoffPrompt:
+        """Istruzioni di handoff del merchant, per il prompt (ADR 0026).
+
+        Degrada ai default a ogni errore: un problema di configurazione non deve
+        togliere al bot la via d'uscita verso un operatore.
+        """
+        try:
+            resolver = ConfigResolver(session)
+
+            async def _get(key: ConfigKey) -> Any:
+                return await resolver.resolve(key, merchant_id=merchant_id, profile_id=profile_id)
+
+            enabled = await _get(ConfigKey.HANDOFF_ENABLED)
+            mode = await _get(ConfigKey.HANDOFF_INSTRUCTIONS_MODE)
+            criteria = await _get(ConfigKey.HANDOFF_INSTRUCTIONS_CRITERIA)
+            exclusions = await _get(ConfigKey.HANDOFF_INSTRUCTIONS_EXCLUSIONS)
+        except Exception:
+            return HandoffPrompt()
+
+        def _lines(raw: Any) -> tuple[str, ...]:
+            if not isinstance(raw, list):
+                return ()
+            return tuple(str(x).strip() for x in raw if str(x).strip())
+
+        return HandoffPrompt(
+            enabled=enabled if isinstance(enabled, bool) else True,
+            mode=mode if mode in ("extend", "replace") else "extend",
+            criteria=_lines(criteria),
+            exclusions=_lines(exclusions),
+        )
 
 
 def _with_score_action(

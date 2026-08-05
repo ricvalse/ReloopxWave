@@ -34,13 +34,15 @@ const ACTION_OPTIONS: { value: string; label: string }[] = [
   { value: 'cancel_slot', label: 'Annulla appuntamento' },
   { value: 'move_pipeline', label: 'Avanza in pipeline' },
   { value: 'update_score', label: 'Aggiorna scoring' },
-  { value: 'escalate_human', label: 'Passa a operatore' },
+  // Il backend accetta ancora il nome storico `escalate_human` in lettura
+  // (ADR 0026), così le allowlist già salvate continuano a funzionare.
+  { value: 'handoff_human', label: 'Passa a operatore (handoff)' },
 ];
 
 export type BadgeKind = 'inherited' | 'customized' | 'locked' | 'lock-override';
 
 export type FieldDef = {
-  key: string; // dotted path, e.g. "escalation.sla_minutes"
+  key: string; // dotted path, e.g. "handoff.sla_minutes"
   label: string;
   kind: FieldKind;
   min?: number;
@@ -53,7 +55,7 @@ export type FieldDef = {
 };
 
 export type SectionDef = {
-  section: string; // top-level key, e.g. "escalation"
+  section: string; // top-level key, e.g. "handoff"
   title: string;
   /** Short label for the sticky index, where the full title would wrap. */
   nav: string;
@@ -404,42 +406,71 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    section: 'escalation',
-    title: 'Passaggio a operatore',
-    nav: 'Operatore',
-    description: 'Quando passare la chat a un operatore umano.',
+    section: 'handoff',
+    title: 'Handoff (passaggio a operatore)',
+    nav: 'Handoff',
+    description:
+      'Quando il bot deve smettere di rispondere e passare la chat a una persona.',
     fields: [
-      { key: 'escalation.enabled', label: 'Abilitata', kind: 'bool' },
+      { key: 'handoff.enabled', label: 'Abilitato', kind: 'bool' },
       {
-        key: 'escalation.handoff_message',
+        key: 'handoff.instructions.mode',
+        label: 'Criteri di handoff',
+        kind: 'select',
+        options: [
+          { value: 'extend', label: 'Aggiungi ai criteri predefiniti' },
+          { value: 'replace', label: 'Sostituisci i criteri predefiniti' },
+        ],
+        help: 'Predefiniti: cliente arrabbiato, minaccia reclami o azioni legali, chiede esplicitamente una persona. Scegli «Sostituisci» se nel tuo settore sono normali e farebbero scattare l’handoff di continuo.',
+      },
+      {
+        key: 'handoff.instructions.criteria',
+        label: 'Passa a un operatore quando…',
+        kind: 'tags',
+        rows: 4,
+        placeholder:
+          'es. chiede un preventivo sopra i 5.000 €\nes. parla di un ordine già spedito',
+        help: 'Un caso per riga, scritto come lo diresti a un collega nuovo. Vengono letti dall’AI insieme ai criteri predefiniti (o al posto loro, secondo l’impostazione qui sopra).',
+      },
+      {
+        key: 'handoff.instructions.exclusions',
+        label: 'NON passare a un operatore quando…',
+        kind: 'tags',
+        rows: 4,
+        placeholder:
+          'es. dice “voglio parlare con qualcuno” prima di aver detto cosa gli serve\nes. usa la parola “reclamo”, che per noi è un termine tecnico',
+        help: 'Le eccezioni servono a spegnere i falsi allarmi: casi che sembrano handoff ma non lo sono. Un caso per riga.',
+      },
+      {
+        key: 'handoff.message',
         label: 'Messaggio di passaggio',
         kind: 'textarea',
         placeholder: 'es. “Ti metto subito in contatto con un nostro operatore.” (vuoto = lascia scrivere al bot)',
         help: 'Vuoto: il messaggio lo scrive il bot. Ignorato se il passaggio silenzioso è attivo.',
       },
       {
-        key: 'escalation.silent_handoff',
+        key: 'handoff.silent',
         label: 'Passaggio silenzioso (nessun messaggio al cliente)',
         kind: 'bool',
         help: 'Il cliente non riceve nulla e il bot esce dalla chat. L’operatore viene comunque avvisato (es. su Slack).',
       },
       {
-        key: 'escalation.critical_keywords',
+        key: 'handoff.critical_keywords',
         label: 'Parole chiave critiche',
         kind: 'tags',
         rows: 3,
-        help: 'Parole che forzano il passaggio al modello di escalation, una per riga. Vuoto = vocabolario predefinito. Utile se una parola predefinita (es. “concorrenza”) è normale nel tuo settore.',
+        help: 'ATTENZIONE: queste parole NON provocano l’handoff — fanno solo rispondere il modello più capace, che costa di più ed è più attento. I criteri dell’handoff sono quelli qui sopra. Una parola per riga; vuoto = vocabolario predefinito. Utile se una parola predefinita (es. “concorrenza”) è normale nel tuo settore.',
       },
       {
-        key: 'escalation.sla_minutes',
+        key: 'handoff.sla_minutes',
         label: 'Avvisami se nessuno risponde entro (min)',
         kind: 'int',
         min: 1,
         max: 1440,
-        help: 'Quanto può restare aperto un passaggio a operatore prima che scatti l’avviso — è ciò che fa partire l’automazione «Handoff in ritardo» (es. la notifica su Slack). Prima era un valore unico per tutta la piattaforma, non modificabile.',
+        help: 'Quanto può restare aperto un handoff prima che scatti l’avviso — è ciò che fa partire l’automazione «Handoff in ritardo» (es. la notifica su Slack). Prima era un valore unico per tutta la piattaforma, non modificabile.',
       },
       {
-        key: 'escalation.phone_echo_pause_minutes',
+        key: 'handoff.phone_echo_pause_minutes',
         label: 'Pausa del bot dopo una risposta dal telefono (min)',
         kind: 'int',
         min: 5,

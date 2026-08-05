@@ -101,7 +101,7 @@ async def _maybe_emit(cand: HandoffOverdueCandidate, *, now: datetime) -> bool:
         # per i candidati che hanno davvero qualcuno in ascolto.
         threshold = _as_positive_int(
             await ConfigResolver(session).resolve(
-                ConfigKey.ESCALATION_SLA_MINUTES, merchant_id=cand.merchant_id
+                ConfigKey.HANDOFF_SLA_MINUTES, merchant_id=cand.merchant_id
             ),
             default=_DEFAULT_SLA_MINUTES,
         )
