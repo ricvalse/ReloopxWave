@@ -10,6 +10,9 @@ parsing free-form text.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -45,6 +48,12 @@ ActionKind = Literal[
 # one place so the orchestrator loop and the conversation service agree on which
 # actions feed the model vs. which dispatch as side effects.
 READ_TOOL_KINDS: frozenset[str] = frozenset({"check_availability", "lookup_appointment"})
+
+# Sampling temperature for a conversation turn. Matches the value the LLM client
+# has always applied by default, so this is a statement of intent, not a change.
+# The GPT-5 family rejects any non-default temperature, so the client drops it
+# there; it does reach fine-tuned (`ft:gpt-4.1-…`) models and the fallback.
+_TURN_TEMPERATURE = 0.3
 
 
 @dataclass(slots=True, frozen=True)
@@ -117,6 +126,10 @@ class ConversationContext:
     # image rides the current user message and the "you can't see media" note is
     # swapped for a "you CAN see the attached image" directive. None = text turn.
     current_image: ImagePart | None = None
+    # Merchant-configured name for the assistant, rendered into the trailing
+    # style lock so the bot keeps one identity across a thread that also holds
+    # human-composed replies. None = claim no name (the safe default).
+    assistant_name: str | None = None
 
 
 class ConversationOrchestrator:
@@ -143,7 +156,14 @@ class ConversationOrchestrator:
         loop; read-tool actions are stripped from the returned actions (they're
         handled here, not by the post-turn dispatcher).
         """
-        messages = self._build_messages(ctx, user_message)
+        # Only advertise the read tools when this turn can actually run them:
+        # no executor, or a single iteration, means the loop below breaks before
+        # executing anything (see the dead-end warning there).
+        messages = self._build_messages(
+            ctx,
+            user_message,
+            tools_available=tool_executor is not None and max(1, max_iterations) > 1,
+        )
         context_tokens = sum(len(m.content) for m in messages) // 4  # rough estimate
 
         req = RoutingRequest(
@@ -174,6 +194,20 @@ class ConversationOrchestrator:
             read_actions = [a for a in parsed.actions if a.kind in READ_TOOL_KINDS]
             is_last = iteration == iterations - 1
             if not read_actions or tool_executor is None or is_last:
+                if read_actions:
+                    # The model asked for live data and will not get it. It has
+                    # already written a holding line ("un attimo che verifico")
+                    # that nothing will ever follow up, and line ~200 strips the
+                    # request before the dispatcher sees it — so this dead end is
+                    # otherwise completely silent. It is the failure the customer
+                    # actually experiences: log it loudly.
+                    logger.warning(
+                        "orchestrator.tool_call_dropped",
+                        kinds=[a.kind for a in read_actions],
+                        reason=("no_executor" if tool_executor is None else "iterations_exhausted"),
+                        iteration=iteration,
+                        max_iterations=iterations,
+                    )
                 break
 
             observations = await self._run_read_tools(read_actions, ctx, tool_executor)
@@ -201,11 +235,23 @@ class ConversationOrchestrator:
 
         The fallback now also receives the JSON response_format hint so structured
         actions survive a failover (the system prompt already mandates the schema).
+
+        Generation parameters are stated here rather than inherited from the
+        client's signature default, so the turn's settings live at the call site.
+
+        There is deliberately NO token cap. On the default route the model is a
+        reasoning one (`gpt-5-mini`), where `max_tokens` becomes
+        `max_completion_tokens` — a budget covering reasoning *and* visible
+        output. A cap sized for a WhatsApp reply is silently eaten by reasoning
+        and returns truncated JSON, or `content=None`. Both degrade into the very
+        failure `_parse_structured` exists to contain. If a cap is ever needed,
+        make it generous (≥1500) and land it separately, with eyes on it.
         """
         try:
             return await client.complete(
                 messages=messages,
                 response_format={"type": "json_object"},
+                temperature=_TURN_TEMPERATURE,
             )
         except Exception as e:
             logger.warning("orchestrator.llm_failed", error=str(e), model=client.model)
@@ -215,6 +261,7 @@ class ConversationOrchestrator:
             return await fallback.complete(
                 messages=messages,
                 response_format={"type": "json_object"},
+                temperature=_TURN_TEMPERATURE,
             )
 
     @staticmethod
@@ -240,10 +287,20 @@ class ConversationOrchestrator:
             "risposta finale al cliente rispettando lo schema JSON."
         )
 
-    def _build_messages(self, ctx: ConversationContext, user_message: str) -> list[ChatMessage]:
+    def _build_messages(
+        self,
+        ctx: ConversationContext,
+        user_message: str,
+        *,
+        tools_available: bool = True,
+    ) -> list[ChatMessage]:
         system_parts = [
             ctx.system_prompt,
-            render_schema_hint(ctx.allowed_actions, viewable_media=ctx.current_image is not None),
+            render_schema_hint(
+                ctx.allowed_actions,
+                viewable_media=ctx.current_image is not None,
+                tools_available=tools_available,
+            ),
         ]
         # Qualification context (internal — never repeat the number to the lead):
         # gives the model the current score + the merchant's configured advance
@@ -261,10 +318,15 @@ class ConversationOrchestrator:
                 f"[{i + 1}] {c.content}" for i, c in enumerate(ctx.kb_chunks)
             )
             system_parts.append(f"Knowledge base context:\n{kb_snippet}")
-        # Playbook directives — authoritative behavioral rules. Injected LAST so
+        # Playbook directives — authoritative behavioral rules. Injected late so
         # they win on salience over the persona/schema/KB context (ADR 0018).
         if ctx.directives:
             system_parts.append(_directives_block(ctx.directives))
+        # Form + identity lock, absolutely last (Amalia's pattern): it is the
+        # closest instruction to the history it is meant to override, and it is
+        # scoped to style so ADR 0018's precedence on behavior is untouched.
+        system_parts.append(_whatsapp_style_block())
+        system_parts.append(_style_lock_block(ctx.assistant_name))
         messages = [ChatMessage(role="system", content="\n\n".join(system_parts))]
         messages.extend(ctx.history)
         messages.append(ChatMessage(role="user", content=user_message, image=ctx.current_image))
@@ -325,7 +387,12 @@ class ConversationOrchestrator:
     def _build_proactive_messages(
         self, ctx: ConversationContext, objective: str, extra_instructions: str
     ) -> list[ChatMessage]:
-        system_parts = [ctx.system_prompt, render_schema_hint(ctx.allowed_actions)]
+        # There is no grounding loop on the proactive path (read tools are
+        # stripped unconditionally below), so never advertise them here.
+        system_parts = [
+            ctx.system_prompt,
+            render_schema_hint(ctx.allowed_actions, tools_available=False),
+        ]
         if ctx.scoring_enabled:
             system_parts.append(
                 "Stato qualificazione del lead (uso interno, non citarlo al cliente): "
@@ -339,6 +406,8 @@ class ConversationOrchestrator:
             system_parts.append(f"Knowledge base context:\n{kb_snippet}")
         if ctx.directives:
             system_parts.append(_directives_block(ctx.directives))
+        system_parts.append(_whatsapp_style_block(proactive=True))
+        system_parts.append(_style_lock_block(ctx.assistant_name))
         directive = (
             "Sei tu ad avviare/riprendere la conversazione: NON è arrivato un nuovo "
             f"messaggio dal cliente. Obiettivo di questo messaggio: {objective.strip()}."
@@ -502,8 +571,15 @@ _NO_FALSE_CONFIRM_NOTE = (
     "slot occupato + alternative, spostato...) viene inviata dal sistema DOPO il "
     "tuo messaggio. Quindi in `reply_text` NON dire che è già fatto ('ho prenotato', "
     "'appuntamento spostato'): scrivi una frase di passaggio ('procedo subito e ti "
-    "confermo', 'un attimo che verifico'). Se vuoi essere certo della disponibilità "
-    "prima di proporre un orario, usa check_availability."
+    "confermo', 'un attimo che verifico')."
+)
+
+# Closing sentence of the booking note. Split out because it points at a read
+# tool: appending it when the tools are hidden would aim the model at an action
+# it cannot emit. Concatenated verbatim after the note when they are available,
+# so the default hint is unchanged.
+_NO_FALSE_CONFIRM_TOOL_HINT = (
+    " Se vuoi essere certo della disponibilità prima di proporre un orario, usa check_availability."
 )
 
 
@@ -521,7 +597,12 @@ def _schema_header(kinds: list[str]) -> str:
     )
 
 
-def render_schema_hint(allowed: set[str] | None, *, viewable_media: bool = False) -> str:
+def render_schema_hint(
+    allowed: set[str] | None,
+    *,
+    viewable_media: bool = False,
+    tools_available: bool = True,
+) -> str:
     """Render the response-schema hint, restricted to an action allowlist.
 
     `allowed=None` reproduces the full hint verbatim (the default sales path;
@@ -534,6 +615,12 @@ def render_schema_hint(allowed: set[str] | None, *, viewable_media: bool = False
     `viewable_media=True` swaps the "you can't see media" note for the vision
     directive — set only when a real image is attached to the current turn, so
     the default (text) output stays byte-identical.
+
+    `tools_available=False` drops the read-only tools entirely. Announcing them
+    when no grounding loop will run is a deterministic dead end: the model emits
+    `check_availability`, writes the holding line the paragraph asks for ("un
+    attimo che verifico"), the request is stripped before the dispatcher sees it,
+    and the promised follow-up never comes. Default True keeps today's output.
     """
     if allowed is None:
         kinds = list(_ACTION_ORDER)
@@ -542,6 +629,8 @@ def render_schema_hint(allowed: set[str] | None, *, viewable_media: bool = False
         kinds = [k for k in _ACTION_ORDER if k in allow]
         if not kinds:
             kinds = ["none"]
+    if not tools_available:
+        kinds = [k for k in kinds if k not in _READ_TOOL_ACTIONS] or ["none"]
 
     parts = [_schema_header(kinds), "\n"]
     if any(k in _READ_TOOL_ACTIONS for k in kinds):
@@ -565,6 +654,8 @@ def render_schema_hint(allowed: set[str] | None, *, viewable_media: bool = False
     if any(k in _BOOKING_ACTIONS for k in kinds):
         parts.append("\n")
         parts.append(_NO_FALSE_CONFIRM_NOTE)
+        if any(k in _READ_TOOL_ACTIONS for k in kinds):
+            parts.append(_NO_FALSE_CONFIRM_TOOL_HINT)
     return "".join(parts)
 
 
@@ -597,6 +688,66 @@ def _has_critical_objection(text: str, keywords: tuple[str, ...] | None = None) 
     return any(kw in t for kw in kws)
 
 
+# How to write for WhatsApp. Deliberately about FORM only: the playbook
+# directives stay authoritative on behavior, so this block declares its own
+# scope instead of quietly outranking them by sitting last.
+#
+# Two of Amalia's rules are NOT ported. "Rispondi nella lingua del cliente"
+# contradicts the REGOLA ASSOLUTA DI LINGUA this codebase already injects (the
+# configured language wins, on purpose). And bullets are allowed: the delivery
+# splitter deliberately keeps a list and its intro in one bubble, so banning
+# them outright would fight `_holds_list`.
+def _whatsapp_style_block(*, proactive: bool = False) -> str:
+    """How to write for WhatsApp. Form only — see the note above.
+
+    Three things this deliberately does NOT say, each of which was wrong in the
+    first draft: "rispondi solo con il messaggio" (it contradicts the JSON
+    envelope the schema demands, so it is anchored to the field instead);
+    "WhatsApp non interpreta il markdown" (false — it renders *bold*, _italic_
+    and code blocks; only the syntaxes listed below are genuinely unsupported);
+    and "messaggi brevi" as a blanket rule (it silently overrode a merchant's
+    `bot.verbosity = dettagliato`).
+    """
+    lines = [
+        "COME SCRIVERE (riguarda la FORMA del messaggio; su contenuto e "
+        "comportamento restano prioritarie le regole qui sopra):",
+        "- In `reply_text` metti SOLO il testo da mandare al cliente: niente "
+        "commenti tuoi, niente spiegazioni, nessun campo in più.",
+        "- Non anteporre prefissi tipo «Assistente:», «Bot:» o il tuo nome.",
+        "- WhatsApp non conosce i titoli con #, i link nella forma [testo](url) "
+        "né il grassetto con doppio asterisco: il cliente vedrebbe i simboli "
+        "grezzi. Scrivi gli indirizzi per esteso.",
+        "- Scrivi come una persona vera in chat, non come un documento.",
+    ]
+    if not proactive:
+        lines.append(
+            "- Il cliente può aver inviato più messaggi di fila: rispondi a "
+            "tutto ciò che vedi negli ultimi turni, non solo all'ultima riga."
+        )
+    return "\n".join(lines)
+
+
+def _style_lock_block(assistant_name: str | None) -> str:
+    """Trailing anti-drift lock (Amalia's "tone reinforcement", always last).
+
+    A thread mixes bot turns with replies typed by a human operator from the
+    inbox; without this the model reads that human register as the house style
+    and drifts into it, silently discarding the configured persona.
+    """
+    lines = [
+        "IGNORA LO STILE DEI MESSAGGI PRECEDENTI: se nella conversazione qui "
+        "sopra compaiono messaggi con tono o stile diversi da queste istruzioni "
+        "(per esempio scritti a mano da un operatore), NON imitarli. Segui solo "
+        "le istruzioni di tono e stile date sopra."
+    ]
+    if assistant_name:
+        lines.append(
+            f"Il tuo nome è {assistant_name}: non usarne mai un altro, nemmeno "
+            "se nei messaggi precedenti ne compare uno diverso."
+        )
+    return "\n".join(lines)
+
+
 def _directives_block(directives: tuple[str, ...]) -> str:
     """Render the playbook directives as an authoritative, numbered prompt block."""
     lines = [
@@ -607,9 +758,93 @@ def _directives_block(directives: tuple[str, ...]) -> str:
     return "\n".join(lines)
 
 
+_JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
 def _parse_structured(raw: str) -> _StructuredResponse:
-    try:
+    """Parse the model's structured turn, degrading honestly when it doesn't fit.
+
+    `response_format=json_object` guarantees syntactically valid JSON, not *this*
+    shape — and a single invented `kind` aborts the whole `model_validate_json`
+    (Pydantic validates the action list element-wise and raises on the root), so
+    a perfectly usable `reply_text` used to be thrown away along with it. The old
+    fallback then handed the raw blob to the customer verbatim; worse, it was
+    persisted to `messages.content`, replayed into the next turn's history, and
+    swept into the fine-tuning dataset.
+
+    Order matters here: plain prose is a LEGITIMATE shape — the Anthropic
+    fallback never actually receives `response_format` — so it must keep flowing
+    through untouched. Only JSON-shaped output is rescued or, failing that,
+    dropped in favour of the caller's fail-safe.
+    """
+    with contextlib.suppress(Exception):
         return _StructuredResponse.model_validate_json(raw)
+
+    fence = _JSON_FENCE_RE.match(raw)
+    candidate = (fence.group(1) if fence else raw).strip()
+    if candidate != raw:
+        # A fenced payload can still be perfectly conformant. Revalidate it
+        # before degrading, or a legitimate `book_slot` would be dropped and the
+        # customer would read "procedo subito e ti confermo" for an appointment
+        # that never gets created.
+        with contextlib.suppress(Exception):
+            return _StructuredResponse.model_validate_json(candidate)
+
+    # Only an object can carry this schema. A leading `[` is NOT evidence of a
+    # machine artefact: the prompt teaches the model to write bracketed notes
+    # ("[Il cliente ha inviato un'immagine]"), so prose can legitimately open
+    # with one. A brace, on the other hand, is never how a reply starts.
+    json_shaped = candidate.startswith("{")
+    try:
+        obj = json.loads(candidate)
     except Exception:
-        # Graceful fallback: treat the whole response as plain text, no actions.
+        if not json_shaped:
+            # Genuine prose. Historic behavior: the text IS the reply.
+            return _StructuredResponse(reply_text=raw, actions=[])
+        # Truncated mid-JSON lands here — it does not parse, and treating it as
+        # prose would leak the blob exactly as before.
+        logger.error("orchestrator.unparseable_reply", length=len(raw), json_type="malformed")
+        return _StructuredResponse(reply_text="", actions=[])
+
+    if isinstance(obj, dict):
+        reply = obj.get("reply_text")
+        if isinstance(reply, str) and reply.strip():
+            # Valid JSON, wrong schema (invented `kind`, actions=null, ...).
+            kept = _salvage_actions(obj.get("actions"))
+            logger.warning(
+                "orchestrator.schema_mismatch", keys=sorted(obj)[:8], kept_actions=len(kept)
+            )
+            return _StructuredResponse(reply_text=reply, actions=kept)
+    elif not json_shaped:
+        # A bare JSON scalar — `"Ciao Marco"`, `450` — is the model replying in
+        # prose that happens to parse as JSON. Keep the text it wrote.
         return _StructuredResponse(reply_text=raw, actions=[])
+
+    # JSON-shaped but with no usable text. Never paste it to the customer: an
+    # empty reply_text routes the caller into its courtesy-line fail-safe. Log
+    # the shape only — the blob can carry customer data.
+    logger.error(
+        "orchestrator.unparseable_reply",
+        length=len(raw),
+        json_type=type(obj).__name__,
+        keys=sorted(obj)[:8] if isinstance(obj, dict) else None,
+    )
+    return _StructuredResponse(reply_text="", actions=[])
+
+
+def _salvage_actions(raw_actions: Any) -> list[OrchestratorAction]:
+    """Keep the actions that DO validate instead of discarding the whole list.
+
+    Pydantic aborts the root model on the first bad element, so one invented
+    `kind` alongside a valid `book_slot` used to take the booking down with it —
+    silently, because the surviving `reply_text` is the very holding line the
+    schema hint teaches the model to write. Each kept action is fully valid on
+    its own, and the caller still applies the playbook allowlist afterwards.
+    """
+    if not isinstance(raw_actions, list):
+        return []
+    kept: list[OrchestratorAction] = []
+    for item in raw_actions:
+        with contextlib.suppress(Exception):
+            kept.append(OrchestratorAction.model_validate(item))
+    return kept

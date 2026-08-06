@@ -259,6 +259,7 @@ class PlaygroundRunner:
                 scoring_enabled=playbook.scoring_enabled,
                 directives=playbook.directives,
                 critical_keywords=playbook.critical_keywords,
+                assistant_name=_str(ConfigKey.BOT_ASSISTANT_NAME),
             )
 
             try:

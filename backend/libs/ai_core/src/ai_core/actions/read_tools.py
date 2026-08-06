@@ -9,6 +9,7 @@ messages the customer — that's what makes it safe to run mid-turn.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
@@ -54,11 +55,38 @@ class GhlReadToolExecutor:
     async def execute_read(
         self, action: OrchestratorAction, ctx: ConversationContext
     ) -> ToolResult:
+        # Without these two lines the whole tool-use grounding loop is invisible
+        # in production: nothing records that the model asked for live data, nor
+        # what came back.
+        #
+        # Only the SHAPE of the payload is logged, never its values. The
+        # documented keys are innocuous (calendar id, lookahead window, requested
+        # slot) but `payload` is an unvalidated `dict[str, Any]` filled by the
+        # model, and `json_object` does not enforce the schema — so a key echoing
+        # the customer's own words can appear. structlog goes to stdout AND
+        # becomes a Sentry breadcrumb, neither of which is inside the DSAR
+        # perimeter. `summary` is not logged either: it names appointments.
+        started = time.monotonic()
+        logger.info(
+            "tool.requested",
+            kind=action.kind,
+            payload_keys=sorted(action.payload),
+            merchant_id=str(ctx.merchant_id),
+        )
         if action.kind == "check_availability":
-            return await self._check_availability(action, ctx)
-        if action.kind == "lookup_appointment":
-            return await self._lookup_appointment(ctx)
-        return ToolResult(kind=action.kind, ok=False, summary="Strumento non riconosciuto.")
+            result = await self._check_availability(action, ctx)
+        elif action.kind == "lookup_appointment":
+            result = await self._lookup_appointment(ctx)
+        else:
+            result = ToolResult(kind=action.kind, ok=False, summary="Strumento non riconosciuto.")
+        logger.info(
+            "tool.executed",
+            kind=action.kind,
+            ok=result.ok,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            merchant_id=str(ctx.merchant_id),
+        )
+        return result
 
     # ---- check_availability ----------------------------------------------
 

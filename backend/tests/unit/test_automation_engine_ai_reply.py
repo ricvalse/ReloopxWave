@@ -205,7 +205,14 @@ class _FakeClient:
         self.content = content
         self.model = "fake"
 
-    async def complete(self, *, messages: list, response_format: Any = None) -> Any:
+    async def complete(
+        self,
+        *,
+        messages: list,
+        response_format: Any = None,
+        temperature: float = 0.3,
+        max_tokens: int | None = None,
+    ) -> Any:
         return SimpleNamespace(
             content=self.content, model="fake", tokens_in=1, tokens_out=1, latency_ms=1
         )

@@ -176,6 +176,22 @@ def _extract_media(msg: dict[str, Any], kind: str) -> tuple[str | None, str | No
     )
 
 
+def _location_text(node: dict[str, Any]) -> str | None:
+    """Render a shared location as the turn text.
+
+    Keeps the bracketed shape of the router's media placeholders (so the model
+    reads it as a system note, not as words the customer typed) while carrying
+    the parts it can actually act on. Returns None when the node has nothing
+    useful, leaving the generic placeholder in charge.
+    """
+    lat = node.get("latitude")
+    lon = node.get("longitude")
+    label = ", ".join(str(v) for v in (node.get("name"), node.get("address")) if v)
+    coords = f"{lat}, {lon}" if lat is not None and lon is not None else ""
+    detail = " ".join(p for p in (label, f"({coords})" if coords else "") if p)
+    return f"[Il cliente ha condiviso una posizione: {detail}]" if detail else None
+
+
 def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]:
     """Pulls the `messages[]` out of Meta's nested webhook shape.
 
@@ -202,6 +218,19 @@ def parse_inbound_payload(payload: dict[str, Any]) -> list[WhatsAppInboundEvent]
                         text = interactive.get("button_reply", {}).get("title")
                     elif interactive.get("type") == "list_reply":
                         text = interactive.get("list_reply", {}).get("title")
+                elif kind == "button":
+                    # Quick-reply button on a *template* message — a different
+                    # `type` from `interactive`, with the visible label in
+                    # `button.text`. Without this branch the event carries no
+                    # text and the router drops it outright (there is no
+                    # `button` placeholder): the customer taps "Sì, confermo"
+                    # and the bot never hears it.
+                    text = msg.get("button", {}).get("text")
+                elif kind == "location":
+                    # Coordinates are the only actionable part of a shared pin;
+                    # without this the router's generic placeholder reaches the
+                    # model and the position is lost.
+                    text = _location_text(msg.get("location") or {})
                 elif kind in _MEDIA_KINDS:
                     media_id, media_mime, caption = _extract_media(msg, kind)
                     # The caption is the customer's actual message — surface it as

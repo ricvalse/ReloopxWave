@@ -41,6 +41,7 @@ from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
 from ai_core.router import RoutingRequest
+from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
     AutomationRepository,
@@ -216,6 +217,10 @@ class AiReplyDeps:
     # use-case (e.g. a recruiting reminder never interviews). Defaults to today's
     # sales behavior when unset.
     playbook: PlaybookRuntime = field(default_factory=PlaybookRuntime)
+    # Name the bot answers to, for the trailing identity lock. Resolved here too
+    # and not only on the inbound turn: an automation nudge lands in the same
+    # thread, and a bot that changes name between the two reads as two people.
+    assistant_name: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -786,6 +791,7 @@ async def _do_ai_reply(
         scoring_enabled=pb.scoring_enabled,
         directives=pb.directives,
         critical_keywords=pb.critical_keywords,
+        assistant_name=ai_deps.assistant_name,
     )
     response = await ai_deps.orchestrator.run_proactive(
         conv_ctx,
@@ -917,6 +923,9 @@ async def _build_ai_reply_deps(
     playbook = await resolve_playbook_runtime(
         session, merchant_id, profile_id=run_ctx.profile_id
     )
+    assistant_name = await ConfigResolver(session).resolve(
+        ConfigKey.BOT_ASSISTANT_NAME, merchant_id=merchant_id, profile_id=run_ctx.profile_id
+    )
     return AiReplyDeps(
         orchestrator=runtime.orchestrator,
         dispatcher=runtime.action_dispatcher,
@@ -925,6 +934,7 @@ async def _build_ai_reply_deps(
         hot_threshold=_HOT_SCORE,
         advance_threshold=_ADVANCE_SCORE,
         playbook=playbook,
+        assistant_name=assistant_name if isinstance(assistant_name, str) else None,
     )
 
 

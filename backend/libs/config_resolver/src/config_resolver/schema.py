@@ -149,6 +149,10 @@ class ConfigKey(StrEnum):
     BOT_EMOJI_POLICY = "bot.emoji_policy"
     BOT_GREETING_STYLE = "bot.greeting_style"
     BOT_SIGNATURE = "bot.signature"
+    # Nome con cui l'assistente si presenta. Alimenta il blocco anti-drift in
+    # coda al prompt: senza un nome da difendere il bot adotta quello che trova
+    # nei messaggi scritti a mano dall'operatore. None = non dichiara un nome.
+    BOT_ASSISTANT_NAME = "bot.assistant_name"
     BOT_DO_PHRASES = "bot.do_phrases"
     BOT_DONT_PHRASES = "bot.dont_phrases"
     BOT_EXAMPLES = "bot.examples"
@@ -348,6 +352,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOT_EMOJI_POLICY: "sobrio",
     ConfigKey.BOT_GREETING_STYLE: None,
     ConfigKey.BOT_SIGNATURE: None,
+    ConfigKey.BOT_ASSISTANT_NAME: None,
     ConfigKey.BOT_DO_PHRASES: [],
     ConfigKey.BOT_DONT_PHRASES: [],
     ConfigKey.BOT_EXAMPLES: [],
@@ -486,6 +491,7 @@ class BotSurfaceConfig(_StrictModel):
     emoji_policy: Literal["mai", "sobrio", "libero"] = "sobrio"
     greeting_style: str | None = Field(default=None, max_length=200)
     signature: str | None = Field(default=None, max_length=200)
+    assistant_name: str | None = Field(default=None, max_length=80)
     do_phrases: list[str] = Field(default_factory=list, max_length=10)
     dont_phrases: list[str] = Field(default_factory=list, max_length=10)
     examples: list[BotExample] = Field(default_factory=list, max_length=5)

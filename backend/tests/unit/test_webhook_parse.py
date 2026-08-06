@@ -37,6 +37,77 @@ def test_parse_status_only_returns_empty() -> None:
     assert parse_inbound_payload(payload) == []
 
 
+def _inbound(msg: dict) -> list:
+    return parse_inbound_payload(
+        {
+            "entry": [
+                {"changes": [{"value": {"metadata": {"phone_number_id": "42"}, "messages": [msg]}}]}
+            ]
+        }
+    )
+
+
+def test_parse_template_quick_reply_button() -> None:
+    """A tap on a template's quick-reply arrives as `type: button`, NOT
+    `interactive`. Without its own branch the event carried no text and the
+    router dropped it (no placeholder covers `button`), so the customer's
+    answer never reached the bot."""
+    events = _inbound(
+        {
+            "id": "abc",
+            "from": "39333000000",
+            "type": "button",
+            "button": {"text": "Sì, confermo", "payload": "CONFIRM_YES"},
+        }
+    )
+    assert len(events) == 1
+    assert events[0].text == "Sì, confermo"
+
+
+def test_parse_button_without_text_stays_empty() -> None:
+    events = _inbound({"id": "abc", "from": "39333000000", "type": "button", "button": {}})
+    assert events[0].text is None
+
+
+def test_parse_location_carries_coordinates() -> None:
+    events = _inbound(
+        {
+            "id": "abc",
+            "from": "39333000000",
+            "type": "location",
+            "location": {
+                "latitude": 45.4642,
+                "longitude": 9.19,
+                "name": "Duomo",
+                "address": "Piazza del Duomo, Milano",
+            },
+        }
+    )
+    text = events[0].text
+    assert text is not None
+    assert "Duomo" in text and "45.4642" in text and "9.19" in text
+
+
+def test_parse_location_without_details_falls_back_to_placeholder() -> None:
+    """Nothing useful in the node → leave text None so the router's generic
+    `[Il cliente ha condiviso una posizione]` placeholder still applies."""
+    events = _inbound({"id": "abc", "from": "39333000000", "type": "location", "location": {}})
+    assert events[0].text is None
+
+
+def test_parse_interactive_button_reply_unchanged() -> None:
+    """Regression guard: `interactive` was already handled and must stay so."""
+    events = _inbound(
+        {
+            "id": "abc",
+            "from": "39333000000",
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"title": "Prenota"}},
+        }
+    )
+    assert events[0].text == "Prenota"
+
+
 def test_parse_phone_echo_text() -> None:
     """Coexistence echo: the merchant typed `ok ci sentiamo` from the phone app."""
     payload = {
