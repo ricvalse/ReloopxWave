@@ -20,6 +20,9 @@ from typing import Any
 from uuid import UUID
 
 from db.repositories import BotCorrectionRepository
+from shared import get_logger
+
+logger = get_logger(__name__)
 
 # Default relevance floor + cap, mirroring Amalia (≥0.4 overlap, top 2).
 _MIN_SCORE = 0.4
@@ -81,16 +84,34 @@ async def build_correction_lines(
         corrections = await BotCorrectionRepository(session).list_for_merchant(
             merchant_id, active_only=True
         )
-    except Exception:
+    except Exception as e:
+        # Degrading to "no corrections" is right (a broken lookup must not sink
+        # the turn) but it used to be *silent*, so a merchant reporting "the bot
+        # ignores my fix" was indistinguishable from a missing table, an RLS
+        # denial and a genuine non-match. Log it — this branch means the loop is
+        # off for that merchant, which is worth knowing.
+        logger.warning("uc08.corrections.lookup_failed", merchant_id=str(merchant_id), error=str(e))
         return []
     if not corrections:
         return []
 
     scored = [(score_correction(c.trigger_message, customer_message), c) for c in corrections]
-    scored = [(s, c) for s, c in scored if s >= min_score]
-    scored.sort(key=lambda pair: pair[0], reverse=True)
+    matched = sorted((p for p in scored if p[0] >= min_score), key=lambda pair: -pair[0])
+
+    # One line per turn saying how many active corrections were considered and
+    # how many cleared the floor: the difference between "not stored", "stored
+    # but didn't match this message" and "injected, model ignored it" is
+    # otherwise invisible from the outside.
+    logger.info(
+        "uc08.corrections.matched",
+        merchant_id=str(merchant_id),
+        active=len(corrections),
+        matched=len(matched),
+        injected=min(len(matched), max_matches),
+        top_score=round(matched[0][0], 2) if matched else 0.0,
+    )
 
     return [
         _format_correction(c.trigger_message, c.original_response, c.corrected_response)
-        for _, c in scored[:max_matches]
+        for _, c in matched[:max_matches]
     ]
