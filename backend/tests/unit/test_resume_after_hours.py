@@ -60,7 +60,12 @@ def _patch(
     cleared: list[Any] | None = None,
     sent: list[dict[str, Any]] | None = None,
     events: list[dict[str, Any]] | None = None,
+    claimed: set[Any] | None = None,
+    released: list[Any] | None = None,
 ) -> dict[str, Any]:
+    if claimed is None:
+        claimed = set()
+
     if pending_msgs is None:
         pending_msgs = [
             _Msg("quanto costa il taglio?", wa_id="wa-1", created_at=NOW - timedelta(hours=10)),
@@ -90,6 +95,21 @@ def _patch(
         async def clear_off_hours_pending(self, conversation_id: Any) -> None:
             if cleared is not None:
                 cleared.append(conversation_id)
+
+        async def claim_off_hours_resume(
+            self, conversation_id: Any, pending_since: Any, *, stale_after_minutes: int = 15
+        ) -> bool:
+            # Il claim è atomico a DB: qui lo simuliamo con un insieme, così
+            # una seconda passata sulla stessa riga se lo vede negare.
+            if conversation_id in claimed:
+                return False
+            claimed.add(conversation_id)
+            return True
+
+        async def release_off_hours_resume(self, conversation_id: Any) -> None:
+            claimed.discard(conversation_id)
+            if released is not None:
+                released.append(conversation_id)
 
     class FakeMsgRepo:
         def __init__(self, session: Any) -> None: ...
@@ -299,3 +319,80 @@ async def test_one_bad_candidate_does_not_stop_the_sweep(
 
     assert out["failed"] == 1
     assert out["resumed"] == 1  # il secondo è stato comunque servito
+
+
+@pytest.mark.asyncio
+async def test_two_overlapping_sweeps_reply_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Due passate sovrapposte devono produrre UNA risposta, non due.
+
+    Scenario reale: il lunedì dopo un fine settimana lo sweep ha centinaia di
+    conversazioni da riprendere, una chiamata al modello ciascuna, e il giro
+    dura più dei cinque minuti che separano un tick dal successivo. Senza il
+    claim la seconda passata ritrova le stesse righe ancora marcate e il
+    cliente riceve due risposte alla riapertura.
+    """
+    sent: list[dict[str, Any]] = []
+    claimed: set[Any] = set()
+    cand = _cand()
+
+    # Prima passata: prende in carico ma non arriva a ripulire il marcatore
+    # (è ancora "in volo" quando parte la seconda).
+    ctx = _patch(monkeypatch, candidates=[cand], sent=sent, claimed=claimed, cleared=None)
+    _freeze(monkeypatch)
+    first = await mod.resume_after_hours(ctx)
+
+    # Seconda passata sulla STESSA riga, claim ancora acceso.
+    ctx2 = _patch(monkeypatch, candidates=[cand], sent=sent, claimed=claimed, cleared=None)
+    _freeze(monkeypatch)
+    second = await mod.resume_after_hours(ctx2)
+
+    assert first["resumed"] == 1
+    assert second["resumed"] == 0
+    assert second["already_claimed"] == 1
+    assert len(sent) == 1  # una sola risposta, non due
+
+
+@pytest.mark.asyncio
+async def test_claim_is_released_when_the_send_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un invio fallito rilascia il claim: il tick dopo deve poter riprovare.
+
+    Senza il rilascio la conversazione resterebbe bloccata fino alla scadenza
+    del claim, cioè un quarto d'ora di silenzio in più su una risposta che
+    avevamo promesso.
+    """
+    claimed: set[Any] = set()
+    released: list[Any] = []
+    cleared: list[Any] = []
+    cand = _cand()
+    ctx = _patch(
+        monkeypatch,
+        candidates=[cand],
+        handled=False,
+        reason="auto_reply_off",
+        claimed=claimed,
+        released=released,
+        cleared=cleared,
+    )
+    _freeze(monkeypatch)
+
+    await mod.resume_after_hours(ctx)
+
+    assert released == [cand.conversation_id]
+    assert claimed == set()  # libero per il prossimo tick
+    assert cleared == []  # ma il marcatore resta: la domanda è ancora in attesa
+
+
+@pytest.mark.asyncio
+async def test_cheap_skips_do_not_burn_a_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chi esce prima di inviare non deve lasciare un claim da rilasciare."""
+    claimed: set[Any] = set()
+    ctx = _patch(monkeypatch, candidates=[_cand()], open_now=False, claimed=claimed)
+    _freeze(monkeypatch)
+
+    await mod.resume_after_hours(ctx)
+
+    assert claimed == set()

@@ -70,7 +70,7 @@ async def resume_after_hours(ctx: dict[str, Any]) -> dict[str, Any]:
     logger.info("resume_after_hours.scan", count=len(candidates))
 
     now = datetime.now(tz=UTC)
-    resumed = skipped_closed = skipped_human = expired = failed = 0
+    resumed = skipped_closed = skipped_human = expired = claimed_elsewhere = failed = 0
 
     for cand in candidates:
         try:
@@ -92,6 +92,8 @@ async def resume_after_hours(ctx: dict[str, Any]) -> dict[str, Any]:
                 skipped_human += 1
             case "expired" | "window_expired":
                 expired += 1
+            case "already_claimed":
+                claimed_elsewhere += 1
             case _:
                 failed += 1
 
@@ -101,6 +103,9 @@ async def resume_after_hours(ctx: dict[str, Any]) -> dict[str, Any]:
         "still_closed": skipped_closed,
         "human_replied": skipped_human,
         "expired": expired,
+        # Passata precedente ancora in corso su queste righe. Un valore
+        # stabilmente alto significa che il giro non sta al passo del tick.
+        "already_claimed": claimed_elsewhere,
         "failed": failed,
     }
 
@@ -197,6 +202,24 @@ async def _resume_one(cand: OffHoursPendingCandidate, *, runtime: Runtime, now: 
         texts = [m.content for m in pending if m.content]
         wa_ids = [m.wa_message_id for m in pending if m.wa_message_id]
 
+        # Ultimo passo prima di spendere una chiamata al modello: prendere in
+        # carico la conversazione. Due passate dello sweep possono
+        # sovrapporsi — 500 conversazioni per giro, una chiamata LLM ciascuna,
+        # e il lunedì dopo un fine settimana il giro dura più dei cinque minuti
+        # fra un tick e l'altro — e senza claim il cliente riceverebbe due
+        # risposte alla riapertura invece di una.
+        #
+        # Il claim viene per ultimo di proposito: i controlli qui sopra sono
+        # tutti a costo zero e terminano senza inviare nulla, quindi
+        # prenotarli sarebbe solo un modo per lasciare in giro claim da
+        # rilasciare.
+        if not await convs.claim_off_hours_resume(cand.conversation_id, cand.pending_since):
+            logger.info(
+                "resume_after_hours.already_claimed",
+                conversation_id=str(cand.conversation_id),
+            )
+            return "already_claimed"
+
     # Fuori dalla sessione tenant: `generate_and_send_reply` apre la propria.
     # È la STESSA funzione che usa il flush del debounce, quindi rivaluta da
     # sola su stato fresco tutti i gate (merchant spento, thread in takeover,
@@ -214,12 +237,16 @@ async def _resume_one(cand: OffHoursPendingCandidate, *, runtime: Runtime, now: 
 
     if not result.handled:
         # Il marcatore resta apposta: la prossima passata riproverà. Un invio
-        # fallito non deve consumare l'attesa in silenzio.
+        # fallito non deve consumare l'attesa in silenzio. Il claim invece va
+        # rilasciato subito, altrimenti il ritentativo resterebbe fermo fino
+        # alla sua scadenza.
         logger.info(
             "resume_after_hours.not_handled",
             conversation_id=str(cand.conversation_id),
             reason=result.reason,
         )
+        async with tenant_session(tenant_ctx) as session:
+            await ConversationRepository(session).release_off_hours_resume(cand.conversation_id)
         return result.reason or "not_handled"
 
     async with tenant_session(tenant_ctx) as session:

@@ -709,6 +709,68 @@ class ConversationRepository:
         )
         return result.scalar_one_or_none() is not None
 
+    async def claim_off_hours_resume(
+        self, conversation_id: UUID, pending_since: datetime, *, stale_after_minutes: int = 15
+    ) -> bool:
+        """Prende in carico la ripresa di questa conversazione. Uno solo vince.
+
+        Serve perché due passate dello sweep possono **sovrapporsi**: il giro
+        processa fino a 500 conversazioni in sequenza, ognuna con una chiamata
+        al modello, e il lunedì dopo un fine settimana quel giro dura più dei
+        cinque minuti che separano un tick dal successivo. Senza questo claim
+        la seconda passata ritroverebbe le stesse righe ancora marcate e il
+        cliente riceverebbe **due** risposte alla riapertura — esattamente il
+        contrario di «una risposta sola».
+
+        Il claim scade da solo dopo `stale_after_minutes`: se il worker muore a
+        metà, la ripresa non resta bloccata per sempre e il tick successivo la
+        riprova. È il compromesso giusto nella direzione giusta — nel peggiore
+        dei casi una risposta arriva in ritardo, mai una promessa che evapora.
+
+        `off_hours_pending_at = :pending_since` è un compare-and-swap: se nel
+        frattempo il marcatore è cambiato (episodio chiuso e riaperto), questo
+        candidato è stantio e non deve partire.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = jsonb_set(
+                    coalesce(meta, '{}'::jsonb),
+                    '{off_hours_resume_claimed_at}',
+                    to_jsonb(now()::text)
+                )
+                WHERE id = :conversation_id
+                  AND off_hours_pending_at = :pending_since
+                  AND (
+                        meta->>'off_hours_resume_claimed_at' IS NULL
+                     OR (meta->>'off_hours_resume_claimed_at')::timestamptz
+                        < now() - make_interval(mins => :stale_after)
+                  )
+                RETURNING id
+                """
+            ),
+            {
+                "conversation_id": str(conversation_id),
+                "pending_since": pending_since,
+                "stale_after": stale_after_minutes,
+            },
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def release_off_hours_resume(self, conversation_id: UUID) -> None:
+        """Molla il claim senza toccare il marcatore: la ripresa va riprovata."""
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = coalesce(meta, '{}'::jsonb) - 'off_hours_resume_claimed_at'
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
+
     async def human_replied_since(self, conversation_id: UUID, since: datetime) -> bool:
         """Un operatore in carne e ossa ha scritto su questo thread dopo `since`?
 
@@ -754,16 +816,25 @@ class ConversationRepository:
         return bool((await self._session.execute(stmt)).scalar())
 
     async def clear_off_hours_pending(self, conversation_id: UUID) -> None:
-        """Toglie il marcatore: la conversazione non è più in attesa."""
+        """Chiude l'attesa: via il marcatore e via il claim che lo accompagnava.
+
+        I due vanno insieme. Un claim lasciato indietro sopravviverebbe alla
+        prossima chiusura e, finché non scade, bloccherebbe la ripresa di un
+        episodio che non c'entra nulla con quello appena concluso.
+        """
         await self._session.execute(
-            update(Conversation)
-            .where(Conversation.id == conversation_id)
-            .values(off_hours_pending_at=None)
+            text(
+                """
+                UPDATE conversations
+                SET off_hours_pending_at = NULL,
+                    meta = coalesce(meta, '{}'::jsonb) - 'off_hours_resume_claimed_at'
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
         )
 
-    async def list_off_hours_pending(
-        self, *, limit: int = 500
-    ) -> list[OffHoursPendingCandidate]:
+    async def list_off_hours_pending(self, *, limit: int = 500) -> list[OffHoursPendingCandidate]:
         """Scansione cross-tenant delle conversazioni in attesa di riapertura.
 
         Volutamente *non* filtra per orario: quale merchant sia aperto adesso
