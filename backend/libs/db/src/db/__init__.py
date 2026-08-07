@@ -6,6 +6,7 @@ from db.analytics_events import (
     event_catalog,
 )
 from db.repositories import (
+    ANCHOR_ANY,
     FLOW_FIRST_CONTACT,
     ABRepository,
     AnalyticsRepository,
@@ -68,6 +69,7 @@ __all__ = [
     "EventType",
     "EventTypeDef",
     "event_catalog",
+    "ANCHOR_ANY",
     "FLOW_FIRST_CONTACT",
     "ABRepository",
     "AnalyticsRepository",

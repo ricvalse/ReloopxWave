@@ -13,6 +13,7 @@ from db.repositories.catalog import (
     StorePolicyRepository,
 )
 from db.repositories.conversation import (
+    ANCHOR_ANY,
     ConversationRepository,
     HandoffOverdueCandidate,
     ReminderCandidate,
@@ -53,6 +54,7 @@ from db.repositories.tenant import MerchantRepository, TenantRepository, UserRep
 from db.repositories.whatsapp_template import WhatsAppTemplateRepository
 
 __all__ = [
+    "ANCHOR_ANY",
     "FLOW_FIRST_CONTACT",
     "ABRepository",
     "AnalyticsRepository",

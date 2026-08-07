@@ -188,7 +188,29 @@ def test_default_delay_is_shared_by_both_sweeps() -> None:
     assert close_conversations.DEFAULT_DELAY_MINUTES is no_answer.DEFAULT_DELAY_MINUTES
 
 
-def test_threshold_falls_back_to_the_shared_default() -> None:
+def test_delay_falls_back_to_the_shared_default() -> None:
     trigger = SimpleNamespace(kind="trigger", type="no_answer", config={})
-    flow = SimpleNamespace(nodes=[trigger], edges=[])
-    assert no_answer._threshold_minutes([flow]) == no_answer.DEFAULT_DELAY_MINUTES
+    flow = SimpleNamespace(id=uuid.uuid4(), nodes=[trigger], edges=[])
+    assert no_answer._delay_minutes(flow) == no_answer.DEFAULT_DELAY_MINUTES
+
+
+def test_delay_is_read_per_automation_not_collapsed() -> None:
+    """Il ritardo appartiene alla singola automazione (ADR 0027).
+
+    Era il `min()` fra tutte quelle del merchant: con due automazioni a 60 e 240
+    minuti, l'emissione avveniva a 60 per entrambe e l'ancora si bruciava lì,
+    quindi quella da 240 non partiva mai.
+    """
+
+    def _flow(delay: int) -> Any:
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            nodes=[
+                SimpleNamespace(kind="trigger", type="no_answer", config={"delay_minutes": delay})
+            ],
+            edges=[],
+        )
+
+    breve, lunga = _flow(60), _flow(240)
+    assert no_answer._delay_minutes(breve) == 60
+    assert no_answer._delay_minutes(lunga) == 240
