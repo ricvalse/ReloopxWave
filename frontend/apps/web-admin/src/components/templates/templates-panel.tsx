@@ -3,7 +3,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, CardHeader, CardTitle, PageHeader } from '@reloop/ui';
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  PageHeader,
+  WeeklyHoursEditor,
+} from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { BulkApplyDialog } from '@/components/merchants/bulk-apply-dialog';
 
@@ -15,7 +23,16 @@ type TemplateIn = components['schemas']['TemplateIn'];
 // typed control and toggles a per-key lock (locked_keys). Keys map 1:1 to
 // `BotConfigSchema` dotted paths; the backend still validates on write.
 
-type TKind = 'text' | 'int' | 'float' | 'bool' | 'select' | 'tags' | 'multiselect';
+type TKind =
+  | 'text'
+  | 'int'
+  | 'float'
+  | 'bool'
+  | 'select'
+  | 'tags'
+  | 'multiselect'
+  | 'weekly-hours'
+  | 'textarea';
 type TField = {
   key: string; // dotted path, e.g. "scoring.hot_threshold"
   label: string;
@@ -122,11 +139,24 @@ const TEMPLATE_SECTIONS: TSection[] = [
     ],
   },
   {
-    title: 'Orari',
+    title: 'Orari di risposta',
     fields: [
-      { key: 'schedule.active_hours', label: 'Orari attivi', kind: 'text', placeholder: '24/7 oppure 09:00-18:00' },
-      { key: 'schedule.timezone', label: 'Timezone', kind: 'text', placeholder: 'Europe/Rome' },
-      { key: 'schedule.off_hours_message', label: 'Messaggio fuori orario', kind: 'text' },
+      {
+        key: 'schedule.mode',
+        label: 'Quando risponde',
+        kind: 'select',
+        options: [
+          { value: 'always', label: 'Sempre attivo' },
+          { value: 'business_hours', label: 'Segui gli orari di apertura' },
+          { value: 'custom', label: 'Orari personalizzati' },
+        ],
+      },
+      { key: 'schedule.weekly', label: 'Settimana tipo', kind: 'weekly-hours' },
+      { key: 'schedule.timezone', label: 'Fuso orario', kind: 'text', placeholder: 'Europe/Rome' },
+      { key: 'schedule.off_hours_message', label: 'Messaggio fuori orario', kind: 'textarea' },
+      { key: 'schedule.off_hours_message_once', label: 'Cortesia una volta sola', kind: 'bool' },
+      { key: 'schedule.resume_on_open', label: 'Rispondi alla riapertura', kind: 'bool' },
+      { key: 'schedule.apply_to_automations', label: 'Vale per le automazioni', kind: 'bool' },
     ],
   },
   {
@@ -545,6 +575,32 @@ function TemplateFieldInput({
   onChange: (v: unknown) => void;
 }) {
   const cls = 'h-9 w-full rounded-md border border-input bg-background px-3 text-sm';
+
+  if (field.kind === 'weekly-hours') {
+    // `undefined` = eredita. Il primo tocco materializza la settimana intera,
+    // che è la stessa semantica degli altri campi: un default d'agenzia esiste
+    // solo dopo che qualcuno l'ha impostato.
+    return (
+      <WeeklyHoursEditor
+        value={value}
+        onChange={(next) => onChange(next)}
+        idPrefix={`tpl-${field.key}`}
+      />
+    );
+  }
+
+  if (field.kind === 'textarea') {
+    return (
+      <textarea
+        id={`f-${field.key}`}
+        rows={2}
+        value={value === undefined || value === null ? '' : String(value)}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        placeholder={field.placeholder ?? 'Eredita'}
+        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      />
+    );
+  }
   if (field.kind === 'bool') {
     // Tri-state: '' = inherit (omitted), Sì = true, No = false.
     const sel = value === true ? 'true' : value === false ? 'false' : '';

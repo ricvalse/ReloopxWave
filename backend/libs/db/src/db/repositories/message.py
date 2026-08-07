@@ -53,6 +53,36 @@ class MessageRepository:
         rows.reverse()
         return rows
 
+    async def list_inbound_since(
+        self, conversation_id: UUID, since: datetime, *, limit: int = 20
+    ) -> list[Message]:
+        """I messaggi del cliente arrivati da `since` in poi, in ordine.
+
+        È ciò a cui il bot deve rispondere quando riprende alla riapertura: non
+        l'ultimo messaggio soltanto, ma tutta la raffica notturna. Rispondere
+        solo all'ultimo produce risposte spaiate — «quanto costa?» seguito da
+        «e siete aperti sabato?» riceverebbe un turno sui soli orari.
+
+        `since` è il marcatore `off_hours_pending_at`, scritto con l'orologio
+        del database nella stessa transazione del primo messaggio in attesa:
+        per questo il confronto è `>=` e non `>`, altrimenti il messaggio che
+        ha aperto l'attesa resterebbe escluso proprio dalla ripresa che esiste
+        per lui.
+
+        Servito da `ix_messages_conv_created`.
+        """
+        stmt = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.direction == "in",
+                Message.created_at >= since,
+            )
+            .order_by(Message.created_at)
+            .limit(limit)
+        )
+        return list((await self._session.execute(stmt)).scalars())
+
     async def resolve_reply_target(self, conversation_id: UUID) -> Message | None:
         """L'outbound a cui un inbound in arrivo *adesso* sta rispondendo, se c'è.
 

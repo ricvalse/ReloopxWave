@@ -71,9 +71,29 @@ class ConfigKey(StrEnum):
     AB_MIN_SAMPLE = "ab_test.min_sample"
     AB_THOMPSON_SAMPLING_ENABLED = "ab_test.thompson_sampling_enabled"
 
-    # Schedule
-    SCHEDULE_ACTIVE_HOURS = "schedule.active_hours"
+    # Schedule — quando l'assistente risponde.
+    # `mode` è l'interruttore principale: "always" (sempre attivo, il default),
+    # "business_hours" (segue gli orari di apertura già configurati per le
+    # prenotazioni, pause e chiusure straordinarie incluse) oppure "custom"
+    # (una settimana-tipo tutta sua, in `weekly`). Sostituisce la vecchia
+    # `schedule.active_hours`, che era una stringa a finestra unica uguale per
+    # tutti i sette giorni: non sapeva esprimere né il sabato diverso dal
+    # lunedì né la pausa pranzo. La migrazione 0050 converte i valori salvati.
+    SCHEDULE_MODE = "schedule.mode"
+    SCHEDULE_WEEKLY = "schedule.weekly"
     SCHEDULE_OFF_HOURS_MESSAGE = "schedule.off_hours_message"
+    # Il messaggio di cortesia una volta sola per "episodio" di chiusura invece
+    # che a ogni messaggio: chi scrive tre volte di notte riceveva tre volte
+    # "ti risponderemo al più presto".
+    SCHEDULE_OFF_HOURS_MESSAGE_ONCE = "schedule.off_hours_message_once"
+    # Alla riapertura il bot risponde davvero alla domanda rimasta in sospeso,
+    # invece di lasciarla cadere. False = fuori orario si perde (solo cortesia).
+    SCHEDULE_RESUME_ON_OPEN = "schedule.resume_on_open"
+    # Se il vincolo orario valga anche per gli invii proattivi delle automazioni
+    # (follow-up, riattivazioni, promemoria). Default False: il timing delle
+    # automazioni viene dal grafo (ADR 0011/0014) e sovrascriverlo di default
+    # cambierebbe in silenzio il comportamento di flussi già in produzione.
+    SCHEDULE_APPLY_TO_AUTOMATIONS = "schedule.apply_to_automations"
     SCHEDULE_TIMEZONE = "schedule.timezone"
     # Drop (don't auto-reply to) an inbound older than this many minutes. Guards
     # against the bot answering a stale backlog out of context after downtime.
@@ -303,6 +323,17 @@ STRUCTURAL_METRIC_PRESETS: list[dict[str, Any]] = [
 ]
 
 
+# Settimana-tipo proposta quando il merchant passa a `schedule.mode="custom"`.
+# Non è attiva finché la modalità resta "always": serve solo perché l'editor
+# parta da qualcosa di plausibile invece che da sette giorni vuoti (che
+# significherebbero "il bot non risponde mai").
+# `day`: 0=lunedì … 6=domenica, la stessa convenzione di `BusinessHour`.
+_DEFAULT_WEEKLY_SCHEDULE: list[dict[str, Any]] = [
+    {"day": d, "enabled": d <= 4, "windows": [{"start": "09:00", "end": "18:00"}]}
+    for d in range(7)
+]
+
+
 # Default objection vocabulary (UC-13); merchants can override per-tenant.
 _DEFAULT_OBJECTION_CATEGORIES = [
     "prezzo",
@@ -329,8 +360,12 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCORING_ENABLED: True,
     ConfigKey.AB_DEFAULT_SPLIT: [50, 50],
     ConfigKey.AB_MIN_SAMPLE: 100,
-    ConfigKey.SCHEDULE_ACTIVE_HOURS: "24/7",
+    ConfigKey.SCHEDULE_MODE: "always",
+    ConfigKey.SCHEDULE_WEEKLY: _DEFAULT_WEEKLY_SCHEDULE,
     ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE: "Grazie per averci contattato! Ti risponderemo al più presto.",
+    ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE_ONCE: True,
+    ConfigKey.SCHEDULE_RESUME_ON_OPEN: True,
+    ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS: False,
     ConfigKey.SCHEDULE_TIMEZONE: "Europe/Rome",
     ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
@@ -485,14 +520,104 @@ class ABTestConfig(_StrictModel):
     thompson_sampling_enabled: bool = True
 
 
+_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+class ScheduleWindow(_StrictModel):
+    """Una fascia di apertura, wall-clock locale del merchant.
+
+    `end` minore o uguale a `start` significa che la fascia scavalca la
+    mezzanotte (22:00-06:00), non che è vuota: è il caso dei servizi notturni,
+    ed è gestito dall'evaluator (`ai_core.scheduling`).
+    """
+
+    start: str = Field(pattern=_HHMM)
+    end: str = Field(pattern=_HHMM)
+
+
+class ScheduleDay(_StrictModel):
+    """Un giorno della settimana-tipo. 0=lunedì … 6=domenica.
+
+    `enabled=False` è giorno di chiusura e le finestre vengono ignorate: si
+    conservano così com'erano, in modo che riattivare il giovedì non costringa
+    a riscrivere gli orari che c'erano prima.
+
+    Più finestre nello stesso giorno esprimono la pausa pranzo senza campi
+    dedicati (09:00-13:00 + 15:00-19:00).
+    """
+
+    day: int = Field(ge=0, le=6)
+    enabled: bool = True
+    windows: list[ScheduleWindow] = Field(default_factory=list, max_length=4)
+
+
 class ScheduleConfig(_StrictModel):
-    active_hours: str = "24/7"
-    off_hours_message: str = "Grazie per averci contattato! Ti risponderemo al più presto."
+    """Quando l'assistente risponde.
+
+    `active_hours` (stringa "24/7" | "HH:MM-HH:MM", una sola fascia uguale per
+    tutti i giorni) è stata rimossa: la migrazione 0050 converte i valori
+    salvati in `mode` + `weekly`. Non è stata lasciata come campo inerte perché
+    questo repo ha già pagato il prezzo delle chiavi ancora esposte nel
+    pannello ma non più lette da nessuno (le `no_answer.*`, rimosse in 0048).
+    """
+
+    # "always" = nessun vincolo (comportamento storico di default).
+    # "business_hours" = segue gli orari di apertura del merchant, cioè la
+    #   tabella `business_hours` già usata dal booking — pause pranzo e
+    #   chiusure straordinarie comprese. Zero doppia manutenzione.
+    # "custom" = la settimana-tipo qui sotto, indipendente dalle aperture.
+    mode: Literal["always", "business_hours", "custom"] = "always"
+    weekly: list[ScheduleDay] = Field(
+        default_factory=lambda: [ScheduleDay(**d) for d in _DEFAULT_WEEKLY_SCHEDULE],
+        max_length=7,
+    )
+    off_hours_message: str = Field(
+        "Grazie per averci contattato! Ti risponderemo al più presto.", max_length=500
+    )
+    # Una sola cortesia per episodio di chiusura, non una per messaggio.
+    off_hours_message_once: bool = True
+    # Alla riapertura rispondi davvero a ciò che è rimasto in sospeso.
+    resume_on_open: bool = True
+    # Estendi il vincolo orario anche agli invii proattivi delle automazioni.
+    apply_to_automations: bool = False
     timezone: str = "Europe/Rome"
     # Skip auto-replying to an inbound older than this many minutes (still
     # persisted). 0 = disabled. Defends against answering a stale backlog
     # out of context after the worker was down. Up to 24h.
+    #
+    # Attenzione all'interazione con gli orari: una domanda arrivata a
+    # mezzanotte e ripresa alle 9 è "vecchia" di nove ore. La staleness NON
+    # viene applicata alla ripresa programmata — vale solo per il backlog
+    # accidentale (worker giù), non per un'attesa che abbiamo deciso noi e
+    # annunciato al cliente col messaggio di cortesia.
     inbound_staleness_min: int = Field(10, ge=0, le=1440)
+
+    @field_validator("weekly")
+    @classmethod
+    def _one_entry_per_day(cls, v: list[ScheduleDay]) -> list[ScheduleDay]:
+        days = [d.day for d in v]
+        if len(days) != len(set(days)):
+            dupes = sorted({d for d in days if days.count(d) > 1})
+            raise ValueError(f"giorni duplicati nella settimana-tipo: {dupes}")
+        return v
+
+    # Nessun validator "in custom serve almeno un giorno aperto", benché una
+    # settimana tutta chiusa sia quasi sempre un errore di compilazione.
+    #
+    # Il motivo è che questo modello valida due cose diverse: il bag *parziale*
+    # in scrittura e il bag *risolto* in lettura (`GET /bot-config/{id}/resolved`
+    # lo applica con `extra="forbid"`). Un vincolo che incrocia due campi può
+    # quindi essere soddisfatto da ogni singolo salvataggio e violato dalla loro
+    # somma: l'agenzia salva una `weekly` tutta chiusa mentre il suo `mode` è
+    # ancora "always" (valido), il merchant salva `mode="custom"` ereditando
+    # quella settimana (valido di per sé) — e il bag risolto va in eccezione.
+    # Risultato: 500 sul pannello, e proprio sulla pagina da cui si dovrebbe
+    # correggere l'errore.
+    #
+    # La difesa sta a valle, dove non può bloccare nessuno: `resolve_response_hours`
+    # tratta una settimana vuota come "sempre aperto" e lascia un warning
+    # (`schedule.custom_weekly_empty`). Il posto giusto per avvisare l'utente è
+    # la UI, prima del salvataggio.
 
 
 class RagConfig(_StrictModel):

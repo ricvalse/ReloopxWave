@@ -55,6 +55,11 @@ class EventType(StrEnum):
     # -- Scheduler / lifecycle lead ---------------------------------------
     LEAD_NO_ANSWER = "lead.no_answer"
     LEAD_DORMANT = "lead.dormant"
+    # Domanda arrivata fuori orario che alla riapertura non è più risponibile
+    # in testo libero: la finestra di servizio WhatsApp (24h dall'ultimo
+    # messaggio del cliente) si è chiusa durante l'attesa. Tipico delle
+    # chiusure lunghe, venerdì sera → lunedì mattina.
+    CONVERSATION_RESUME_EXPIRED = "conversation.resume_expired"
 
     # -- Escalation / handoff ---------------------------------------------
     CONVERSATION_ESCALATED = "conversation.escalated"
@@ -232,6 +237,14 @@ EVENT_CATALOG: dict[EventType, EventTypeDef] = {
             EventType.CONVERSATION_HANDOFF_OVERDUE,
             "Handoff oltre SLA",
             "Handoff aperti che hanno superato lo SLA configurato.",
+            EventCategory.ESCALATION,
+            "conversation",
+        ),
+        EventTypeDef(
+            EventType.CONVERSATION_RESUME_EXPIRED,
+            "Ripresa non più possibile",
+            "Domande arrivate fuori orario che alla riapertura erano oltre la "
+            "finestra WhatsApp di 24h: servirebbe un template approvato.",
             EventCategory.ESCALATION,
             "conversation",
         ),

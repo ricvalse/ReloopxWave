@@ -16,6 +16,7 @@ from db.repositories.conversation import (
     ANCHOR_ANY,
     ConversationRepository,
     HandoffOverdueCandidate,
+    OffHoursPendingCandidate,
     ReminderCandidate,
 )
 from db.repositories.flow import (
@@ -75,6 +76,7 @@ __all__ = [
     "GhlSyncEntry",
     "GhlSyncRepository",
     "HandoffOverdueCandidate",
+    "OffHoursPendingCandidate",
     "IntegrationRepository",
     "IntegrationStatus",
     "BusinessClosureRepository",

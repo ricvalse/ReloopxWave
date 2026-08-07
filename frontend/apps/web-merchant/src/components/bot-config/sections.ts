@@ -17,10 +17,16 @@ export type FieldKind =
   | 'select'
   | 'tags'
   | 'multiselect'
-  | 'calendar';
+  | 'calendar'
+  | 'weekly-hours';
 
 /** Controls that need room go under their label; compact ones sit beside it. */
-export const STACKED_KINDS = new Set<FieldKind>(['textarea', 'tags', 'multiselect']);
+export const STACKED_KINDS = new Set<FieldKind>([
+  'textarea',
+  'tags',
+  'multiselect',
+  'weekly-hours',
+]);
 
 // Azioni che il bot può eseguire (ActionKind del backend). Usate dal
 // multiselect "Azioni permesse" del playbook. "none" è sempre implicitamente
@@ -213,11 +219,71 @@ export const SECTIONS: SectionDef[] = [
     section: 'schedule',
     title: 'Orari di risposta',
     nav: 'Orari',
-    description: 'Orari attivi, messaggio fuori orario, timezone.',
+    description:
+      'Quando l’assistente risponde. Fuori dagli orari le domande non si perdono: ' +
+      'il bot risponde appena si rientra, a meno che non abbia già risposto un operatore.',
     fields: [
-      { key: 'schedule.active_hours', label: 'Orari attivi', kind: 'text' },
-      { key: 'schedule.off_hours_message', label: 'Messaggio fuori orario', kind: 'text' },
-      { key: 'schedule.timezone', label: 'Timezone', kind: 'text' },
+      {
+        key: 'schedule.mode',
+        label: 'Quando risponde',
+        kind: 'select',
+        options: [
+          { value: 'always', label: 'Sempre attivo' },
+          { value: 'business_hours', label: 'Segui gli orari di apertura' },
+          { value: 'custom', label: 'Orari personalizzati' },
+        ],
+        help:
+          '«Segui gli orari di apertura» riusa gli orari già inseriti in Prenotazioni, ' +
+          'pause e chiusure comprese: si aggiornano in un posto solo. Scegli «Orari ' +
+          'personalizzati» se l’assistente deve rispondere oltre l’orario di sportello.',
+      },
+      {
+        key: 'schedule.weekly',
+        label: 'Settimana tipo',
+        kind: 'weekly-hours',
+        help:
+          'Usati solo con «Orari personalizzati». Puoi aggiungere una seconda fascia ' +
+          'per la pausa pranzo. Una fascia che finisce prima di quando inizia (es. ' +
+          '22:00 → 06:00) scavalca la mezzanotte.',
+      },
+      {
+        key: 'schedule.off_hours_message',
+        label: 'Messaggio fuori orario',
+        kind: 'textarea',
+        rows: 2,
+        help: 'Lascia vuoto per non mandare nulla fuori orario.',
+      },
+      {
+        key: 'schedule.off_hours_message_once',
+        label: 'Solo al primo messaggio',
+        kind: 'bool',
+        help:
+          'Manda il messaggio di cortesia una volta sola per ogni chiusura, non a ogni ' +
+          'messaggio: chi scrive tre volte di notte riceve una conferma, non tre.',
+      },
+      {
+        key: 'schedule.resume_on_open',
+        label: 'Rispondi alla riapertura',
+        kind: 'bool',
+        help:
+          'Alla riapertura il bot risponde davvero alle domande rimaste in sospeso. ' +
+          'Se nel frattempo ha risposto un operatore, resta zitto. Disattivandolo, ' +
+          'fuori orario resta solo il messaggio di cortesia.',
+      },
+      {
+        key: 'schedule.apply_to_automations',
+        label: 'Vale anche per le automazioni',
+        kind: 'bool',
+        help:
+          'Estende il vincolo orario agli invii automatici (follow-up, riattivazioni). ' +
+          'Normalmente il loro momento di invio è deciso dalla lavagnetta.',
+      },
+      {
+        key: 'schedule.timezone',
+        label: 'Fuso orario',
+        kind: 'text',
+        placeholder: 'Europe/Rome',
+      },
     ],
   },
   {

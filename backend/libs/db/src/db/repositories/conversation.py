@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     cast,
     delete,
+    exists,
     func,
     or_,
     select,
@@ -140,6 +141,23 @@ class HandoffOverdueCandidate:
     lead_id: UUID | None
     handoff_at: datetime
     sla_fired_for: datetime | None
+
+
+@dataclass(slots=True, frozen=True)
+class OffHoursPendingCandidate:
+    """Una conversazione a cui il bot non ha risposto perché era fuori orario.
+
+    Porta con sé tutto ciò che serve a rigenerare il turno senza un nuovo
+    webhook WhatsApp: i due identificativi del canale e l'istante da cui
+    ricostruire "che cosa è rimasto senza risposta".
+    """
+
+    conversation_id: UUID
+    merchant_id: UUID
+    tenant_id: UUID
+    wa_phone_number_id: str
+    wa_contact_phone: str
+    pending_since: datetime
 
 
 class ConversationRepository:
@@ -407,6 +425,16 @@ class ConversationRepository:
                     Conversation.status == "active",
                     Conversation.last_message_at.is_not(None),
                     Conversation.last_message_at < cutoff,
+                    # Una conversazione in attesa della riapertura non è
+                    # silenziosa: è in coda per una risposta che abbiamo
+                    # promesso al cliente. Con la soglia di default (120
+                    # minuti) qualunque domanda arrivata la sera verrebbe
+                    # chiusa nel cuore della notte, e lo sweep di ripresa —
+                    # che guarda solo le `active` — non la troverebbe più.
+                    # Stessa classe di errore dell'ordinamento chiusura /
+                    # follow-up descritto qui sopra: due sweep che si
+                    # calpestano perché nessuno dei due sa dell'altro.
+                    Conversation.off_hours_pending_at.is_(None),
                 )
                 .order_by(Conversation.last_message_at)
                 .limit(limit)
@@ -772,6 +800,213 @@ class ConversationRepository:
             ),
             {"conversation_id": str(conversation_id), "anchor": anchor.isoformat()},
         )
+
+    async def mark_off_hours_pending(self, conversation_id: UUID) -> bool:
+        """Segna che una risposta è stata rimandata alla riapertura.
+
+        `WHERE off_hours_pending_at IS NULL` rende la scrittura un *claim*: se
+        il cliente manda cinque messaggi di notte, il marcatore resta quello
+        del primo. Serve a due cose insieme — il messaggio di cortesia parte
+        una volta sola (chi non vince il claim tace), e alla riapertura lo
+        sweep recupera l'intera raffica invece dell'ultimo messaggio soltanto.
+
+        Il timestamp viene dall'orologio del **database**, non da quello del
+        processo, e va scritto nella stessa transazione che salva il messaggio
+        in arrivo. Dentro una transazione Postgres `now()` è costante: marcatore
+        e `created_at` del messaggio risultano identici, e il confronto
+        `created_at >= off_hours_pending_at` dello sweep include il messaggio
+        che ha aperto l'attesa. Con l'orologio del processo bastava un
+        millisecondo di scarto in avanti perché la domanda da cui è nata tutta
+        l'attesa restasse fuori dalla ripresa.
+
+        Restituisce True solo a chi ha piazzato il marcatore.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET off_hours_pending_at = now()
+                WHERE id = :conversation_id AND off_hours_pending_at IS NULL
+                RETURNING id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def claim_off_hours_resume(
+        self, conversation_id: UUID, pending_since: datetime, *, stale_after_minutes: int = 15
+    ) -> bool:
+        """Prende in carico la ripresa di questa conversazione. Uno solo vince.
+
+        Serve perché due passate dello sweep possono **sovrapporsi**: il giro
+        processa fino a 500 conversazioni in sequenza, ognuna con una chiamata
+        al modello, e il lunedì dopo un fine settimana quel giro dura più dei
+        cinque minuti che separano un tick dal successivo. Senza questo claim
+        la seconda passata ritroverebbe le stesse righe ancora marcate e il
+        cliente riceverebbe **due** risposte alla riapertura — esattamente il
+        contrario di «una risposta sola».
+
+        Il claim scade da solo dopo `stale_after_minutes`: se il worker muore a
+        metà, la ripresa non resta bloccata per sempre e il tick successivo la
+        riprova. È il compromesso giusto nella direzione giusta — nel peggiore
+        dei casi una risposta arriva in ritardo, mai una promessa che evapora.
+
+        `off_hours_pending_at = :pending_since` è un compare-and-swap: se nel
+        frattempo il marcatore è cambiato (episodio chiuso e riaperto), questo
+        candidato è stantio e non deve partire.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = jsonb_set(
+                    coalesce(meta, '{}'::jsonb),
+                    '{off_hours_resume_claimed_at}',
+                    to_jsonb(now()::text)
+                )
+                WHERE id = :conversation_id
+                  AND off_hours_pending_at = :pending_since
+                  AND (
+                        meta->>'off_hours_resume_claimed_at' IS NULL
+                     OR (meta->>'off_hours_resume_claimed_at')::timestamptz
+                        < now() - make_interval(mins => :stale_after)
+                  )
+                RETURNING id
+                """
+            ),
+            {
+                "conversation_id": str(conversation_id),
+                "pending_since": pending_since,
+                "stale_after": stale_after_minutes,
+            },
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def release_off_hours_resume(self, conversation_id: UUID) -> None:
+        """Molla il claim senza toccare il marcatore: la ripresa va riprovata."""
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = coalesce(meta, '{}'::jsonb) - 'off_hours_resume_claimed_at'
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
+
+    async def human_replied_since(self, conversation_id: UUID, since: datetime) -> bool:
+        """Un operatore in carne e ossa ha scritto su questo thread dopo `since`?
+
+        È la condizione che impedisce al bot di rispondere alla riapertura sopra
+        chi ha già risolto la questione durante la chiusura.
+
+        Non basta guardare `sender_type='human'`, per due ragioni indipendenti:
+
+        * **Lo storico è sbagliato.** Fino a poco fa l'endpoint del composer
+          costruiva il messaggio senza passare `sender_type`, quindi prendeva il
+          default della colonna (`'ai'`) e scriveva `'human'` solo dentro `meta`.
+          Tutti i messaggi scritti a mano prima del fix sono indistinguibili dal
+          bot se si guarda la sola colonna. `role='agent'` invece c'è sempre
+          stato — il router lo passa esplicitamente — ed è il discriminante che
+          copre anche il passato.
+        * **`'phone'` conta come umano.** È il merchant che risponde dall'app
+          WhatsApp del telefono (mirroring 360dialog), il modo più comune di
+          rispondere a mano. Non apre un handoff: mette solo una pausa di due
+          ore su `ai_disabled_until`, che dopo una notte di attesa è scaduta da
+          un pezzo. Senza questo ramo il bot riprenderebbe la parola la mattina
+          dopo su una conversazione che un umano aveva già chiuso all'una di
+          notte — esattamente il caso che il requisito vieta.
+
+        Gli altri modi in cui un operatore prende il thread (risposta dal
+        composer, takeover manuale) spengono già `auto_reply` e aprono un
+        handoff, quindi sono esclusi a monte da `list_off_hours_pending`. Questo
+        controllo esiste per il buco che quelli lasciano aperto.
+
+        Servito da `ix_messages_conv_created`.
+        """
+        stmt = select(
+            exists().where(
+                Message.conversation_id == conversation_id,
+                Message.direction == "out",
+                Message.created_at > since,
+                or_(
+                    Message.role == "agent",
+                    Message.sender_type.in_(("human", "phone")),
+                    Message.meta["sender_type"].astext.in_(("human", "phone")),
+                ),
+            )
+        )
+        return bool((await self._session.execute(stmt)).scalar())
+
+    async def clear_off_hours_pending(self, conversation_id: UUID) -> None:
+        """Chiude l'attesa: via il marcatore e via il claim che lo accompagnava.
+
+        I due vanno insieme. Un claim lasciato indietro sopravviverebbe alla
+        prossima chiusura e, finché non scade, bloccherebbe la ripresa di un
+        episodio che non c'entra nulla con quello appena concluso.
+        """
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET off_hours_pending_at = NULL,
+                    meta = coalesce(meta, '{}'::jsonb) - 'off_hours_resume_claimed_at'
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
+
+    async def list_off_hours_pending(self, *, limit: int = 500) -> list[OffHoursPendingCandidate]:
+        """Scansione cross-tenant delle conversazioni in attesa di riapertura.
+
+        Volutamente *non* filtra per orario: quale merchant sia aperto adesso
+        dipende dalla sua cascata di configurazione e dalla sua tabella orari,
+        cioè da dati che questa query non può leggere senza una join per
+        tenant. Il filtro orario lo applica lo sweep, merchant per merchant,
+        su un insieme già ridotto dall'indice parziale.
+
+        Esclude qui, in SQL, i casi in cui il bot non deve comunque parlare —
+        handoff aperto, thread in takeover, conversazione chiusa — così il
+        pool si drena da solo invece di riproporre ogni volta le stesse righe
+        che poi verrebbero scartate in Python. Le più vecchie per prime: se il
+        cap tronca, a restare indietro è chi ha aspettato meno.
+        """
+        stmt = (
+            select(
+                Conversation.id,
+                Conversation.merchant_id,
+                Merchant.tenant_id,
+                Conversation.wa_phone_number_id,
+                Conversation.wa_contact_phone,
+                Conversation.off_hours_pending_at,
+            )
+            .join(Merchant, Merchant.id == Conversation.merchant_id)
+            .where(
+                Conversation.off_hours_pending_at.is_not(None),
+                Conversation.status == "active",
+                Conversation.auto_reply.is_(True),
+                Conversation.wa_phone_number_id.is_not(None),
+                Conversation.wa_contact_phone.is_not(None),
+                _bot_owns_thread(),
+            )
+            .order_by(Conversation.off_hours_pending_at)
+            .limit(limit)
+        )
+        rows = await self._session.execute(stmt)
+        return [
+            OffHoursPendingCandidate(
+                conversation_id=row["id"],
+                merchant_id=row["merchant_id"],
+                tenant_id=row["tenant_id"],
+                wa_phone_number_id=row["wa_phone_number_id"],
+                wa_contact_phone=row["wa_contact_phone"],
+                pending_since=row["off_hours_pending_at"],
+            )
+            for row in rows.mappings()
+        ]
 
     async def update_state(self, conversation_id: UUID, state: str) -> None:
         """Persist the FSM current_state for the conversation."""

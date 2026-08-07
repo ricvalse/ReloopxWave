@@ -42,7 +42,7 @@ from ai_core.rag import (
     kb_all_chunks,
     kb_estimated_tokens,
 )
-from ai_core.scheduling import is_within_active_hours
+from ai_core.response_hours import resolve_response_hours
 from ai_core.scoring import derive_conversation_signals, score_lead
 from ai_core.sentiment import SentimentAnalyzer
 from ai_core.quality.coherence import CoherenceGuard
@@ -320,6 +320,11 @@ class _ReplyContext:
     # continuity directive in `_generate_and_deliver` so the bot continues the
     # automation's thread instead of restarting generically. None otherwise.
     proactive_reply_to: str | None = None
+    # True quando questo turno è la ripresa di una domanda rimasta sospesa
+    # fuori orario. Cambia il prompt: il bot deve riagganciare una
+    # conversazione di ore prima, in cui l'ultima cosa detta dall'attività è
+    # stata "ti rispondiamo appena riapriamo".
+    resumed_after_hours: bool = False
     # Vision attachment resolved for the current turn (customer sent a photo).
     # Loaded from storage in `generate_and_send_reply`; threaded into the
     # orchestrator so the model actually sees the image. None for text turns.
@@ -980,6 +985,23 @@ class ConversationService:
                         stale = True
             auto_reply_on = auto_reply_on and not stale
 
+            # Orari di risposta: fuori dalla finestra il bot tace, ma la domanda
+            # NON si perde. Viene marcata sulla conversazione e ripresa dallo
+            # sweep `resume_after_hours` appena il merchant riapre.
+            #
+            # Il gate sta qui, insieme agli altri, e non più a valle nel
+            # generatore di risposta: là il controllo scattava dopo aver già
+            # costruito prompt e recupero documentale, e soprattutto produceva
+            # una "risposta" sintetica che consumava il turno. Qui è un gate
+            # come gli altri, con il suo `reason`, e il turno resta da fare.
+            #
+            # `resume_on_open=False` significa "fuori orario la domanda cade":
+            # in quel caso non marchiamo niente e resta solo la cortesia.
+            hours = await resolve_response_hours(session, resolved.merchant_id)
+            off_hours = not hours.is_open()
+            would_reply_but_for_hours = auto_reply_on and off_hours
+            auto_reply_on = auto_reply_on and not off_hours
+
             # Unsupported media the bot can't act on (video/document): hand off to
             # a human instead of replying. Persist the inbound, flip the thread to
             # needs-human, and notify — no LLM turn. Exactly-once: a burst of
@@ -1100,6 +1122,40 @@ class ConversationService:
                     await lead_repo.update_intake_score(lead.id, score=intake)
                 # Open/refresh the 24h customer-service window on a new inbound.
                 await convs.touch_last_inbound(conv.id)
+
+                # Fuori orario: metti la conversazione in attesa e — una volta
+                # sola per episodio — manda la cortesia. Il claim del marcatore
+                # è ciò che rende "una volta sola" vero anche con più messaggi
+                # in parallelo: vince una sola scrittura, e solo chi vince
+                # parla. Prima, la cortesia partiva a ogni messaggio, quindi
+                # tre domande notturne producevano tre "ti risponderemo al più
+                # presto" e nessuna risposta vera.
+                if would_reply_but_for_hours:
+                    claimed = (
+                        await convs.mark_off_hours_pending(conv.id)
+                        if hours.resume_on_open
+                        else True
+                    )
+                    should_notify = claimed or not hours.off_hours_message_once
+                    if should_notify and hours.off_hours_message:
+                        await self._send_off_hours_notice(
+                            session=session,
+                            resolved=resolved,
+                            conv=conv,
+                            message=hours.off_hours_message,
+                        )
+                    logger.info(
+                        "uc01.off_hours",
+                        conversation_id=str(conv.id),
+                        merchant_id=str(resolved.merchant_id),
+                        mode=hours.mode,
+                        pending=hours.resume_on_open,
+                        notified=bool(should_notify and hours.off_hours_message),
+                        next_opening=(
+                            no.isoformat() if (no := hours.next_opening()) is not None else None
+                        ),
+                    )
+
                 received_props: dict[str, Any] = {"role": "user", "lead_id": str(lead.id)}
                 if not auto_reply_on:
                     received_props["auto_reply_skipped"] = True
@@ -1112,6 +1168,11 @@ class ConversationService:
                         if soft_paused
                         else "stale"
                         if stale
+                        # Prima di `off_hours` questo ramo ricadeva in
+                        # `conversation_off`, indistinguibile in analytics da un
+                        # thread messo in takeover da un operatore.
+                        else "off_hours"
+                        if off_hours
                         else "conversation_off"
                     )
                 await analytics.emit(
@@ -1190,7 +1251,15 @@ class ConversationService:
             auto_reply_on=auto_reply_on,
             conversation_id=conv_id,
             merchant_id=resolved.merchant_id,
-            reason=None if auto_reply_on else "stale" if stale else "auto_reply_off",
+            reason=(
+                None
+                if auto_reply_on
+                else "stale"
+                if stale
+                else "off_hours"
+                if off_hours
+                else "auto_reply_off"
+            ),
             debounce_window_s=debounce_window_s,
             reply_context=reply_context,
         )
@@ -1203,6 +1272,7 @@ class ConversationService:
         text: str,
         wa_message_id: str | None,
         exclude_wa_message_ids: list[str] | None = None,
+        resumed_after_hours: bool = False,
     ) -> InboundResult:
         """Phase 2/3 for the worker: re-resolve fresh context for `from_phone`
         and generate + deliver a reply to `text` (which may be several coalesced
@@ -1210,6 +1280,10 @@ class ConversationService:
         flush and the inline no-debounce worker path. `exclude_wa_message_ids`
         are dropped from the LLM history so the just-received inbound(s) aren't
         fed twice (once as history, once as the current turn).
+
+        `resumed_after_hours` marca la chiamata che arriva dallo sweep di
+        ripresa: stesso percorso, ma il prompt deve sapere che sta riprendendo
+        una conversazione lasciata in sospeso, non rispondendo a caldo.
         """
         resolved = await self._resolve_integration(phone_number_id)
         if resolved is None:
@@ -1293,6 +1367,7 @@ class ConversationService:
                 latest_wa_message_id=wa_message_id,
                 lead_avg_latency_seconds=lead.avg_response_latency_seconds,
                 proactive_reply_to=_trailing_proactive_text(history),
+                resumed_after_hours=resumed_after_hours,
                 current_image=current_image,
             )
         return await self._generate_and_deliver(rc)
@@ -1537,6 +1612,28 @@ class ConversationService:
                     "prosegui il flusso già avviato."
                 )
 
+            # Ripresa dopo la chiusura. Senza questa istruzione il turno si
+            # presenta come un primo contatto: è passata una notte, l'ultima
+            # cosa che il cliente ha ricevuto è "ti rispondiamo appena
+            # riapriamo", e la macchina a stati è ancora su GREETING perché
+            # nessuna risposta vera è mai partita. Il risultato sarebbe un
+            # «Ciao! Come posso aiutarti?» a una domanda che il cliente ha già
+            # fatto — lo stesso difetto documentato per i messaggi delle
+            # automazioni, qui con l'aggravante di seguire una promessa
+            # esplicita di richiamo.
+            if rc.resumed_after_hours:
+                system_prompt += (
+                    "\n\nRIPRESA DOPO LA CHIUSURA (istruzione prioritaria): il cliente "
+                    "ti ha scritto mentre l'attività era chiusa e ha ricevuto solo un "
+                    "messaggio automatico di cortesia. Stai rispondendo ADESSO, alla "
+                    "riapertura, alla domanda che aveva lasciato in sospeso. NON "
+                    "presentarti, NON salutare come se fosse un primo contatto, NON "
+                    "chiedere «come posso aiutarti»: la richiesta ce l'hai già ed è il "
+                    "messaggio corrente. Entra subito nel merito. Puoi al massimo "
+                    "aprire con una brevissima scusa per l'attesa, se suona naturale, "
+                    "e poi rispondere."
+                )
+
             # S-04: context compression — keep a running summary of the turns that
             # have scrolled out of the verbatim window so long/resumed threads
             # don't silently lose their early context. The history fetch
@@ -1620,79 +1717,69 @@ class ConversationService:
                 ),
             )
 
-            # UC-01 / CC-CONFIG — outside the merchant's active hours, send the
-            # configured off-hours message instead of an LLM reply. Reuses the
-            # normal delivery + scoring path (the synthetic response carries no
-            # actions). Fails open: no/empty message or unparseable hours → reply.
-            off_hours_message = await self._maybe_off_hours_message(session, resolved.merchant_id)
+            # Il controllo orario NON sta più qui. Stava a valle, dopo aver
+            # costruito prompt e recupero documentale, e trasformava la
+            # chiusura in una "risposta" sintetica: il turno risultava
+            # consumato e la domanda del cliente non veniva mai risposta,
+            # nemmeno alla riapertura. Ora è un gate in fase di persistenza
+            # (`handle_inbound_persist`), che marca l'attesa e lascia il turno
+            # allo sweep `resume_after_hours`.
             response: OrchestratorResponse
             llm_failed = False
-            if off_hours_message is not None:
+            try:
+                response = await self._run_orchestrator(session, ctx, rc)
+                # S-04: coherence guard — retry once if the reply contradicts prior facts
+                coherence_enabled = await self._resolve_bool(
+                    session, resolved.merchant_id, ConfigKey.AGENT_COHERENCE_GUARD_ENABLED, default=True
+                )
+                if coherence_enabled:
+                    nano_client = self._rag_llm_client()
+                    if nano_client is not None:
+                        guard = CoherenceGuard(nano_client)
+                        result = await guard.check(effective_history, response.reply_text)
+                        if not result.coherent:
+                            logger.info(
+                                "uc01.coherence_retry",
+                                issue=result.issue,
+                                conversation_id=str(rc.conv_id),
+                            )
+                            response = await self._run_orchestrator(session, ctx, rc)
+            except Exception as e:
+                # Fail-safe: never leave the customer in silence on an LLM
+                # error. Send a courtesy line and hand off to a human (the
+                # escalate_human action below flips the thread + notifies).
+                logger.error(
+                    "uc01.llm_failed_hard",
+                    error=str(e),
+                    merchant_id=str(resolved.merchant_id),
+                    conversation_id=str(rc.conv_id),
+                )
+                llm_failed = True
+                fallback_text = (
+                    await self._resolve_optional_str(
+                        session, resolved.merchant_id, ConfigKey.HANDOFF_MESSAGE
+                    )
+                    or _LLM_FAILURE_MESSAGE
+                )
                 response = OrchestratorResponse(
-                    reply_text=off_hours_message,
-                    model="off_hours",
+                    reply_text=fallback_text,
+                    actions=[
+                        OrchestratorAction(
+                            kind="escalate_human",
+                            payload={
+                                "reason": "ai_error",
+                                "customer_message_summary": (
+                                    "Errore tecnico dell'assistente AI: la conversazione "
+                                    "richiede un operatore umano."
+                                ),
+                            },
+                        )
+                    ],
+                    model="error_fallback",
                     tokens_in=0,
                     tokens_out=0,
                     latency_ms=0,
                 )
-            else:
-                try:
-                    response = await self._run_orchestrator(session, ctx, rc)
-                    # S-04: coherence guard — retry once if the reply contradicts prior facts
-                    coherence_enabled = await self._resolve_bool(
-                        session,
-                        resolved.merchant_id,
-                        ConfigKey.AGENT_COHERENCE_GUARD_ENABLED,
-                        default=True,
-                    )
-                    if coherence_enabled:
-                        nano_client = self._rag_llm_client()
-                        if nano_client is not None:
-                            guard = CoherenceGuard(nano_client)
-                            result = await guard.check(effective_history, response.reply_text)
-                            if not result.coherent:
-                                logger.info(
-                                    "uc01.coherence_retry",
-                                    issue=result.issue,
-                                    conversation_id=str(rc.conv_id),
-                                )
-                                response = await self._run_orchestrator(session, ctx, rc)
-                except Exception as e:
-                    # Fail-safe: never leave the customer in silence on an LLM
-                    # error. Send a courtesy line and hand off to a human (the
-                    # escalate_human action below flips the thread + notifies).
-                    logger.error(
-                        "uc01.llm_failed_hard",
-                        error=str(e),
-                        merchant_id=str(resolved.merchant_id),
-                        conversation_id=str(rc.conv_id),
-                    )
-                    llm_failed = True
-                    fallback_text = (
-                        await self._resolve_optional_str(
-                            session, resolved.merchant_id, ConfigKey.HANDOFF_MESSAGE
-                        )
-                        or _LLM_FAILURE_MESSAGE
-                    )
-                    response = OrchestratorResponse(
-                        reply_text=fallback_text,
-                        actions=[
-                            OrchestratorAction(
-                                kind="escalate_human",
-                                payload={
-                                    "reason": "ai_error",
-                                    "customer_message_summary": (
-                                        "Errore tecnico dell'assistente AI: la conversazione "
-                                        "richiede un operatore umano."
-                                    ),
-                                },
-                            )
-                        ],
-                        model="error_fallback",
-                        tokens_in=0,
-                        tokens_out=0,
-                        latency_ms=0,
-                    )
 
             # Empty-reply guard. Two real sources land here, neither of which
             # raises: `_parse_structured` now yields an empty reply_text instead
@@ -2381,29 +2468,56 @@ class ConversationService:
         """Thin wrapper over the module-level `build_store_policy_lines`."""
         return await build_store_policy_lines(session, merchant_id)
 
-    async def _maybe_off_hours_message(self, session: Any, merchant_id: UUID) -> str | None:
-        """Return the configured off-hours reply if the merchant is outside its
-        active hours right now, else None (bot replies normally). Best-effort:
-        any resolution error → None (fail open)."""
+    async def _send_off_hours_notice(
+        self,
+        *,
+        session: Any,
+        resolved: ResolvedWhatsAppIntegration,
+        conv: Any,
+        message: str,
+    ) -> None:
+        """Manda e registra la cortesia "siamo chiusi, ti rispondiamo dopo".
+
+        Best-effort: se l'invio fallisce non deve far cadere la persistenza del
+        messaggio del cliente né il marcatore di attesa. Perdere la cortesia
+        significa un cliente che aspetta senza conferma; perdere il marcatore
+        significa un cliente che non riceve mai la risposta.
+
+        Il messaggio viene anche persistito, altrimenti in inbox comparirebbe
+        una conversazione in cui il cliente scrive di notte e l'operatore la
+        mattina dopo legge una risposta del bot che non risulta da nessuna
+        parte.
+        """
         try:
-            resolver = ConfigResolver(session)
-            active_hours = await resolver.resolve(
-                ConfigKey.SCHEDULE_ACTIVE_HOURS, merchant_id=merchant_id
+            await self._reply_sender.send(
+                phone_number_id=resolved.phone_number_id,
+                api_key=resolved.api_key,
+                to_phone=conv.wa_contact_phone or "",
+                text=message,
+                waba_base_url=resolved.waba_base_url,
             )
-            tz_name = await resolver.resolve(ConfigKey.SCHEDULE_TIMEZONE, merchant_id=merchant_id)
-            if is_within_active_hours(
-                str(active_hours) if active_hours is not None else None,
-                str(tz_name) if tz_name is not None else None,
-                datetime.now(tz=UTC),
-            ):
-                return None
-            message = await resolver.resolve(
-                ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE, merchant_id=merchant_id
+            await MessageRepository(session).persist_assistant_message(
+                conversation_id=conv.id,
+                merchant_id=resolved.merchant_id,
+                content=message,
+                # Non `ai`: nessun modello ha prodotto questo testo, viene dalla
+                # configurazione. Tenerli distinti evita che la cortesia inquini
+                # le metriche di costo/token e il dataset di fine-tuning.
+                model="off_hours",
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=0,
+                variant_id=conv.variant_id,
+                profile_id=conv.profile_id,
             )
-            return message if isinstance(message, str) and message.strip() else None
+            await ConversationRepository(session).touch_last_message(conv.id)
         except Exception as e:
-            logger.warning("uc01.active_hours_failed", error=str(e), merchant_id=str(merchant_id))
-            return None
+            logger.warning(
+                "uc01.off_hours_notice_failed",
+                error=str(e),
+                conversation_id=str(conv.id),
+                merchant_id=str(resolved.merchant_id),
+            )
 
     async def _resolve_int(
         self, session: Any, merchant_id: UUID, key: ConfigKey, *, default: int

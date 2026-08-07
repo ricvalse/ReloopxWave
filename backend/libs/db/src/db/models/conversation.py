@@ -49,6 +49,18 @@ class Conversation(Base, TimestampMixin):
     # the timestamp passes. Set by phone-echo (merchant typed from their app) and
     # by the operator's timed "disattiva AI per X" toggle.
     ai_disabled_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Risposta rimandata perché il merchant era fuori dai suoi orari (0050).
+    # Contiene l'istante in cui il bot ha deciso di tacere; lo sweep
+    # `resume_after_hours` riparte da lì — sia per capire *cosa* è rimasto
+    # senza risposta (gli inbound successivi a questo timestamp) sia per
+    # sapere se nel frattempo ha già risposto un operatore.
+    #
+    # È un marcatore esplicito e non una condizione dedotta ("l'ultimo
+    # messaggio è del cliente e nessuno ha replicato") di proposito: quella
+    # deduzione pescherebbe anche i thread lasciati in silenzio per tutt'altro
+    # motivo — opt-out, handoff, errore LLM — e il bot si metterebbe a
+    # rispondere a conversazioni che qualcuno aveva deciso di non toccare.
+    off_hours_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Structured human-handoff state (migration 0025) — drives inbox triage,
     # assignment and SLA. `handoff_summary` is the 1-2 sentence brief the AI
     # writes for the operator when it escalates.

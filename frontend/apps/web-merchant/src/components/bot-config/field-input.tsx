@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Input, Select, Switch, Textarea } from '@reloop/ui';
+import { Input, Select, Switch, Textarea, WeeklyHoursEditor } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 import type { FieldDef } from './sections';
@@ -96,6 +96,17 @@ export function FieldInput({
 
   if (field.kind === 'calendar') {
     return <CalendarFieldInput value={value} disabled={disabled} onChange={onChange} />;
+  }
+
+  if (field.kind === 'weekly-hours') {
+    return (
+      <WeeklyHoursEditor
+        value={value}
+        disabled={disabled}
+        onChange={onChange}
+        idPrefix={field.key}
+      />
+    );
   }
 
   if (field.kind === 'tags') {
