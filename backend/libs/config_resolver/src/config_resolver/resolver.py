@@ -32,7 +32,7 @@ CACHE_TTL_SECONDS = 60
 # (`extra="forbid"`) ora rifiuta: senza il bump, `GET /bot-config/{id}/resolved`
 # fallirebbe per i 60 secondi di TTL successivi al deploy.
 # v4: rimozione di `schedule.active_hours`, sostituita da `schedule.mode` +
-# `schedule.weekly` (orari di risposta, ADR 0027). Stessa ragione della v3, su
+# `schedule.weekly` (orari di risposta, ADR 0028). Stessa ragione della v3, su
 # una chiave diversa — ed è il motivo per cui il suffisso va **sempre** alzato e
 # mai riusato: le due rimozioni sono nate su rami paralleli e avrebbero
 # rivendicato entrambe la v3, lasciando i bag di una delle due raggiungibili.

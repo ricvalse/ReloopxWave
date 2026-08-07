@@ -1,4 +1,4 @@
-# ADR 0027 — Orari di risposta dell'assistente
+# ADR 0028 — Orari di risposta dell'assistente
 
 **Stato:** accettata — 2026-08-05
 **Contesto:** UC-01, CC-CONFIG
