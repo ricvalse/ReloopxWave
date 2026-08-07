@@ -4,8 +4,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
-from db.models import KnowledgeBaseDoc
+from db.models import KBChunk, KnowledgeBaseDoc
 
 
 class KnowledgeBaseRepository:
@@ -35,6 +36,51 @@ class KnowledgeBaseRepository:
 
     async def get(self, doc_id: UUID) -> KnowledgeBaseDoc | None:
         return await self._session.get(KnowledgeBaseDoc, doc_id)
+
+    async def get_for_merchant(self, merchant_id: UUID, doc_id: UUID) -> KnowledgeBaseDoc | None:
+        """Come ``get``, ma scoped sul merchant.
+
+        ``get`` si affida alla sola RLS della sessione: sicuro dentro
+        ``tenant_session``, non dentro ``session_scope()`` admin. Qui replichiamo
+        il check esplicito di ``delete_doc`` così i chiamanti possono rispondere
+        404 su un doc di un altro merchant.
+        """
+        doc = await self._session.get(KnowledgeBaseDoc, doc_id)
+        if doc is None or doc.merchant_id != merchant_id:
+            return None
+        return doc
+
+    async def list_chunks(
+        self,
+        merchant_id: UUID,
+        doc_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[KBChunk]:
+        """I chunk indicizzati di un doc, in ordine di documento.
+
+        È il testo che il bot legge davvero (l'originale su Storage non è la
+        stessa cosa: estrazione + normalizzazione sono lossy). Paginato perché
+        un PDF da 20 MB può produrre qualche migliaio di chunk.
+        """
+        stmt = (
+            select(KBChunk)
+            # Senza `load_only` la SELECT tira giù anche `embedding` (1536 float
+            # per riga) per poi buttarlo: ~200 righe = qualche MB sul pooler.
+            .options(
+                load_only(
+                    KBChunk.chunk_index,
+                    KBChunk.content,
+                    KBChunk.tokens,
+                )
+            )
+            .where(KBChunk.doc_id == doc_id, KBChunk.merchant_id == merchant_id)
+            .order_by(KBChunk.chunk_index)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).scalars())
 
     async def list_for_merchant(self, merchant_id: UUID) -> list[KnowledgeBaseDoc]:
         stmt = (
