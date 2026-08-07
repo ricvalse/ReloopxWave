@@ -167,23 +167,42 @@ const TEMPLATE_SECTIONS: TSection[] = [
     ],
   },
   {
-    title: 'Escalation / Privacy',
+    title: 'Handoff / Privacy',
     fields: [
-      { key: 'escalation.enabled', label: 'Escalation attiva', kind: 'bool' },
+      { key: 'handoff.enabled', label: 'Handoff attivo', kind: 'bool' },
       {
-        key: 'escalation.critical_keywords',
-        label: 'Parole chiave critiche (una per riga)',
+        key: 'handoff.instructions.mode',
+        label: 'Criteri di handoff',
+        kind: 'select',
+        options: [
+          { value: 'extend', label: 'Aggiungi ai predefiniti' },
+          { value: 'replace', label: 'Sostituisci i predefiniti' },
+        ],
+      },
+      {
+        key: 'handoff.instructions.criteria',
+        label: 'Passa a un operatore quando… (uno per riga)',
         kind: 'tags',
       },
       {
-        key: 'escalation.sla_minutes',
+        key: 'handoff.instructions.exclusions',
+        label: 'NON passare quando… (uno per riga)',
+        kind: 'tags',
+      },
+      {
+        key: 'handoff.critical_keywords',
+        label: 'Parole chiave critiche (una per riga) — scelgono il modello, non l’handoff',
+        kind: 'tags',
+      },
+      {
+        key: 'handoff.sla_minutes',
         label: 'SLA handoff (min)',
         kind: 'int',
         min: 1,
         max: 1440,
       },
       {
-        key: 'escalation.phone_echo_pause_minutes',
+        key: 'handoff.phone_echo_pause_minutes',
         label: 'Pausa bot dopo risposta dal telefono (min)',
         kind: 'int',
         min: 5,

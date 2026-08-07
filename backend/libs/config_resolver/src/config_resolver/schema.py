@@ -10,14 +10,28 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class _StrictModel(BaseModel):
     """Base for every config section: `extra='forbid'` so an unknown/typo'd key
-    is rejected on write instead of being silently dropped (UC-10)."""
+    is rejected on write instead of being silently dropped (UC-10).
 
-    model_config = ConfigDict(extra="forbid")
+    `populate_by_name` serve agli alias di compatibilità del rename
+    escalation → handoff (ADR 0026): i campi rinominati dichiarano un
+    `validation_alias` con il nome vecchio, e senza questo flag il nome NUOVO
+    smetterebbe di essere accettato — l'alias sostituisce il nome del campo
+    invece di affiancarlo.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 class ConfigKey(StrEnum):
@@ -78,23 +92,32 @@ class ConfigKey(StrEnum):
     BOT_LANGUAGE = "bot.language"
     BOT_TONE = "bot.tone"
 
-    # Escalation
-    ESCALATION_ENABLED = "escalation.enabled"
-    ESCALATION_HANDOFF_MESSAGE = "escalation.handoff_message"
-    ESCALATION_SILENT_HANDOFF = "escalation.silent_handoff"
-    # Keywords that force the escalation-model route (spec 6.7). None = use the
+    # Handoff (ex "escalation" — ADR 0026: un nome solo in tutta la piattaforma)
+    HANDOFF_ENABLED = "handoff.enabled"
+    HANDOFF_MESSAGE = "handoff.message"
+    HANDOFF_SILENT = "handoff.silent"
+    # Keywords that force the handoff-model route (spec 6.7). None = use the
     # code default vocabulary (CRITICAL_KEYWORDS). A tenant whose domain reuses a
     # default word innocently (e.g. "concorrenza" in recruiting) can override it.
-    ESCALATION_CRITICAL_KEYWORDS = "escalation.critical_keywords"
+    # NB: forzano il modello più capace, NON l'handoff — vedi `handoff.instructions.*`
+    # per i criteri che decidono davvero il passaggio a un operatore.
+    HANDOFF_CRITICAL_KEYWORDS = "handoff.critical_keywords"
     # Minuti oltre i quali un handoff ancora aperto è "in ritardo": il cron
     # `handoff_sla_sweep` emette `conversation.handoff_overdue`, che è ciò che
     # fa scattare l'avviso all'operatore (es. il nodo Slack). Era una variabile
     # d'ambiente globale — stesso valore per ogni merchant della piattaforma —
     # e nessun merchant poteva adattarla ai propri orari di presidio.
-    ESCALATION_SLA_MINUTES = "escalation.sla_minutes"
+    HANDOFF_SLA_MINUTES = "handoff.sla_minutes"
     # Minuti di silenzio del bot dopo che un umano ha scritto dall'app del
     # telefono (mirroring 360dialog Coexistence). Era hardcoded a 2 ore.
-    ESCALATION_PHONE_ECHO_PAUSE_MINUTES = "escalation.phone_echo_pause_minutes"
+    HANDOFF_PHONE_ECHO_PAUSE_MINUTES = "handoff.phone_echo_pause_minutes"
+    # Istruzioni di handoff iniettate nel prompt (ADR 0026). Prima i criteri
+    # erano tre, cablati in `orchestrator._ACTION_SNIPPETS`, e l'unico modo di
+    # correggere un falso positivo era una modifica al codice: da qui il
+    # merchant estende o sostituisce i criteri e dichiara le eccezioni.
+    HANDOFF_INSTRUCTIONS_MODE = "handoff.instructions.mode"
+    HANDOFF_INSTRUCTIONS_CRITERIA = "handoff.instructions.criteria"
+    HANDOFF_INSTRUCTIONS_EXCLUSIONS = "handoff.instructions.exclusions"
 
     # Privacy
     PRIVACY_RETENTION_MONTHS = "privacy.retention_months"
@@ -322,12 +345,15 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.RAG_FRESHNESS_DECAY: 0.01,
     ConfigKey.BOT_LANGUAGE: "it",
     ConfigKey.BOT_TONE: "professionale-amichevole",
-    ConfigKey.ESCALATION_ENABLED: True,
-    ConfigKey.ESCALATION_HANDOFF_MESSAGE: None,
-    ConfigKey.ESCALATION_SILENT_HANDOFF: False,
-    ConfigKey.ESCALATION_CRITICAL_KEYWORDS: None,
-    ConfigKey.ESCALATION_SLA_MINUTES: 15,
-    ConfigKey.ESCALATION_PHONE_ECHO_PAUSE_MINUTES: 120,
+    ConfigKey.HANDOFF_ENABLED: True,
+    ConfigKey.HANDOFF_MESSAGE: None,
+    ConfigKey.HANDOFF_SILENT: False,
+    ConfigKey.HANDOFF_CRITICAL_KEYWORDS: None,
+    ConfigKey.HANDOFF_SLA_MINUTES: 15,
+    ConfigKey.HANDOFF_PHONE_ECHO_PAUSE_MINUTES: 120,
+    ConfigKey.HANDOFF_INSTRUCTIONS_MODE: "extend",
+    ConfigKey.HANDOFF_INSTRUCTIONS_CRITERIA: [],
+    ConfigKey.HANDOFF_INSTRUCTIONS_EXCLUSIONS: [],
     ConfigKey.PRIVACY_RETENTION_MONTHS: 24,
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
@@ -400,7 +426,15 @@ class BotConfigSchema(_StrictModel):
     schedule: ScheduleConfig = Field(default_factory=lambda: ScheduleConfig())
     rag: RagConfig = Field(default_factory=lambda: RagConfig())
     bot: BotSurfaceConfig = Field(default_factory=lambda: BotSurfaceConfig())
-    escalation: EscalationConfig = Field(default_factory=lambda: EscalationConfig())
+    # `escalation` è il nome storico della sezione (ADR 0026). L'alias non è
+    # cosmetico: `extra="forbid"` rifiuterebbe un bag legacy, e il pannello
+    # merchant rispedisce l'INTERO bag a ogni salvataggio — ogni merchant con
+    # una personalizzazione di handoff salvata prima del rename avrebbe visto
+    # un 422 al primo salvataggio successivo, su qualunque campo.
+    handoff: HandoffConfig = Field(
+        default_factory=lambda: HandoffConfig(),
+        validation_alias=AliasChoices("handoff", "escalation"),
+    )
     privacy: PrivacyConfig = Field(default_factory=lambda: PrivacyConfig())
     booking: BookingConfig = Field(default_factory=lambda: BookingConfig())
     lead_capture: LeadCaptureConfig = Field(default_factory=lambda: LeadCaptureConfig())
@@ -518,14 +552,55 @@ class BusinessConfig(_StrictModel):
     website: str | None = Field(default=None, max_length=300)
 
 
-class EscalationConfig(_StrictModel):
+class HandoffInstructionsConfig(_StrictModel):
+    """Criteri ed eccezioni di handoff, iniettati nel prompt (ADR 0026).
+
+    Prima erano tre criteri cablati in `orchestrator._ACTION_SNIPPETS` e una
+    sola eccezione (i media), anch'essa cablata: correggere un falso positivo
+    — "«voglio parlare con qualcuno» qui non significa handoff", "«reclamo» nel
+    nostro settore è un termine tecnico" — richiedeva una modifica al codice e
+    valeva per tutti i merchant insieme. Qui il merchant descrive i propri casi
+    in linguaggio naturale, una riga per criterio.
+    """
+
+    # "extend" (default) = i criteri del merchant si SOMMANO ai tre di sistema.
+    # "replace" = li sostituiscono del tutto, per i settori in cui i default
+    # sono rumore (assistenza reclami, recupero crediti, legale…).
+    mode: Literal["extend", "replace"] = "extend"
+    # Quando alzare la mano. Righe in linguaggio naturale.
+    criteria: list[str] = Field(default_factory=list, max_length=20)
+    # Quando NON alzarla: la generalizzazione della nota "un media da solo non
+    # è un motivo di handoff". Rese come blocco negativo ad alta salienza.
+    exclusions: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("criteria", "exclusions", mode="after")
+    @classmethod
+    def _clean_lines(cls, v: list[str]) -> list[str]:
+        """Scarta righe vuote e taglia gli spazi.
+
+        Una riga vuota diventerebbe un punto elenco vuoto nel prompt — rumore
+        che il modello legge come un criterio senza contenuto. La textarea della
+        UI produce righe vuote con naturalezza (un invio di troppo), quindi la
+        pulizia va fatta qui, non nel frontend.
+        """
+        return [line.strip() for line in v if line and line.strip()]
+
+
+class HandoffConfig(_StrictModel):
     enabled: bool = True
     # Fixed message sent to the customer on handoff. None → keep the LLM's line.
-    handoff_message: str | None = Field(default=None, max_length=1000)
+    # L'alias accetta il nome storico `handoff_message`: dentro una sezione già
+    # chiamata `handoff` il prefisso era ridondante.
+    message: str | None = Field(
+        default=None,
+        max_length=1000,
+        validation_alias=AliasChoices("message", "handoff_message"),
+    )
     # When true, hand off silently (no customer-facing message at all).
-    silent_handoff: bool = False
-    # Keywords that force the escalation model route. None = code default
-    # vocabulary (CRITICAL_KEYWORDS). [] = disable keyword-forced escalation.
+    silent: bool = Field(default=False, validation_alias=AliasChoices("silent", "silent_handoff"))
+    # Keywords that force the more capable model route. None = code default
+    # vocabulary (CRITICAL_KEYWORDS). [] = disable keyword-forced routing.
+    # NB: non provocano l'handoff, scelgono solo il modello.
     critical_keywords: list[str] | None = Field(default=None, max_length=40)
     # Soglia di "handoff in ritardo". Il minimo di 1 minuto è deliberato: sotto
     # lo zero il cutoff finirebbe nel futuro (`now - -5min`) e ogni handoff
@@ -534,6 +609,9 @@ class EscalationConfig(_StrictModel):
     sla_minutes: int = Field(15, ge=1, le=1440)
     # Quanto il bot resta zitto dopo un messaggio scritto a mano dal telefono.
     phone_echo_pause_minutes: int = Field(120, ge=5, le=10080)
+    instructions: HandoffInstructionsConfig = Field(
+        default_factory=lambda: HandoffInstructionsConfig()
+    )
 
 
 class PrivacyConfig(_StrictModel):

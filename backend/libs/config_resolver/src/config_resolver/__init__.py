@@ -5,6 +5,8 @@ from config_resolver.presets import (
     TonePreset,
 )
 from config_resolver.resolver import (
+    LEGACY_KEY_ALIASES,
+    LEGACY_KEY_ALIASES_INVERTED,
     ConfigResolver,
     get_shared_redis,
     resolve,
@@ -19,6 +21,8 @@ from config_resolver.schema import (
 )
 
 __all__ = [
+    "LEGACY_KEY_ALIASES",
+    "LEGACY_KEY_ALIASES_INVERTED",
     "SUGGESTED_RULES",
     "SYSTEM_DEFAULTS",
     "TONE_PRESETS",

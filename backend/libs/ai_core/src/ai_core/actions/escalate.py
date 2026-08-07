@@ -55,7 +55,7 @@ class EscalateHumanHandler:
         async with tenant_session(worker_ctx) as session:
             config = ConfigResolver(session)
             enabled = await config.resolve(
-                ConfigKey.ESCALATION_ENABLED, merchant_id=turn_ctx.merchant_id
+                ConfigKey.HANDOFF_ENABLED, merchant_id=turn_ctx.merchant_id
             )
             # Only skip when explicitly disabled — escalating is the safe default
             # (better to hand a hot/angry lead to a human than to miss it).

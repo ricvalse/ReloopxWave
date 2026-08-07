@@ -16,10 +16,11 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-# Sentence splitter: a run of non-terminators followed by terminators (and the
-# trailing whitespace), or a trailing run with no terminator. Unicode-aware so
-# Italian punctuation and the ellipsis char are handled.
-_SENTENCE_RE = re.compile(r"[^.!?…]+[.!?…]+(?:\s|$)|[^.!?…]+$", re.UNICODE)
+# Sentence BOUNDARY: a run of terminators followed by whitespace or end of
+# string. Unicode-aware so Italian punctuation and the ellipsis char are
+# handled. We use it to *cut* the paragraph, never to *match* its sentences —
+# see `_split_sentences` for why that distinction is load-bearing.
+_SENTENCE_END_RE = re.compile(r"[.!?…]+(?=\s|$)", re.UNICODE)
 _PARAGRAPH_RE = re.compile(r"\n{2,}")
 # A bullet or numbered item ("- taglio", "1) piega", "• colore").
 _BULLET_RE = re.compile(r"^\s*(?:[-–—•*▪·]|\(?\d{1,2}[.)])\s+", re.UNICODE)  # noqa: RUF001 - en/em dash are real bullet markers
@@ -81,6 +82,35 @@ def _ends_with_abbreviation(text: str) -> bool:
     return token in _ABBREVIATIONS
 
 
+def _split_sentences(para: str) -> list[str]:
+    """Cut `para` into sentences without ever losing a character.
+
+    This used to scan with `finditer` over a pattern that *matched* whole
+    sentences. `finditer` silently skips whatever it cannot match, and that
+    pattern can never match a span containing a period that isn't followed by
+    whitespace — an email, a URL, a decimal price, "P.IVA". So the engine
+    walked past everything up to that period and dropped it: a reply ending in
+    "info@studiobellezza.eu" was delivered as the bare TLD, "eu". The message
+    row kept the full text, so the loss was visible only to the customer.
+
+    Cutting at boundaries instead is lossless by construction: the pieces
+    concatenate back to the input, modulo the whitespace we strip between them.
+    A period not followed by whitespace is simply not a boundary, so it stays
+    inside its sentence where it belongs.
+    """
+    parts: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(para):
+        chunk = para[start : match.end()].strip()
+        if chunk:
+            parts.append(chunk)
+        start = match.end()
+    tail = para[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 def _merge_abbreviation_splits(sentences: list[str]) -> list[str]:
     """Re-join sentences the splitter cut after an abbreviation."""
     merged: list[str] = []
@@ -140,8 +170,7 @@ def _atomic_units(text: str, max_chars: int) -> list[str]:
         if len(para) <= max_chars or _holds_list(para):
             units.append(para)
             continue
-        sentences = [m.group().strip() for m in _SENTENCE_RE.finditer(para)]
-        sentences = _merge_abbreviation_splits([s for s in sentences if s])
+        sentences = _merge_abbreviation_splits(_split_sentences(para))
         units.extend(sentences or [para])
     return units
 

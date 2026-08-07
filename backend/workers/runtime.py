@@ -27,6 +27,7 @@ from ai_core.actions import (
     RescheduleSlotHandler,
     UpdateScoreHandler,
 )
+from ai_core.orchestrator import normalize_action_kind
 from ai_core.rag import Embedder
 from integrations import build_whatsapp_sender
 from shared import Settings, get_logger
@@ -158,8 +159,13 @@ def build_runtime(settings: Settings) -> Runtime:
     dispatcher.register(update_score.kind, update_score)
 
     # Escalation — human takeover when the lead is angry / asks for a person.
+    # Registrato sotto ENTRAMBI i nomi: l'ADR 0026 ha rinominato l'azione in
+    # `handoff_human` e il parse normalizza subito, ma l'handler era registrato
+    # solo col nome storico — il dispatcher fa lookup esatto e scarta gli
+    # sconosciuti a livello debug, quindi l'handoff era diventato un no-op muto.
     escalate = EscalateHumanHandler()
     dispatcher.register(escalate.kind, escalate)
+    dispatcher.register(normalize_action_kind(escalate.kind), escalate)
 
     # UC-07 — embedder shared across conversation turns and the indexer job.
     embedder = (

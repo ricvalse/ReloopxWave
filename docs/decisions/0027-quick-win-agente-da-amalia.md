@@ -1,4 +1,4 @@
-# ADR 0026 — Quick win sull'agente portati da Amalia: contenimento dell'output del modello, stato reale dei messaggi, stile WhatsApp
+# ADR 0027 — Quick win sull'agente portati da Amalia: contenimento dell'output del modello, stato reale dei messaggi, stile WhatsApp
 
 Data: 2026-08-05
 Stato: accettato
@@ -190,6 +190,37 @@ messaggi di fila»: lì non è arrivato nulla, e chiederlo contraddice la dirett
 * `agent.max_tool_iterations`: il fallback di codice passa da `1` a `3`, per
   allinearsi a `SYSTEM_DEFAULTS`. Quel default scatta solo se il resolver
   solleva, e `1` significava tool-use acceso con vicolo cieco garantito.
+
+### 7. Il rename dell'ADR 0026 aveva staccato l'handoff (corretto qui)
+
+Emerso mergiando: l'ADR 0026 rinomina `escalate_human` in `handoff_human` e fa
+normalizzare i nomi **subito dopo il parse**, ma i due consumatori a valle
+confrontavano ancora il nome storico. Dopo la normalizzazione nessuno
+riconosceva più l'azione:
+
+* `conversation_service` cercava `a.kind == "escalate_human"` → l'azione non
+  veniva mai trovata, quindi niente `claim_handoff`, niente takeover, niente
+  notifica Slack, niente SLA;
+* il dispatcher era registrato sotto `escalate_human` e fa lookup esatto,
+  scartando gli sconosciuti a livello **debug** (`action.no_handler`) → l'handler
+  non partiva e non lo diceva a nessuno.
+
+Effetto: sul `main` corrente l'handoff dell'AI era **completamente morto** — un
+cliente che chiede un operatore non otteneva nulla. Il rename era coperto solo da
+test su `render_schema_hint` e su `normalize_action_kind`, mai sul percorso di
+dispatch, e per questo era passato con la suite verde.
+
+Correzione minima e additiva, per non toccare il design dell'ADR 0026: i
+confronti passano da un nome singolo a `_HANDOFF_ACTION_KINDS` (entrambi i nomi)
+e il dispatcher registra l'handler sotto entrambe le chiavi. Così funzionano
+anche le allowlist già salvate dai merchant, che contengono il nome storico. Il
+test `test_handoff_survives_the_rename_end_to_end` copre il percorso completo.
+
+Nello stesso merge, `mypy` ha intercettato un secondo effetto del rename nel
+codice di questo ADR: il gate sulla risposta vuota usava
+`ConfigKey.ESCALATION_HANDOFF_MESSAGE`, chiave non più esistente (ora
+`HANDOFF_MESSAGE`) — sarebbe esploso con `AttributeError` proprio sul percorso di
+degradazione che deve essere il più affidabile di tutti.
 
 ## Conseguenze
 

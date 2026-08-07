@@ -89,6 +89,30 @@ def test_one_invented_kind_does_not_kill_the_valid_actions() -> None:
     assert [a.kind for a in parsed.actions] == ["book_slot"]
 
 
+def test_handoff_survives_the_rename_end_to_end() -> None:
+    """ADR 0026 rinomina `escalate_human` in `handoff_human` e normalizza subito
+    dopo il parse, ma i consumatori confrontavano ancora il nome storico: dopo la
+    normalizzazione nessuno riconosceva più l'azione, `claim_handoff` non partiva
+    e il dispatcher scartava l'handler in silenzio. Il rename era coperto solo da
+    test sullo schema hint, mai sul percorso di dispatch — questo lo copre."""
+    from ai_core.actions.escalate import EscalateHumanHandler
+    from ai_core.conversation_service import _HANDOFF_ACTION_KINDS
+    from ai_core.orchestrator import normalize_action_kind
+
+    for emitted in ("escalate_human", "handoff_human"):
+        raw = json.dumps({"reply_text": "Ti passo un collega", "actions": [{"kind": emitted}]})
+        kinds = [a.kind for a in _parse_structured(raw).actions]
+        assert kinds == ["handoff_human"], f"{emitted} non normalizzato"
+        # la handoff policy deve riconoscerla...
+        assert kinds[0] in _HANDOFF_ACTION_KINDS
+        # ...e il dispatcher deve avere una chiave che la raccoglie
+        registered = {
+            EscalateHumanHandler.kind,
+            normalize_action_kind(EscalateHumanHandler.kind),
+        }
+        assert kinds[0] in registered
+
+
 def test_bare_json_string_is_treated_as_prose() -> None:
     """Il modello che risponde con una stringa quotata sta rispondendo in prosa
     che per caso è JSON valido: `json.loads` riesce, quindi il ramo prosa non
