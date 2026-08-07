@@ -380,6 +380,15 @@ _SENTIMENT_POSITIVE_NO_BOOKING = (
 # the fallback failed, or any unexpected exception), the customer must still get
 # something rather than silence — we send this and hand the thread to a human.
 # Mirrors Amalia's `handle_ai_conversation_safe`.
+# Entrambi i nomi dell'azione di handoff. L'ADR 0026 ha rinominato
+# `escalate_human` in `handoff_human` e fa normalizzare il parse subito dopo la
+# lettura, ma i consumatori a valle confrontavano ancora il nome storico: dopo la
+# normalizzazione nessuno riconosceva più l'azione, quindi `claim_handoff` non
+# veniva mai chiamato e il dispatcher scartava l'handler in silenzio
+# (`action.no_handler`, livello debug). Confrontare contro l'insieme rende il
+# percorso indifferente al nome, incluse le allowlist già salvate dai merchant.
+_HANDOFF_ACTION_KINDS: frozenset[str] = frozenset({"handoff_human", "escalate_human"})
+
 _LLM_FAILURE_MESSAGE = (
     "Grazie per il tuo messaggio! Lo passo subito a un nostro operatore che ti "
     "risponderà a brevissimo."
@@ -1700,6 +1709,9 @@ class ConversationService:
                 directives=caps.directives,
                 critical_keywords=caps.critical_keywords,
                 current_image=rc.current_image,
+                assistant_name=await self._resolve_optional_str(
+                    session, resolved.merchant_id, ConfigKey.BOT_ASSISTANT_NAME
+                ),
                 handoff=await self._resolve_handoff_prompt(
                     session, resolved.merchant_id, profile_id=rc.conv_profile_id
                 ),
@@ -1769,6 +1781,69 @@ class ConversationService:
                     latency_ms=0,
                 )
 
+            # Empty-reply guard. Two real sources land here, neither of which
+            # raises: `_parse_structured` now yields an empty reply_text instead
+            # of pasting an unusable JSON blob to the customer, and OpenAI itself
+            # returns `content=None` (→ "") on a content filter or when a
+            # reasoning model spends its whole budget on reasoning. An empty
+            # bubble is rejected by WhatsApp and would burn the job's retries, so
+            # route it through the same courtesy + handoff fail-safe as a hard
+            # LLM error rather than letting silence reach the customer.
+            # One retry first: an unusable turn is nearly always a sampling
+            # artefact and a second draw clears it. Same shape as the coherence
+            # guard's retry above, and it keeps the terminal path below rare.
+            if not llm_failed and not response.reply_text.strip():
+                logger.warning("uc01.empty_reply_retry", conversation_id=str(rc.conv_id))
+                try:
+                    response = await self._run_orchestrator(session, ctx, rc)
+                except Exception as e:
+                    logger.error(
+                        "uc01.empty_reply_retry_failed",
+                        conversation_id=str(rc.conv_id),
+                        error=str(e),
+                    )
+
+            if not llm_failed and not response.reply_text.strip():
+                logger.error(
+                    "uc01.empty_reply",
+                    conversation_id=str(rc.conv_id),
+                    merchant_id=str(resolved.merchant_id),
+                    model=response.model,
+                )
+                # Deliberately NOT `llm_failed = True`. That flag means "the LLM
+                # call itself blew up", and downstream it overrides two merchant
+                # settings: it bypasses `escalation.enabled = False` (line ~1742)
+                # and `silent_handoff` (~1771). Hijacking it here would let a
+                # single malformed turn call `claim_handoff`, which sets
+                # `auto_reply = false` for good — on an agency that switched
+                # escalation off precisely because nobody watches the inbox, the
+                # thread would go permanently mute. Emitting the action normally
+                # lets those settings decide, as they do for any escalation.
+                response = OrchestratorResponse(
+                    reply_text=(
+                        await self._resolve_optional_str(
+                            session, resolved.merchant_id, ConfigKey.HANDOFF_MESSAGE
+                        )
+                        or _LLM_FAILURE_MESSAGE
+                    ),
+                    actions=[
+                        OrchestratorAction(
+                            kind="escalate_human",
+                            payload={
+                                "reason": "empty_reply",
+                                "customer_message_summary": (
+                                    "L'assistente AI non ha prodotto una risposta "
+                                    "utilizzabile: serve un operatore umano."
+                                ),
+                            },
+                        )
+                    ],
+                    model=response.model,
+                    tokens_in=response.tokens_in,
+                    tokens_out=response.tokens_out,
+                    latency_ms=response.latency_ms,
+                )
+
             # Handoff reply policy: when the bot escalates to a human the merchant
             # can force a fixed message (handoff_message) or hand off silently
             # (no customer-facing reply). State/scoring/dispatch still run.
@@ -1780,7 +1855,7 @@ class ConversationService:
             suppress_reply = False
             handoff_claimed = False
             escalate_action = next(
-                (a for a in response.actions if a.kind == "escalate_human"), None
+                (a for a in response.actions if a.kind in _HANDOFF_ACTION_KINDS), None
             )
             if escalate_action is not None:
                 # One escalation per turn. A model that repeats the action in the
@@ -1790,7 +1865,7 @@ class ConversationService:
                 response.actions = [
                     a
                     for a in response.actions
-                    if a.kind != "escalate_human" or a is escalate_action
+                    if a.kind not in _HANDOFF_ACTION_KINDS or a is escalate_action
                 ]
                 escalation_enabled = await self._resolve_bool(
                     session, resolved.merchant_id, ConfigKey.HANDOFF_ENABLED, default=True
@@ -1801,7 +1876,7 @@ class ConversationService:
                     # the handoff copy would promise an operator who never comes —
                     # and would repeat on every following inbound. Drop the action
                     # and let the LLM's own reply go out.
-                    response.actions = [a for a in response.actions if a.kind != "escalate_human"]
+                    response.actions = [a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS]
                 elif not await convs.claim_handoff(
                     rc.conv_id,
                     reason=escalate_action.payload.get("reason"),
@@ -1811,7 +1886,7 @@ class ConversationService:
                     # and the customer already received the handoff message. Stay
                     # silent and drop the action so the operator isn't re-notified.
                     suppress_reply = True
-                    response.actions = [a for a in response.actions if a.kind != "escalate_human"]
+                    response.actions = [a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS]
                 else:
                     handoff_claimed = True
                     silent = await self._resolve_bool(
@@ -1937,42 +2012,75 @@ class ConversationService:
             await self._maybe_send_typing(rc, rc.latest_wa_message_id)
 
         _last_wamid: str | None = None
-        for i, bubble in enumerate(bubbles):
-            delay = compute_typing_delay_s(
-                bubble,
-                base_s=delay_base,
-                per_char_s=delay_per_char,
-                min_s=delay_min,
-                max_s=delay_max,
-                jitter_frac=jitter,
-                seed=f"{rc.conv_id}:{i}",
+        i = 0
+        try:
+            for i, bubble in enumerate(bubbles):
+                delay = compute_typing_delay_s(
+                    bubble,
+                    base_s=delay_base,
+                    per_char_s=delay_per_char,
+                    min_s=delay_min,
+                    max_s=delay_max,
+                    jitter_frac=jitter,
+                    seed=f"{rc.conv_id}:{i}",
+                )
+                # WhatsApp dismisses "typing…" the moment a message goes out, so
+                # the pre-loop call above only covers the first bubble — without
+                # this the pauses before bubbles 2..N are silent. Re-arming keeps
+                # the visible typing time proportional to each bubble's length.
+                if i > 0 and delay > 0 and typing_indicator_enabled and rc.latest_wa_message_id:
+                    await self._maybe_send_typing(rc, rc.latest_wa_message_id)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                _last_wamid = await self._sender.send(
+                    phone_number_id=rc.phone_number_id,
+                    api_key=resolved.api_key,
+                    to_phone=rc.from_phone,
+                    text=bubble,
+                    waba_base_url=resolved.waba_base_url,
+                )
+        except Exception as e:
+            # The row is still `pending`; leaving it there tells the merchant's
+            # inbox a reply went out that never did. Record the real outcome,
+            # then re-raise so the job's retry semantics are unchanged.
+            logger.error(
+                "uc01.send_failed",
+                conversation_id=str(rc.conv_id),
+                merchant_id=str(resolved.merchant_id),
+                error=str(e),
+                bubble_index=i,
+                bubbles=len(bubbles),
             )
-            # WhatsApp dismisses "typing…" the moment a message goes out, so the
-            # pre-loop call above only covers the first bubble — without this the
-            # pauses before bubbles 2..N are silent. Re-arming keeps the visible
-            # typing time proportional to each bubble's own length.
-            if i > 0 and delay > 0 and typing_indicator_enabled and rc.latest_wa_message_id:
-                await self._maybe_send_typing(rc, rc.latest_wa_message_id)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            _last_wamid = await self._sender.send(
-                phone_number_id=rc.phone_number_id,
-                api_key=resolved.api_key,
-                to_phone=rc.from_phone,
-                text=bubble,
-                waba_base_url=resolved.waba_base_url,
-            )
+            if _out_msg is not None:
+                # Multi-bubble is on by default (delivery.multi_bubble_max = 2),
+                # so a failure at i > 0 means the customer has already read the
+                # opening bubble. The row carries the WHOLE reply, so calling it
+                # `failed` would be as wrong as the old unconditional `sent`:
+                # record it as delivered-but-incomplete instead. Only a failure
+                # on the first bubble means nothing reached the customer.
+                await self._mark_message_failed(
+                    _out_msg.id,
+                    code="send_failed" if i == 0 else "partial_send",
+                    detail=str(e),
+                    extra={"bubble_index": i, "bubbles": len(bubbles)},
+                    status="failed" if i == 0 else "sent",
+                )
+            raise
 
-        if _out_msg is not None and _last_wamid:
+        # Promote on any completed send loop, not just when the sender handed
+        # back an id: keying this on `_last_wamid` would strand the row in
+        # `pending` whenever the provider returns no id.
+        if _out_msg is not None and bubbles:
             from db import session_scope
             from db.models.conversation import Message as _Message
             from sqlalchemy import update as _update
 
+            values: dict[str, Any] = {"status": "sent"}
+            if _last_wamid:
+                values["wa_message_id"] = _last_wamid
             async with session_scope() as _s:
                 await _s.execute(
-                    _update(_Message)
-                    .where(_Message.id == _out_msg.id)
-                    .values(wa_message_id=_last_wamid, status="sent")
+                    _update(_Message).where(_Message.id == _out_msg.id).values(**values)
                 )
 
         turn_ctx = TurnContext(
@@ -2079,8 +2187,12 @@ class ConversationService:
         )
         if not tool_use_enabled:
             return await self._orchestrator.run(ctx, rc.text)
+        # Mirror SYSTEM_DEFAULTS (3), not 1: this default only applies when the
+        # resolver itself fails, and 1 iteration means the loop breaks before
+        # executing anything — tool-use on with a guaranteed dead end, the worst
+        # of both. Degrade to the configured behavior instead.
         max_iter = await self._resolve_int(
-            session, ctx.merchant_id, ConfigKey.AGENT_MAX_TOOL_ITERATIONS, default=1
+            session, ctx.merchant_id, ConfigKey.AGENT_MAX_TOOL_ITERATIONS, default=3
         )
         return await self._orchestrator.run(
             ctx,
@@ -2088,6 +2200,40 @@ class ConversationService:
             tool_executor=self._tool_executor,
             max_iterations=max(1, max_iter),
         )
+
+    async def _mark_message_failed(
+        self,
+        message_id: Any,
+        *,
+        code: str,
+        detail: str,
+        extra: dict[str, Any] | None = None,
+        status: str = "failed",
+    ) -> None:
+        """Record a delivery problem on a persisted outbound row.
+
+        Mirrors the composer's `_mark_failed` in the worker, which this library
+        cannot import (workers depend on ai_core, not the other way round). Uses
+        its own session: the turn's session is already closed by this point.
+
+        `status` is a parameter because a partial multi-bubble send is neither
+        clean success nor clean failure — the row stays `sent` (the customer did
+        read part of it) but still carries the error payload.
+        """
+        from sqlalchemy import update as _update
+
+        from db import session_scope
+        from db.models.conversation import Message as _Message
+
+        payload: dict[str, Any] = {"code": code, "detail": detail}
+        if extra:
+            payload.update(extra)
+        async with session_scope() as _s:
+            await _s.execute(
+                _update(_Message)
+                .where(_Message.id == message_id)
+                .values(status=status, failed_at=datetime.now(tz=UTC), error=payload)
+            )
 
     async def _maybe_send_typing(self, rc: _ReplyContext, message_id: str) -> None:
         """Best-effort WhatsApp read receipt + "typing…" indicator. Never blocks

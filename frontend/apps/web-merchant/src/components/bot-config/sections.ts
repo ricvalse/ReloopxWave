@@ -345,6 +345,13 @@ export const SECTIONS: SectionDef[] = [
         placeholder: 'es. — Il team di Studio Rossi',
       },
       {
+        key: 'bot.assistant_name',
+        label: "Nome dell'assistente",
+        kind: 'text',
+        placeholder: 'es. Giulia',
+        help: "Il nome con cui il bot si presenta. Serve anche a non fargli adottare un altro nome letto nei messaggi scritti a mano dall'operatore. Vuoto = non dichiara un nome.",
+      },
+      {
         key: 'bot.do_phrases',
         label: 'Espressioni da preferire',
         kind: 'tags',

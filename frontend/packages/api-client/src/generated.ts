@@ -2560,6 +2560,8 @@ export interface components {
             greeting_style?: string | null;
             /** Signature */
             signature?: string | null;
+            /** Assistant Name */
+            assistant_name?: string | null;
             /** Do Phrases */
             do_phrases?: string[];
             /** Dont Phrases */

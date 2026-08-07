@@ -292,6 +292,12 @@ class MessageRepository:
             # permette di leggere le statistiche "per profilo" anche sui turni
             # conversazionali, non solo sugli invii proattivi.
             profile_id=profile_id,
+            # La riga nasce PRIMA dell'invio, quindi non può nascere "sent" (il
+            # default della colonna): se la consegna a 360dialog fallisce resta
+            # in inbox una bolla che dichiara di essere partita e non è mai
+            # uscita. Il chiamante la promuove a `sent` a invio riuscito e la
+            # marca `failed` sull'eccezione — lo stesso schema del composer.
+            status="pending",
             meta={"sender_type": "ai"},
         )
         self._session.add(msg)
