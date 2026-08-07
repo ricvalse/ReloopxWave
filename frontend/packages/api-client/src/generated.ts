@@ -2504,7 +2504,7 @@ export interface components {
             schedule?: components["schemas"]["ScheduleConfig"];
             rag?: components["schemas"]["RagConfig"];
             bot?: components["schemas"]["BotSurfaceConfig"];
-            escalation?: components["schemas"]["EscalationConfig"];
+            handoff?: components["schemas"]["HandoffConfig"];
             privacy?: components["schemas"]["PrivacyConfig"];
             booking?: components["schemas"]["BookingConfig"];
             lead_capture?: components["schemas"]["LeadCaptureConfig"];
@@ -2848,33 +2848,6 @@ export interface components {
              */
             bubble_max_chars: number;
         };
-        /** EscalationConfig */
-        EscalationConfig: {
-            /**
-             * Enabled
-             * @default true
-             */
-            enabled: boolean;
-            /** Handoff Message */
-            handoff_message?: string | null;
-            /**
-             * Silent Handoff
-             * @default false
-             */
-            silent_handoff: boolean;
-            /** Critical Keywords */
-            critical_keywords?: string[] | null;
-            /**
-             * Sla Minutes
-             * @default 15
-             */
-            sla_minutes: number;
-            /**
-             * Phone Echo Pause Minutes
-             * @default 120
-             */
-            phone_echo_pause_minutes: number;
-        };
         /** EventCatalogEntryOut */
         EventCatalogEntryOut: {
             /** Event Type */
@@ -3053,6 +3026,57 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HandoffConfig */
+        HandoffConfig: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Message */
+            message?: string | null;
+            /**
+             * Silent
+             * @default false
+             */
+            silent: boolean;
+            /** Critical Keywords */
+            critical_keywords?: string[] | null;
+            /**
+             * Sla Minutes
+             * @default 15
+             */
+            sla_minutes: number;
+            /**
+             * Phone Echo Pause Minutes
+             * @default 120
+             */
+            phone_echo_pause_minutes: number;
+            instructions?: components["schemas"]["HandoffInstructionsConfig"];
+        };
+        /**
+         * HandoffInstructionsConfig
+         * @description Criteri ed eccezioni di handoff, iniettati nel prompt (ADR 0026).
+         *
+         *     Prima erano tre criteri cablati in `orchestrator._ACTION_SNIPPETS` e una
+         *     sola eccezione (i media), anch'essa cablata: correggere un falso positivo
+         *     — "«voglio parlare con qualcuno» qui non significa handoff", "«reclamo» nel
+         *     nostro settore è un termine tecnico" — richiedeva una modifica al codice e
+         *     valeva per tutti i merchant insieme. Qui il merchant descrive i propri casi
+         *     in linguaggio naturale, una riga per criterio.
+         */
+        HandoffInstructionsConfig: {
+            /**
+             * Mode
+             * @default extend
+             * @enum {string}
+             */
+            mode: "extend" | "replace";
+            /** Criteria */
+            criteria?: string[];
+            /** Exclusions */
+            exclusions?: string[];
         };
         /**
          * HeaderImageOut
@@ -3935,7 +3959,7 @@ export interface components {
          * @description Quando l'assistente risponde.
          *
          *     `active_hours` (stringa "24/7" | "HH:MM-HH:MM", una sola fascia uguale per
-         *     tutti i giorni) è stata rimossa: la migrazione 0049 converte i valori
+         *     tutti i giorni) è stata rimossa: la migrazione 0050 converte i valori
          *     salvati in `mode` + `weekly`. Non è stata lasciata come campo inerte perché
          *     questo repo ha già pagato il prezzo delle chiavi ancora esposte nel
          *     pannello ma non più lette da nessuno (le `no_answer.*`, rimosse in 0048).

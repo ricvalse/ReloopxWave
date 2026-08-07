@@ -203,7 +203,7 @@ def schedule_from_windows(
 def is_within_active_hours(active_hours: str | None, tz_name: str | None, now: datetime) -> bool:
     """Formato storico a finestra unica (`"24/7"` o `"HH:MM-HH:MM"`).
 
-    Resta qui per un solo motivo: la migrazione 0049 converte i valori salvati
+    Resta qui per un solo motivo: la migrazione 0050 converte i valori salvati
     nella nuova settimana-tipo, e i test di conversione devono poter verificare
     che il comportamento vecchio e quello nuovo coincidano. Il pipeline di
     conversazione non la chiama più.

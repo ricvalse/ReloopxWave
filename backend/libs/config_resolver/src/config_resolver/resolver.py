@@ -27,11 +27,37 @@ CACHE_TTL_SECONDS = 60
 # scade. Bumpare questo suffisso rende i bag vecchi irraggiungibili: scadono da
 # soli senza essere mai più letti. Da alzare a ogni rimozione di chiave.
 # v2: rimozione delle chiavi `no_answer.*` (ADR 0024).
-# v3: rimozione di `schedule.active_hours`, sostituita da `schedule.mode` +
-#     `schedule.weekly` (orari di risposta). Senza il bump, per l'intera durata
-#     della cache il pannello di ogni merchant che aveva toccato quel campo
-#     risponderebbe 500 invece di mostrare gli orari nuovi.
-RESOLVED_CACHE_KEY = "__resolved_v3__"
+# v3: rinomina `escalation.*` → `handoff.*` (ADR 0026). Un bag v2 letto dalla
+# cache conterrebbe le chiavi `escalation.*`, che `BotConfigSchema`
+# (`extra="forbid"`) ora rifiuta: senza il bump, `GET /bot-config/{id}/resolved`
+# fallirebbe per i 60 secondi di TTL successivi al deploy.
+# v4: rimozione di `schedule.active_hours`, sostituita da `schedule.mode` +
+# `schedule.weekly` (orari di risposta, ADR 0027). Stessa ragione della v3, su
+# una chiave diversa — ed è il motivo per cui il suffisso va **sempre** alzato e
+# mai riusato: le due rimozioni sono nate su rami paralleli e avrebbero
+# rivendicato entrambe la v3, lasciando i bag di una delle due raggiungibili.
+RESOLVED_CACHE_KEY = "__resolved_v4__"
+
+# ADR 0026 — mappa nuova chiave → chiave legacy. Le override già salvate dai
+# merchant vivono nella JSONB nella forma `{"escalation": {...}}`: cercando solo
+# `handoff.*` il valore non verrebbe trovato e la cascata scenderebbe
+# silenziosamente al default di sistema, spegnendo di fatto le personalizzazioni
+# di ogni merchant al primo deploy. La migrazione dati riscrive i bag una volta
+# sola; questo alias copre ciò che la migrazione non può vedere — bag scritti da
+# un'istanza ancora sul codice vecchio durante il rollout, e i backup ripristinati
+# dopo. È una rete di sicurezza in LETTURA: nessuna scrittura usa più il nome vecchio.
+LEGACY_KEY_ALIASES: dict[str, str] = {
+    "handoff.enabled": "escalation.enabled",
+    "handoff.message": "escalation.handoff_message",
+    "handoff.silent": "escalation.silent_handoff",
+    "handoff.critical_keywords": "escalation.critical_keywords",
+    "handoff.sla_minutes": "escalation.sla_minutes",
+    "handoff.phone_echo_pause_minutes": "escalation.phone_echo_pause_minutes",
+}
+
+# chiave legacy → chiave corrente. Serve dove il nome vecchio arriva come DATO
+# e va canonicalizzato (es. `bot_templates.locked_keys`).
+LEGACY_KEY_ALIASES_INVERTED: dict[str, str] = {v: k for k, v in LEGACY_KEY_ALIASES.items()}
 
 # Process-wide Redis client, set once at startup (API lifespan / worker
 # startup) via `set_shared_redis`. Any `ConfigResolver` built without an
@@ -273,6 +299,23 @@ class ConfigResolver:
 
 
 def _lookup(bag: dict[str, Any], dotted_key: str) -> Any:
+    """Resolve a dotted key (`a.b.c`) from a config bag, legacy alias included.
+
+    Il nome corrente vince sempre. Solo quando manca si riprova con il nome
+    legacy di `LEGACY_KEY_ALIASES` (ADR 0026), così un merchant che ha già
+    risalvato la configurazione dopo il rename non si vede riesumare il vecchio
+    valore rimasto nel bag.
+    """
+    value = _lookup_exact(bag, dotted_key)
+    if value is not None:
+        return value
+    legacy_key = LEGACY_KEY_ALIASES.get(dotted_key)
+    if legacy_key is not None:
+        return _lookup_exact(bag, legacy_key)
+    return None
+
+
+def _lookup_exact(bag: dict[str, Any], dotted_key: str) -> Any:
     """Resolve a dotted key (`a.b.c`) from a config bag.
 
     Primary shape is a NESTED bag (`{"a": {"b": {"c": v}}}`) — the convention

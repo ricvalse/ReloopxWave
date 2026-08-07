@@ -1,4 +1,4 @@
-# ADR 0026 — Orari di risposta dell'assistente
+# ADR 0027 — Orari di risposta dell'assistente
 
 **Stato:** accettata — 2026-08-05
 **Contesto:** UC-01, CC-CONFIG
@@ -109,7 +109,7 @@ già in produzione, e per chi lo vuole per-flusso esiste già la condizione
 
 ### 6. `active_hours` viene rimossa, non lasciata inerte
 
-La migrazione 0049 converte i valori salvati in `mode` + `weekly` sulle tre
+La migrazione 0050 converte i valori salvati in `mode` + `weekly` sulle tre
 superfici di override e traduce i lock. Lasciarla come campo morto avrebbe
 ripetuto l'errore delle `no_answer.*` — chiavi ancora esposte nel pannello che
 nessuna riga di codice leggeva più (rimosse in 0048). Un orario che l'utente

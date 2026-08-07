@@ -10,8 +10,8 @@ def test_system_defaults_cover_every_key() -> None:
 
 
 def test_bot_config_schema_applies_bounds() -> None:
-    cfg = BotConfigSchema.model_validate({"escalation": {"sla_minutes": 30}})
-    assert cfg.escalation.sla_minutes == 30
+    cfg = BotConfigSchema.model_validate({"handoff": {"sla_minutes": 30}})
+    assert cfg.handoff.sla_minutes == 30
     assert cfg.scoring.hot_threshold == 80  # default
 
 
@@ -30,14 +30,65 @@ def test_handoff_knobs_are_configurable() -> None:
     variabile d'ambiente globale (stessa per ogni merchant) e la pausa dopo un
     messaggio dal telefono era una costante nel codice."""
     cfg = BotConfigSchema.model_validate(
-        {"escalation": {"sla_minutes": 45, "phone_echo_pause_minutes": 30}}
+        {"handoff": {"sla_minutes": 45, "phone_echo_pause_minutes": 30}}
     )
-    assert cfg.escalation.sla_minutes == 45
-    assert cfg.escalation.phone_echo_pause_minutes == 30
+    assert cfg.handoff.sla_minutes == 45
+    assert cfg.handoff.phone_echo_pause_minutes == 30
     # Un valore non positivo spingerebbe il cutoff nel futuro e farebbe risultare
     # scaduto ogni handoff aperto: il bound lo impedisce a monte.
     with pytest.raises(ValidationError):
-        BotConfigSchema.model_validate({"escalation": {"sla_minutes": 0}})
+        BotConfigSchema.model_validate({"handoff": {"sla_minutes": 0}})
+
+
+def test_legacy_escalation_bag_still_validates() -> None:
+    """Il bag salvato prima del rename (ADR 0026) deve continuare a risolversi.
+
+    Non è un dettaglio di forma: il pannello merchant rispedisce l'INTERO bag a
+    ogni salvataggio, quindi senza gli alias ogni merchant con una
+    personalizzazione di handoff avrebbe preso un 422 al primo salvataggio dopo
+    il deploy — su qualunque campo, anche non correlato.
+    """
+    cfg = BotConfigSchema.model_validate(
+        {
+            "escalation": {
+                "enabled": False,
+                "handoff_message": "Ti passo un collega.",
+                "silent_handoff": True,
+                "sla_minutes": 45,
+            }
+        }
+    )
+    assert cfg.handoff.enabled is False
+    assert cfg.handoff.message == "Ti passo un collega."
+    assert cfg.handoff.silent is True
+    assert cfg.handoff.sla_minutes == 45
+
+
+def test_handoff_instructions_defaults_and_cleaning() -> None:
+    """I criteri configurabili (ADR 0026) e la pulizia delle righe vuote."""
+    cfg = BotConfigSchema()
+    assert cfg.handoff.instructions.mode == "extend"
+    assert cfg.handoff.instructions.criteria == []
+    assert cfg.handoff.instructions.exclusions == []
+
+    cfg = BotConfigSchema.model_validate(
+        {
+            "handoff": {
+                "instructions": {
+                    "mode": "replace",
+                    "criteria": ["  chiede un preventivo sopra 5.000 €  ", "", "   "],
+                    "exclusions": ["usa la parola «reclamo»"],
+                }
+            }
+        }
+    )
+    # Le righe vuote della textarea non devono diventare punti elenco vuoti.
+    assert cfg.handoff.instructions.criteria == ["chiede un preventivo sopra 5.000 €"]
+    assert cfg.handoff.instructions.exclusions == ["usa la parola «reclamo»"]
+    assert cfg.handoff.instructions.mode == "replace"
+
+    with pytest.raises(ValidationError):
+        BotConfigSchema.model_validate({"handoff": {"instructions": {"mode": "boh"}}})
 
 
 def test_persona_defaults() -> None:

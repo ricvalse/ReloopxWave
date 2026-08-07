@@ -37,7 +37,7 @@ def test_schema_hint_none_is_byte_identical_to_full_constant():
 
 
 def test_schema_hint_allowlist_omits_forbidden_actions():
-    hint = render_schema_hint({"escalate_human", "none"})
+    hint = render_schema_hint({"handoff_human", "none"})
     for forbidden in (
         "book_slot",
         "move_pipeline",
@@ -47,13 +47,31 @@ def test_schema_hint_allowlist_omits_forbidden_actions():
         "lookup_appointment",
     ):
         assert forbidden not in hint
-    assert "escalate_human" in hint
+    assert "handoff_human" in hint
     assert '"none"' in hint
     # tool-use paragraph + booking note are dropped when their actions aren't allowed
     assert "STRUMENTI DI LETTURA" not in hint
     assert "niente false conferme" not in hint
     # enum lists only allowed kinds
-    assert '"kind": "escalate_human|none"' in hint
+    assert '"kind": "handoff_human|none"' in hint
+
+
+def test_schema_hint_keeps_handoff_as_safety_valve():
+    """Un allowlist ristretto non può togliere l'handoff (ADR 0026).
+
+    Regressione reale: la docstring prometteva questa valvola, il codice non la
+    applicava e nessun test la copriva — un playbook che restringeva le azioni
+    (per impedire prenotazioni indesiderate) spegneva anche l'unica via d'uscita
+    verso un operatore, in silenzio.
+    """
+    hint = render_schema_hint({"book_slot"})
+    assert '"kind": "book_slot|handoff_human|none"' in hint
+    assert '- "handoff_human"' in hint
+
+
+def test_schema_hint_empty_allowlist_has_no_handoff():
+    """L'allowlist esplicitamente vuota resta l'unico modo di azzerare tutto."""
+    assert "handoff_human" not in render_schema_hint(set())
 
 
 def test_schema_hint_empty_allowlist_falls_back_to_none_only():
@@ -194,7 +212,7 @@ async def test_resolve_playbook_runtime_parses_recruiting(monkeypatch):
         ConfigKey.PIPELINE_AUTO_ADVANCE: False,
         ConfigKey.BOOKING_ENABLED: False,
         ConfigKey.LEAD_CAPTURE_ENABLED: False,
-        ConfigKey.ESCALATION_CRITICAL_KEYWORDS: [],
+        ConfigKey.HANDOFF_CRITICAL_KEYWORDS: [],
     }
     monkeypatch.setattr("ai_core.playbook.ConfigResolver", lambda session: _FakeResolver(values))
     pb = await resolve_playbook_runtime(object(), uuid.uuid4())

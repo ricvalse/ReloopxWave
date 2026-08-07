@@ -88,7 +88,7 @@ async def resolve_playbook_runtime(
     enabled = await _get(ConfigKey.CONVERSATION_PLAYBOOK_ACTIONS_ENABLED, None)
     allowed_actions = {str(a) for a in enabled} if isinstance(enabled, list) else None
 
-    raw_keywords = await _get(ConfigKey.ESCALATION_CRITICAL_KEYWORDS, None)
+    raw_keywords = await _get(ConfigKey.HANDOFF_CRITICAL_KEYWORDS, None)
     critical_keywords = (
         tuple(str(k) for k in raw_keywords) if isinstance(raw_keywords, list) else None
     )

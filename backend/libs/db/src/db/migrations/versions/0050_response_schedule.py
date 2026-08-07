@@ -56,8 +56,8 @@ from typing import Any
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0049_response_schedule"
-down_revision: str | Sequence[str] | None = "0048_drop_no_answer_config_keys"
+revision: str = "0050_response_schedule"
+down_revision: str | Sequence[str] | None = "0049_handoff_config_rename"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
