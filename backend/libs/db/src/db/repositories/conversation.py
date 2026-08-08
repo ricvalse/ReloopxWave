@@ -57,7 +57,7 @@ def _parse_iso(value: object) -> datetime | None:
 
 # Chiave jolly nella mappa delle ancore: vale per ogni automazione. Serve solo a
 # leggere la forma vecchia di `meta.no_answer_fired_for`, che era un singolo
-# timestamp per conversazione invece che una mappa per automazione (ADR 0027).
+# timestamp per conversazione invece che una mappa per automazione (ADR 0029).
 ANCHOR_ANY = "*"
 
 
@@ -114,11 +114,11 @@ class ReminderCandidate:
     optimal_send_hour: int | None = None
     # Lead display name — feeds `{name}` / `{{contact.name}}` in send-node free text.
     lead_name: str | None = None
-    # ADR 0015/0027 edge-trigger anchors, una per automazione: `{automation_id:
+    # ADR 0015/0029 edge-trigger anchors, una per automazione: `{automation_id:
     # ancora}`. Mappa vuota = mai emesso per questa conversazione. La chiave
     # `ANCHOR_ANY` è la forma vecchia (un'ancora sola per conversazione).
     no_answer_fired_for: dict[str, datetime] = field(default_factory=dict)
-    # Provenienza dell'ultimo messaggio in uscita (ADR 0027): è ciò che permette
+    # Provenienza dell'ultimo messaggio in uscita (ADR 0029): è ciò che permette
     # a un'automazione di dire "sollecita solo chi non ha risposto a QUESTO
     # template". `None` quando l'ultimo outbound non era un template — una
     # risposta dell'AI, o una frase scritta a mano da un operatore.
@@ -667,7 +667,7 @@ class ConversationRepository:
         self, conversation_id: UUID, automation_id: UUID, anchor: datetime
     ) -> None:
         """Timbra l'ancora per cui `lead.no_answer` è stato emesso, **per
-        automazione** (ADR 0015/0027).
+        automazione** (ADR 0015/0029).
 
         Era un timestamp solo per conversazione. Non regge appena il merchant ha
         due automazioni "nessuna risposta" con ritardi diversi: la prima a

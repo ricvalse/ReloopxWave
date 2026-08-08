@@ -1,10 +1,11 @@
-# ADR 0027 — "Nessuna risposta **a cosa**": provenienza sul trigger, e una soglia per automazione
+# ADR 0029 — "Nessuna risposta **a cosa**": provenienza sul trigger, e una soglia per automazione
 
 Data: 2026-08-05
 Stato: accettato
 
-> Il numero 0026 è occupato da un ADR su un branch non ancora pushato
-> (handoff: istruzioni configurabili). Questo prende 0027 per non collidere.
+> Numerazione: 0026 (handoff: istruzioni configurabili), 0027 (quick win agente
+> da Amalia) e 0028 (orari di risposta) erano già occupati al momento del merge.
+> Questo ADR prende 0029.
 
 ## Contesto
 

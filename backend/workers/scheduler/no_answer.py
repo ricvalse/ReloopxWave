@@ -100,7 +100,7 @@ async def _maybe_emit(cand: ReminderCandidate, *, now: datetime) -> int:
     Era una valutazione sola per conversazione: soglia = il minimo dei ritardi
     del merchant, un'emissione, e il dispatch ventagliava su tutte le automazioni
     `no_answer`. Con una sola automazione funzionava; con due no, ed è
-    esattamente lo scenario di ADR 0027 (una per template). Con ritardi 60 e 240,
+    esattamente lo scenario di ADR 0029 (una per template). Con ritardi 60 e 240,
     l'emissione avveniva a 60, l'ancora si bruciava lì, e quella da 240 non
     partiva mai — il suo ritardo era ignorato in silenzio.
     """
@@ -210,7 +210,7 @@ def _delay_minutes(auto: AutomationFlow) -> int:
 
 
 def _source_matches(auto: AutomationFlow, cand: ReminderCandidate) -> bool:
-    """Il filtro di provenienza (ADR 0027): "non ha risposto **a questo**".
+    """Il filtro di provenienza (ADR 0029): "non ha risposto **a questo**".
 
     `source_template_id` vuoto = nessun filtro, cioè il comportamento storico
     ("questa chat è ferma da X minuti", qualunque cosa sia stato l'ultimo

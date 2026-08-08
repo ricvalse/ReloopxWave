@@ -1,4 +1,4 @@
-"""UC-03 — no-answer trigger emitter unit tests (ADR 0015 / 0025 / 0027).
+"""UC-03 — no-answer trigger emitter unit tests (ADR 0015 / 0025 / 0029).
 
 The scheduler no longer sends: it emits a `lead.no_answer` analytics event once
 per silence episode, which the automation engine dispatches to the merchant's
@@ -9,7 +9,7 @@ flow. These tests stub the repos and check:
   - a fresh inbound (last_inbound_at past the old anchor) re-arms the trigger;
   - still within the configured delay → not yet emitted;
   - ADR 0025: il lead che non ha MAI risposto è un silenzio valido;
-  - ADR 0027: ogni automazione ha la sua soglia, la sua ancora e il suo filtro
+  - ADR 0029: ogni automazione ha la sua soglia, la sua ancora e il suo filtro
     di provenienza ("non ha risposto **a questo** template").
 """
 
@@ -287,7 +287,7 @@ async def test_never_replied_still_respects_the_configured_delay(
     assert events == []
 
 
-# --- ADR 0027: provenienza + una soglia e un'ancora per automazione ---------
+# --- ADR 0029: provenienza + una soglia e un'ancora per automazione ---------
 
 
 async def test_source_filter_matches_only_its_own_template(
@@ -387,7 +387,7 @@ async def test_no_source_filter_keeps_the_historic_behaviour(
 async def test_two_automations_each_fire_at_their_own_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Il bug che ADR 0027 chiude.
+    """Il bug che ADR 0029 chiude.
 
     Con soglia collassata al `min()` e un'ancora sola, a 90 minuti partivano
     entrambe (quella da 240 in anticipo di due ore e mezza) e l'ancora bruciata

@@ -195,7 +195,7 @@ def test_delay_falls_back_to_the_shared_default() -> None:
 
 
 def test_delay_is_read_per_automation_not_collapsed() -> None:
-    """Il ritardo appartiene alla singola automazione (ADR 0027).
+    """Il ritardo appartiene alla singola automazione (ADR 0029).
 
     Era il `min()` fra tutte quelle del merchant: con due automazioni a 60 e 240
     minuti, l'emissione avveniva a 60 per entrambe e l'ancora si bruciava lì,

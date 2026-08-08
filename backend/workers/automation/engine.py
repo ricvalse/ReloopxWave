@@ -293,7 +293,7 @@ async def automation_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 def _targeted_at(auto: AutomationFlow, properties: Any) -> bool:
-    """Un evento può nominare l'automazione a cui è destinato (ADR 0027).
+    """Un evento può nominare l'automazione a cui è destinato (ADR 0029).
 
     Gli emettitori edge-triggered valutano da sé la soglia e i filtri della
     singola automazione — devono, perché è lì che si brucia l'ancora
