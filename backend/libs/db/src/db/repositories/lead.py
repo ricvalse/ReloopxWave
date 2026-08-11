@@ -316,7 +316,7 @@ class LeadRepository:
                 SET meta = jsonb_set(
                     coalesce(meta, '{}'::jsonb),
                     '{dormant_fired_for}',
-                    to_jsonb(:anchor::text)
+                    to_jsonb(CAST(:anchor AS text))
                 )
                 WHERE id = :lead_id
                 """
