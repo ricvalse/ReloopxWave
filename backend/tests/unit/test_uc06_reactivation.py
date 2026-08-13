@@ -139,3 +139,99 @@ async def test_skips_when_not_dormant_enough(monkeypatch: pytest.MonkeyPatch) ->
 
     assert ok is False
     assert events == []
+
+
+# ---- il pavimento della scansione ------------------------------------------
+#
+# `_maybe_emit` applica la soglia del merchant, ma non vede che i candidati che
+# la scansione gli passa: una soglia sotto il pavimento non arriva mai fin lì.
+# Era il buco — nessun test guardava il pavimento, e per mesi è stato una
+# costante di 30 giorni che scartava in silenzio ogni "2 giorni" della UI.
+
+
+async def _cutoff_for(monkeypatch: pytest.MonkeyPatch, thresholds: dict) -> Any:
+    """Fa girare l'emettitore e restituisce (cutoff passato alla scansione, esito)."""
+    visti: list[datetime] = []
+
+    async def fake_thresholds() -> dict:
+        return thresholds
+
+    async def fake_scan(*, dormant_cutoff: datetime) -> list:
+        visti.append(dormant_cutoff)
+        return []
+
+    monkeypatch.setattr(reactivation, "_enabled_thresholds", fake_thresholds)
+    monkeypatch.setattr(reactivation, "_scan_candidates", fake_scan)
+    esito = await reactivation.reactivate_dormant_leads({})
+    return (visti[0] if visti else None), esito
+
+
+async def test_soglia_di_due_giorni_scandisce_da_due_giorni(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La regressione, in una riga: 2 giorni sul nodo = 2 giorni di scansione.
+
+    Con il vecchio pavimento fisso il cutoff cadeva 30 giorni indietro e un lead
+    fermo da 2 giorni non entrava nemmeno fra i candidati.
+    """
+    now = datetime.now(tz=UTC)
+    cutoff, _ = await _cutoff_for(monkeypatch, {uuid.uuid4(): [2]})
+
+    assert cutoff is not None
+    assert abs((cutoff - (now - timedelta(days=2))).total_seconds()) < 60
+    assert cutoff > now - timedelta(days=30), "il pavimento fisso a 30 giorni è tornato"
+
+
+async def test_il_pavimento_e_il_minimo_configurato_sulla_piattaforma(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un merchant a 2 giorni non deve essere oscurato da uno a 90.
+
+    Il filtro per merchant resta in `_maybe_emit`: la scansione allarga, non
+    decide.
+    """
+    now = datetime.now(tz=UTC)
+    cutoff, _ = await _cutoff_for(monkeypatch, {uuid.uuid4(): [90], uuid.uuid4(): [2, 45]})
+
+    assert cutoff is not None
+    assert abs((cutoff - (now - timedelta(days=2))).total_seconds()) < 60
+
+
+async def test_nessuna_automazione_attiva_non_scandisce_affatto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cutoff, esito = await _cutoff_for(monkeypatch, {})
+
+    assert cutoff is None, "senza nessuno in ascolto la scansione va saltata"
+    assert esito == {"candidates": 0, "emitted": 0, "skipped": "no_enabled_automations"}
+
+
+async def test_il_pavimento_assoluto_resta_un_giorno(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Il cron gira una volta al giorno: sotto il giorno non c'è niente da guadagnare.
+
+    Un valore non positivo il repository lo normalizza già al default; qui si
+    verifica la guardia dello scheduler, che non deve mai chiedere un cutoff nel
+    futuro se quel valore gli arrivasse comunque.
+    """
+    now = datetime.now(tz=UTC)
+    cutoff, _ = await _cutoff_for(monkeypatch, {uuid.uuid4(): [0]})
+
+    assert cutoff is not None
+    assert abs((cutoff - (now - timedelta(days=1))).total_seconds()) < 60
+
+
+def test_la_query_delle_soglie_accetta_una_chiave_di_config_variabile() -> None:
+    """`days` per il dormiente, `delay_minutes` per il no-answer: la chiave è un
+    parametro, e deve restare compilabile come indice JSONB."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+
+    from db.models.automation import AutomationNode
+
+    for chiave in ("days", "delay_minutes"):
+        sql = str(
+            select(AutomationNode.config[chiave].astext).compile(
+                dialect=postgresql.asyncpg.dialect()
+            )
+        )
+        assert "->>" in sql

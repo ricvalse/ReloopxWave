@@ -269,6 +269,13 @@ class LeadRepository:
                     last_conv.c.handoff_resolved_at.is_not(None),
                 ),
             )
+            # Cap di sicurezza per tick, con `order_by` esplicito: senza, una
+            # piattaforma con più di 500 candidati restituirebbe un insieme
+            # arbitrario a ogni giro e un lead poteva non uscire mai. I più
+            # fermi per primi = quelli che aspettano da più tempo. Finché il
+            # pavimento era di 30 giorni il tetto non si toccava; con la soglia
+            # derivata da ciò che il merchant configura, sì.
+            .order_by(latest_conv_subq.c.last_interaction)
             .limit(500)
         )
         rows = await self._session.execute(stmt)
