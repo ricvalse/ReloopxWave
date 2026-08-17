@@ -19,6 +19,10 @@ class ReactivationCandidate:
     phone: str
     wa_phone_number_id: str
     last_interaction_at: datetime
+    # Istante **immobile** del lead (la sua creazione). È il ripiego dell'ancora
+    # di episodio quando il lead non ha mai risposto: serve un riferimento che i
+    # nostri stessi messaggi non spostino, o il sollecito si autoalimenta.
+    first_seen_at: datetime
     attempts_sent: int
     last_reactivation_at: datetime | None
     name: str | None = None
@@ -26,7 +30,7 @@ class ReactivationCandidate:
     # ADR 0015: last inbound across the lead's conversations — the re-engagement
     # signal the automation engine uses to cancel a stale reactivation cadence.
     last_inbound_at: datetime | None = None
-    # ADR 0015 edge-trigger anchor: the `last_interaction_at` we last emitted a
+    # ADR 0015 edge-trigger anchor: the episode anchor we last emitted a
     # `lead.dormant` trigger for. None = never fired for this lead.
     dormant_fired_for: datetime | None = None
 
@@ -248,6 +252,7 @@ class LeadRepository:
                 last_conv.c.wa_phone_number_id,
                 last_conv.c.last_inbound_at,
                 latest_conv_subq.c.last_interaction,
+                Lead.created_at.label("first_seen_at"),
                 attempts_expr.label("attempts_sent"),
                 last_attempt_ts,
                 dormant_fired_for_ts,
@@ -289,6 +294,7 @@ class LeadRepository:
                     phone=row["phone"],
                     wa_phone_number_id=row["wa_phone_number_id"] or "",
                     last_interaction_at=row["last_interaction"],
+                    first_seen_at=row["first_seen_at"],
                     attempts_sent=int(row["attempts_sent"]),
                     last_reactivation_at=row["last_reactivation_at"],
                     name=row["name"],

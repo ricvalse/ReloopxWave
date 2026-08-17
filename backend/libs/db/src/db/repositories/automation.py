@@ -88,14 +88,24 @@ class AutomationRepository:
         )
         out: dict[UUID, list[int]] = {}
         for merchant_id, raw in (await self._session.execute(stmt)).all():
-            try:
-                value = int(raw) if raw is not None else default
-            except (TypeError, ValueError):
-                value = default
-            if value <= 0:
-                value = default
-            out.setdefault(merchant_id, []).append(value)
+            out.setdefault(merchant_id, []).append(self._normalizza_soglia(raw, default=default))
         return out
+
+    @staticmethod
+    def _normalizza_soglia(raw: str | None, *, default: int) -> int:
+        """Il valore grezzo del nodo trigger, letto come intero positivo.
+
+        Estratto perché è l'unico punto in cui un valore scritto storto sul grafo
+        (campo svuotato, zero, testo) diventa silenziosamente il default: merita
+        di essere verificabile da solo, senza database.
+        """
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
 
     async def enabled_trigger_delays(
         self, *, trigger_type: str, default_minutes: int

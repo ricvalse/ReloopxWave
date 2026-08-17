@@ -44,9 +44,17 @@ import asyncpg
 
 _ENV_LOCAL = Path(__file__).resolve().parent.parent / ".env.local"
 
-# I candidati: chi ha superato la soglia del proprio merchant. Ricalcolata sia
-# per il conteggio sia per la verifica finale, così le due non possono divergere.
-CANDIDATI = """
+# Le CTE comuni, definite una volta sola: il conteggio, la scrittura e la
+# verifica devono guardare esattamente la stessa popolazione, o si contraddicono.
+#
+# `episodio` è l'ancora di episodio dell'emettitore (`_episode_anchor` in
+# `workers/scheduler/reactivation.py`): l'ultima parola del lead, o la sua
+# creazione se non ha mai risposto. **Immobile**: un nostro messaggio non la
+# sposta. Timbrare esattamente quella è ciò che rende lo script corretto per
+# costruzione invece che per coincidenza — timbrare `max(last_message_at)`
+# funzionerebbe quasi sempre, ma non per un lead creato dopo l'ultimo messaggio
+# della sua conversazione.
+_CTE = """
 with soglie as (
   select f.merchant_id,
          min(coalesce(nullif(n.config->>'days','')::int, 90)) giorni
@@ -59,37 +67,35 @@ li as (
   from leads l
   join conversations c on c.lead_id = l.id
   where c.last_message_at is not null
-  group by 1, 2)
-select li.id, li.ultima, m.name merchant, s.giorni
-from li
-join soglie s on s.merchant_id = li.merchant_id
-join merchants m on m.id = li.merchant_id
-where li.ultima < now() - make_interval(days => s.giorni)
+  group by 1, 2),
+uc as (
+  select distinct on (c.lead_id) c.lead_id, c.last_inbound_at
+  from conversations c
+  order by c.lead_id, c.last_message_at desc),
+cand as (
+  select li.id, li.merchant_id, li.ultima, s.giorni,
+         coalesce(uc.last_inbound_at, l.created_at) episodio
+  from li
+  join soglie s on s.merchant_id = li.merchant_id
+  join leads l on l.id = li.id
+  left join uc on uc.lead_id = li.id
+  where li.ultima < now() - make_interval(days => s.giorni))
 """
 
-TIMBRA = """
-with soglie as (
-  select f.merchant_id,
-         min(coalesce(nullif(n.config->>'days','')::int, 90)) giorni
-  from automation_flows f
-  join automation_nodes n on n.automation_id = f.id and n.kind = 'trigger'
-  where f.trigger_type = 'lead_dormant' and f.enabled
-  group by 1),
-li as (
-  select l.id, l.merchant_id, max(c.last_message_at) ultima
-  from leads l
-  join conversations c on c.lead_id = l.id
-  where c.last_message_at is not null
-  group by 1, 2)
-update leads l
-set meta = jsonb_set(coalesce(l.meta, '{}'::jsonb),
-                     '{dormant_fired_for}',
-                     to_jsonb(li.ultima::text))
-from li
-join soglie s on s.merchant_id = li.merchant_id
-where li.id = l.id
-  and li.ultima < now() - make_interval(days => s.giorni)
-"""
+CANDIDATI = (
+    _CTE  # noqa: S608 — `_CTE` è una costante di modulo, non entra niente da fuori
+    + "select cand.id, cand.episodio, cand.giorni, m.name merchant"
+    " from cand join merchants m on m.id = cand.merchant_id"
+)
+
+TIMBRA = (
+    _CTE  # noqa: S608 — idem
+    + "update leads l"
+    " set meta = jsonb_set(coalesce(l.meta, '{}'::jsonb),"
+    "                      '{dormant_fired_for}',"
+    "                      to_jsonb(cand.episodio::text))"
+    " from cand where cand.id = l.id"
+)
 
 
 def dsn() -> str:
@@ -136,11 +142,10 @@ async def main(applica: bool) -> None:
         # divergere da ciò che è stato timbrato. Nell'interpolazione non entra
         # niente che venga da fuori: è una costante di modulo.
         verifica = (
-            "with cand as ("  # noqa: S608
-            + CANDIDATI
-            + ") select count(*) from cand join leads l on l.id = cand.id"
+            _CTE  # noqa: S608
+            + " select count(*) from cand join leads l on l.id = cand.id"
             " where (l.meta->>'dormant_fired_for') is null"
-            "    or (l.meta->>'dormant_fired_for')::timestamptz < cand.ultima"
+            "    or (l.meta->>'dormant_fired_for')::timestamptz < cand.episodio"
         )
         residui = await conn.fetchval(verifica)
         print(f"controllo — candidati oltre soglia rimasti senza ancora: {residui}")

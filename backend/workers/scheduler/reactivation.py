@@ -90,9 +90,34 @@ async def _scan_candidates(*, dormant_cutoff: datetime) -> list[ReactivationCand
         )
 
 
+def _episode_anchor(cand: ReactivationCandidate) -> datetime:
+    """L'istante che identifica questo episodio di dormienza, e deve essere
+    **immobile** (stessa regola di `no_answer._episode_anchor`, ADR 0025).
+
+    Era `last_interaction_at`, cioè il massimo `last_message_at` fra le
+    conversazioni del lead — un istante che **i nostri stessi messaggi fanno
+    avanzare**. Il sollecito partiva, spostava l'ancora, il trigger si riarmava,
+    e dopo altri `days` ripartiva: un lead che non risponde mai riceveva un
+    messaggio ogni `days` giorni per sempre. Con il default di 90 giorni si
+    notava appena; con i 2 giorni che un merchant può configurare diventa un
+    invio ogni due giorni a tutta la base dormiente.
+
+    `last_inbound_at` quando il lead ha parlato almeno una volta: l'episodio è il
+    silenzio che segue la sua ultima parola, e un nuovo inbound lo chiude
+    riarmando il trigger. Quando invece non ha MAI risposto si ripiega sulla
+    creazione del lead, che non si muove mai.
+
+    La soglia resta invece su `last_interaction_at`: la dormienza *dura* dal
+    nostro ultimo contatto, ed è giusto che il sollecito non parta il giorno dopo
+    che gli abbiamo scritto. A muoversi è la misura, non l'identità dell'episodio.
+    """
+    return cand.last_inbound_at or cand.first_seen_at
+
+
 async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
-    # Edge gate: fire once per dormancy episode, keyed on last_interaction_at.
-    if cand.dormant_fired_for is not None and cand.dormant_fired_for >= cand.last_interaction_at:
+    # Edge gate: fire once per dormancy episode, keyed on the immobile anchor.
+    anchor = _episode_anchor(cand)
+    if cand.dormant_fired_for is not None and cand.dormant_fired_for >= anchor:
         return False
 
     tenant_ctx = TenantContext(
@@ -112,7 +137,7 @@ async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
         if now - cand.last_interaction_at < timedelta(days=days):
             return False
 
-        await LeadRepository(session).mark_dormant_fired(cand.lead_id, cand.last_interaction_at)
+        await LeadRepository(session).mark_dormant_fired(cand.lead_id, anchor)
         await AnalyticsRepository(session).emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
@@ -121,8 +146,12 @@ async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
             subject_id=cand.lead_id,
             properties={
                 "days_dormant": int((now - cand.last_interaction_at).total_seconds() / 86400),
-                # Re-engagement anchor for the engine's stale-cadence guard.
-                "episode_anchor": (cand.last_inbound_at or cand.last_interaction_at).isoformat(),
+                # Re-engagement anchor for the engine's stale-cadence guard: lo
+                # stesso istante immobile su cui è timbrata l'idempotenza.
+                "episode_anchor": anchor.isoformat(),
+                # Distingue i due silenzi, come fa il no-answer: chi non ha mai
+                # risposto è un caso diverso da chi ha risposto e poi è sparito.
+                "never_replied": cand.last_inbound_at is None,
             },
         )
         logger.info("uc06.emitted", lead_id=str(cand.lead_id))
