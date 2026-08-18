@@ -10,6 +10,12 @@ automation engine off this event.
 Idempotency is edge-triggered: the emission is anchored on the lead's
 `last_interaction_at` (`dormant_fired_for`). We fire once and re-arm only when the
 lead re-engages (advancing their max conversation activity past the anchor).
+
+La soglia è **quella che il merchant ha scritto sul nodo trigger**, e per un
+pezzo non lo è stata: la scansione partiva da una costante di 30 giorni, quindi
+un'automazione impostata a 2 giorni non poteva emettere nulla — la UI accetta il
+valore, il backend lo ignora, e nessuno dei due lo dice. Oggi il pavimento si
+deriva dalle soglie davvero configurate, come già faceva l'emettitore no-answer.
 """
 
 from __future__ import annotations
@@ -31,16 +37,36 @@ from shared import get_logger
 
 logger = get_logger(__name__)
 
-# Conservative scan floor (days): the per-merchant dormancy threshold, read from
-# the `lead_dormant` trigger node, is enforced per candidate in the loop.
-_MIN_DORMANT_DAYS = 30
+# Soglia attribuita a un nodo trigger che non dichiara `days` (l'editor ne scrive
+# sempre uno, ma un grafo importato o modificato a mano può non averlo).
 _DEFAULT_DORMANT_DAYS = 90
+
+# Pavimento assoluto della scansione. Non è una regola di prodotto — è solo il
+# valore minimo sotto il quale non ha senso scandire una volta al giorno, visto
+# che il cron non può reagire più in fretta del proprio tick.
+_SCAN_FLOOR_DAYS = 1
 
 
 async def reactivate_dormant_leads(ctx: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(tz=UTC)
-    candidates = await _scan_candidates(dormant_cutoff=now - timedelta(days=_MIN_DORMANT_DAYS))
-    logger.info("uc06.scan", count=len(candidates))
+    thresholds = await _enabled_thresholds()
+    if not thresholds:
+        # Nessun merchant ha un'automazione "lead dormiente" attiva: non c'è
+        # niente da emettere, e la scansione si può saltare del tutto.
+        return {"candidates": 0, "emitted": 0, "skipped": "no_enabled_automations"}
+
+    # Il pavimento è la dormienza più breve davvero configurata sulla
+    # piattaforma; ogni candidato viene poi ri-filtrato con la soglia del proprio
+    # merchant in `_maybe_emit`.
+    #
+    # Era la costante `_MIN_DORMANT_DAYS = 30`, ed è lo stesso difetto già
+    # corretto per il no-answer: la UI accetta "2 giorni", il backend scandisce
+    # da 30 in su, e il merchant che ha scritto 2 non vede partire niente né
+    # legge da nessuna parte il perché. Qualunque soglia sotto il mese era
+    # irraggiungibile in silenzio.
+    floor = max(_SCAN_FLOOR_DAYS, min(min(v) for v in thresholds.values()))
+    candidates = await _scan_candidates(dormant_cutoff=now - timedelta(days=floor))
+    logger.info("uc06.scan", count=len(candidates), floor_days=floor)
 
     emitted = 0
     for cand in candidates:
@@ -50,6 +76,13 @@ async def reactivate_dormant_leads(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"candidates": len(candidates), "emitted": emitted}
 
 
+async def _enabled_thresholds() -> dict[Any, list[int]]:
+    async with session_scope() as session:
+        return await AutomationRepository(session).enabled_trigger_thresholds(
+            trigger_type="lead_dormant", config_key="days", default=_DEFAULT_DORMANT_DAYS
+        )
+
+
 async def _scan_candidates(*, dormant_cutoff: datetime) -> list[ReactivationCandidate]:
     async with session_scope() as session:
         return await LeadRepository(session).list_reactivation_candidates(
@@ -57,9 +90,34 @@ async def _scan_candidates(*, dormant_cutoff: datetime) -> list[ReactivationCand
         )
 
 
+def _episode_anchor(cand: ReactivationCandidate) -> datetime:
+    """L'istante che identifica questo episodio di dormienza, e deve essere
+    **immobile** (stessa regola di `no_answer._episode_anchor`, ADR 0025).
+
+    Era `last_interaction_at`, cioè il massimo `last_message_at` fra le
+    conversazioni del lead — un istante che **i nostri stessi messaggi fanno
+    avanzare**. Il sollecito partiva, spostava l'ancora, il trigger si riarmava,
+    e dopo altri `days` ripartiva: un lead che non risponde mai riceveva un
+    messaggio ogni `days` giorni per sempre. Con il default di 90 giorni si
+    notava appena; con i 2 giorni che un merchant può configurare diventa un
+    invio ogni due giorni a tutta la base dormiente.
+
+    `last_inbound_at` quando il lead ha parlato almeno una volta: l'episodio è il
+    silenzio che segue la sua ultima parola, e un nuovo inbound lo chiude
+    riarmando il trigger. Quando invece non ha MAI risposto si ripiega sulla
+    creazione del lead, che non si muove mai.
+
+    La soglia resta invece su `last_interaction_at`: la dormienza *dura* dal
+    nostro ultimo contatto, ed è giusto che il sollecito non parta il giorno dopo
+    che gli abbiamo scritto. A muoversi è la misura, non l'identità dell'episodio.
+    """
+    return cand.last_inbound_at or cand.first_seen_at
+
+
 async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
-    # Edge gate: fire once per dormancy episode, keyed on last_interaction_at.
-    if cand.dormant_fired_for is not None and cand.dormant_fired_for >= cand.last_interaction_at:
+    # Edge gate: fire once per dormancy episode, keyed on the immobile anchor.
+    anchor = _episode_anchor(cand)
+    if cand.dormant_fired_for is not None and cand.dormant_fired_for >= anchor:
         return False
 
     tenant_ctx = TenantContext(
@@ -79,7 +137,7 @@ async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
         if now - cand.last_interaction_at < timedelta(days=days):
             return False
 
-        await LeadRepository(session).mark_dormant_fired(cand.lead_id, cand.last_interaction_at)
+        await LeadRepository(session).mark_dormant_fired(cand.lead_id, anchor)
         await AnalyticsRepository(session).emit(
             tenant_id=cand.tenant_id,
             merchant_id=cand.merchant_id,
@@ -88,8 +146,12 @@ async def _maybe_emit(cand: ReactivationCandidate, *, now: datetime) -> bool:
             subject_id=cand.lead_id,
             properties={
                 "days_dormant": int((now - cand.last_interaction_at).total_seconds() / 86400),
-                # Re-engagement anchor for the engine's stale-cadence guard.
-                "episode_anchor": (cand.last_inbound_at or cand.last_interaction_at).isoformat(),
+                # Re-engagement anchor for the engine's stale-cadence guard: lo
+                # stesso istante immobile su cui è timbrata l'idempotenza.
+                "episode_anchor": anchor.isoformat(),
+                # Distingue i due silenzi, come fa il no-answer: chi non ha mai
+                # risposto è un caso diverso da chi ha risposto e poi è sparito.
+                "never_replied": cand.last_inbound_at is None,
             },
         )
         logger.info("uc06.emitted", lead_id=str(cand.lead_id))

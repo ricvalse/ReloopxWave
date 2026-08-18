@@ -574,7 +574,7 @@ class ConversationRepository:
                     meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
                         'escalated', true,
                         'escalated_at', now()::text,
-                        'escalation_reason', :reason::text,
+                        'escalation_reason', CAST(:reason AS text),
                         -- Where the funnel was before the operator took over, so
                         -- resolving can put the bot back on the same step instead
                         -- of restarting it from qualification.
@@ -608,7 +608,7 @@ class ConversationRepository:
                     meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
                         'escalated', true,
                         'escalated_at', now()::text,
-                        'escalation_reason', :reason::text,
+                        'escalation_reason', CAST(:reason AS text),
                         'state_before_handoff', coalesce(current_state, 'QUALIFYING'),
                         'handoff_sla_fired_for', now()::text
                     )
@@ -697,7 +697,7 @@ class ConversationRepository:
                            )
                     END,
                     ARRAY['no_answer_fired_for', :automation_id],
-                    to_jsonb(:anchor::text),
+                    to_jsonb(CAST(:anchor AS text)),
                     true
                 )
                 WHERE id = :conversation_id
@@ -793,7 +793,7 @@ class ConversationRepository:
                 SET meta = jsonb_set(
                     coalesce(meta, '{}'::jsonb),
                     '{handoff_sla_fired_for}',
-                    to_jsonb(:anchor::text)
+                    to_jsonb(CAST(:anchor AS text))
                 )
                 WHERE id = :conversation_id
                 """
@@ -1020,6 +1020,6 @@ class ConversationRepository:
         import json
 
         await self._session.execute(
-            text("UPDATE conversations SET context_summary = :s::jsonb WHERE id = :cid"),
+            text("UPDATE conversations SET context_summary = CAST(:s AS jsonb) WHERE id = :cid"),
             {"s": json.dumps(summary), "cid": str(conversation_id)},
         )
