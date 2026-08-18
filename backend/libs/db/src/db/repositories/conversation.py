@@ -562,6 +562,12 @@ class ConversationRepository:
         *this* episode, and inheriting the previous one would put a stale summary
         in the operator's Slack alert.
         """
+        # `:reason_json` porta lo STESSO valore di `:reason`, con un nome diverso
+        # di proposito. SQLAlchemy emette un solo placeholder per nome, quindi con
+        # `:reason` anche dentro il CAST Postgres dovrebbe dedurre `$1` due volte
+        # in modo incompatibile — `handoff_reason` è varchar, il CAST lo forza a
+        # text — e solleva `AmbiguousParameterError: inconsistent types deduced`.
+        # Unire i due nomi "per pulizia" rimette l'handoff fuori uso.
         result = await self._session.execute(
             text(
                 """
@@ -574,7 +580,7 @@ class ConversationRepository:
                     meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
                         'escalated', true,
                         'escalated_at', now()::text,
-                        'escalation_reason', CAST(:reason AS text),
+                        'escalation_reason', CAST(:reason_json AS text),
                         -- Where the funnel was before the operator took over, so
                         -- resolving can put the bot back on the same step instead
                         -- of restarting it from qualification.
@@ -584,7 +590,12 @@ class ConversationRepository:
                 RETURNING id
                 """
             ),
-            {"conversation_id": str(conversation_id), "reason": reason, "summary": summary},
+            {
+                "conversation_id": str(conversation_id),
+                "reason": reason,
+                "reason_json": reason,
+                "summary": summary,
+            },
         )
         return result.scalar_one_or_none() is not None
 
@@ -597,6 +608,12 @@ class ConversationRepository:
         operator is the one who opened it. Without this, every manual reply would
         schedule a "handoff waiting" alert against the very person handling it.
         """
+        # `:reason_json` porta lo STESSO valore di `:reason`, con un nome diverso
+        # di proposito. SQLAlchemy emette un solo placeholder per nome, quindi con
+        # `:reason` anche dentro il CAST Postgres dovrebbe dedurre `$1` due volte
+        # in modo incompatibile — `handoff_reason` è varchar, il CAST lo forza a
+        # text — e solleva `AmbiguousParameterError: inconsistent types deduced`.
+        # Unire i due nomi "per pulizia" rimette l'handoff fuori uso.
         result = await self._session.execute(
             text(
                 """
@@ -608,7 +625,7 @@ class ConversationRepository:
                     meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
                         'escalated', true,
                         'escalated_at', now()::text,
-                        'escalation_reason', CAST(:reason AS text),
+                        'escalation_reason', CAST(:reason_json AS text),
                         'state_before_handoff', coalesce(current_state, 'QUALIFYING'),
                         'handoff_sla_fired_for', now()::text
                     )
@@ -616,7 +633,7 @@ class ConversationRepository:
                 RETURNING id
                 """
             ),
-            {"conversation_id": str(conversation_id), "reason": reason},
+            {"conversation_id": str(conversation_id), "reason": reason, "reason_json": reason},
         )
         return result.scalar_one_or_none() is not None
 
