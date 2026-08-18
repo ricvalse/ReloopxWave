@@ -73,3 +73,42 @@ def test_nessun_parametro_incollato_a_un_cast_nel_backend() -> None:
         "parametro non legato: `:nome::tipo` non è un bind param per SQLAlchemy, "
         "usare `CAST(:nome AS tipo)`.\n" + "\n".join(colpevoli)
     )
+
+
+# Secondo tranello, trovato correggendo il primo: `CAST(:reason AS text)` è
+# sintatticamente valido, ma se `:reason` compare **anche** altrove nella stessa
+# query SQLAlchemy emette un solo placeholder per nome — `$1` in entrambi i punti
+# — e Postgres deve dedurne il tipo due volte. Quando i due contesti non
+# concordano (qui `handoff_reason` è varchar e il CAST forza text) risponde
+# `AmbiguousParameterError: inconsistent types deduced for parameter $1`.
+#
+# Anche questo esplode solo in esecuzione, e anche questo non lo vede nessun test
+# unitario: `claim_handoff` è rimasto rotto per mesi con `meta ? 'escalated'` a
+# zero su 1047 conversazioni. La cura è legare il valore due volte con due nomi.
+
+CAST_PARAM = re.compile(r"CAST\(\s*:([a-zA-Z_]\w*)\s+AS\b", re.IGNORECASE)
+NAMED_PARAM = re.compile(r"(?<![:\w$]):([a-zA-Z_]\w*)")
+# Blocchi `text("""...""")` o `text("...")`.
+SQL_BLOCK = re.compile(r'text\(\s*(?:"""(.*?)"""|"([^"]*)")', re.DOTALL)
+
+
+def test_nessun_parametro_castato_e_riusato_altrove() -> None:
+    colpevoli: list[str] = []
+    for path in _source_files():
+        testo = path.read_text()
+        for match in SQL_BLOCK.finditer(testo):
+            sql = match.group(1) or match.group(2) or ""
+            nomi = NAMED_PARAM.findall(sql)
+            castati = set(CAST_PARAM.findall(sql))
+            ripetuti = {n for n in nomi if nomi.count(n) > 1}
+            for nome in sorted(ripetuti & castati):
+                riga = testo[: match.start()].count("\n") + 1
+                rel = path.relative_to(BACKEND_ROOT)
+                colpevoli.append(f"{rel}:{riga}: `:{nome}` è castato e riusato nella stessa query")
+
+    assert not colpevoli, (
+        "un parametro castato non può comparire anche altrove nella stessa query: "
+        "SQLAlchemy emette un solo placeholder e Postgres ne deduce due tipi in "
+        "conflitto (AmbiguousParameterError). Legare il valore a un secondo nome.\n"
+        + "\n".join(colpevoli)
+    )
