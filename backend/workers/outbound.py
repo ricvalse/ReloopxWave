@@ -14,7 +14,7 @@ performs the actual send given a built WhatsApp sender.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -47,25 +47,72 @@ def is_within_24h(last_inbound_at: datetime | None, now: datetime) -> bool:
 _DOUBLE_BRACE = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
 
 
-def render_free_text(text: str, context: dict[str, str]) -> str:
+def render_free_text(
+    text: str,
+    context: dict[str, str],
+    variable_mapping: dict[str, str] | None = None,
+) -> str:
     """Substitute placeholders in a free-text (MODE_TEXT) message.
 
-    Templates resolve their body variables via `resolve_body_params`; free text
-    previously went out verbatim, so `{{appointment.datetime}}` / `{name}` reached
-    the customer as raw placeholders. This renders both forms from the SAME dotted
-    context used for templates:
-      * `{{dotted.key}}` → context[key] (e.g. `{{appointment.datetime}}`)
-      * legacy `{name}` / `{first_name}` → the contact/lead name
+    Tre forme, tutte risolte dallo STESSO contesto puntato che usano i template:
 
-    Unknown `{{…}}` keys become "" (never left as raw braces — that reads as broken
-    copy). Stray single braces in the copy are left untouched.
+      * `{{1}}`, `{{2}}` → **le stesse variabili numerate del template**, risolte
+        attraverso il `variable_mapping` del nodo (slot → chiave, es.
+        `{"1": "lead.first_name"}`), esattamente come fa `resolve_body_params`;
+      * `{{chiave.puntata}}` → context[chiave] (es. `{{appointment.datetime}}`);
+      * `{name}` / `{first_name}` → il nome del contatto (forma storica).
+
+    Le numerate sono l'aggiunta che toglie una trappola vera: sul nodo `send`
+    convivono un testo libero e un template, il template si scrive con `{{1}}`, e
+    il merchant scriveva `{{1}}` anche nel testo libero — dove però "1" veniva
+    cercato fra le chiavi di contesto, non trovato, e sostituito con il vuoto. Il
+    cliente riceveva «Ciao , il team HR…». Una sola sintassi per entrambi, e la
+    mappatura si imposta una volta sola sul nodo.
+
+    Chiavi sconosciute diventano "" (mai lasciate come parentesi grezze — si
+    leggono come copy rotto). Le parentesi singole restano intatte.
     """
     if not text:
         return text
-    rendered = _DOUBLE_BRACE.sub(lambda m: str(context.get(m.group(1), "") or ""), text)
+    mapping = variable_mapping or {}
+
+    def _sostituisci(m: re.Match[str]) -> str:
+        chiave = m.group(1)
+        # Slot numerato: passa dalla mappatura del nodo, come il template.
+        sorgente = mapping.get(chiave, "") if chiave.isdigit() else chiave
+        return str(context.get(sorgente, "") or "")
+
+    rendered = _DOUBLE_BRACE.sub(_sostituisci, text)
     name = context.get("contact.name") or context.get("lead.name") or ""
     first = context.get("lead.first_name") or (name.split(" ")[0] if name else "")
     return rendered.replace("{first_name}", first).replace("{name}", name)
+
+
+def _slot_non_risolti(text: str, context: dict[str, str], mapping: dict[str, str]) -> list[str]:
+    """Gli slot numerati del testo libero che resterebbero vuoti.
+
+    Serve a dare al testo libero la stessa regola che il template ha già: un
+    messaggio con un buco al posto del nome non si manda (`decide_outbound`
+    salta con `incomplete_template_mapping`). Senza questa simmetria le due
+    metà dello stesso nodo si comporterebbero in modo opposto davanti allo
+    stesso `{{1}}` — che è esattamente la confusione che si voleva togliere.
+    """
+    # Mappatura vuota = su questo nodo le variabili numerate non sono una cosa
+    # configurata, e non è il merchant a scrivere il testo. È il caso di
+    # `ai_reply`, che passa il testo del modello con `variable_mapping={}`: se
+    # l'AI scrivesse per caso un `{{1}}`, questa guardia gli sopprimerebbe la
+    # risposta in una conversazione dal vivo. Meglio la resa storica (slot
+    # sostituito col vuoto) che una risposta che sparisce.
+    if not mapping:
+        return []
+    vuoti: list[str] = []
+    for m in _DOUBLE_BRACE.finditer(text or ""):
+        chiave = m.group(1)
+        if not chiave.isdigit():
+            continue
+        if not str(context.get(mapping.get(chiave, ""), "") or ""):
+            vuoti.append(chiave)
+    return vuoti
 
 
 @dataclass(slots=True, frozen=True)
@@ -113,9 +160,13 @@ def decide_outbound(
         return OutboundDecision(mode=MODE_SKIP, reason="flow_disabled")
 
     # Content is ONLY what the merchant put on the canvas — no hardcoded fallback.
-    text = render_free_text(step.free_text or "", ctx)
+    # Il testo libero riceve la mappatura del nodo: `{{1}}` si scrive uguale nel
+    # template e qui, e si imposta una volta sola.
+    text = render_free_text(step.free_text or "", ctx, step.variable_mapping)
     has_text = bool(text.strip())
     template_ready = bool(step.template_name and step.template_approved)
+    # Stessa regola del template: un buco al posto di una variabile non si manda.
+    slot_vuoti = _slot_non_risolti(step.free_text or "", ctx, step.variable_mapping)
 
     def _template_decision() -> OutboundDecision:
         assert step is not None and step.template_name is not None
@@ -151,6 +202,8 @@ def decide_outbound(
             return OutboundDecision(mode=MODE_SKIP, reason="outside_window_freeform_only")
         if not has_text:
             return OutboundDecision(mode=MODE_SKIP, reason="no_content")
+        if slot_vuoti:
+            return OutboundDecision(mode=MODE_SKIP, reason="incomplete_variable_mapping")
         return OutboundDecision(mode=MODE_TEXT, text=text)
 
     if policy == "require_template":
@@ -160,10 +213,20 @@ def decide_outbound(
 
     # policy == "auto"
     if within_window:
-        if has_text:
+        if has_text and not slot_vuoti:
             return OutboundDecision(mode=MODE_TEXT, text=text)
+        # Testo libero con un buco: meglio il template, che le sue variabili le
+        # risolve per conto suo. Se non c'è, si salta invece di mandare il buco.
+        if has_text and slot_vuoti and not template_ready:
+            return OutboundDecision(mode=MODE_SKIP, reason="incomplete_variable_mapping")
         if template_ready:
-            return _template_decision()
+            decisione = _template_decision()
+            if has_text and slot_vuoti and decisione.mode == MODE_TEMPLATE:
+                # Il merchant aveva scritto un testo e riceve il template: senza
+                # dirlo, si ritrova un messaggio diverso da quello che aveva
+                # davanti nell'editor e nessun indizio del perché.
+                return replace(decisione, reason="free_text_incompleto_uso_template")
+            return decisione
         # Enabled flow but the merchant hasn't written the message yet → don't
         # invent copy; skip until they configure the send node on the canvas.
         return OutboundDecision(mode=MODE_SKIP, reason="no_content")
