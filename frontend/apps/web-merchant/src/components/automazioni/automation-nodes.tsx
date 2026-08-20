@@ -233,10 +233,17 @@ export const ACTION_DEFS: TypeDef[] = [
   {
     type: 'send',
     label: 'Invia messaggio',
-    description: 'Rispetta la finestra 24h: testo entro, template approvato fuori.',
+    description:
+      'Rispetta la finestra 24h: testo entro, template approvato fuori. Le variabili {{1}}, {{2}} … si scrivono uguali in entrambi.',
     fields: [
       { key: 'window_policy', label: 'Politica finestra 24h', kind: 'select', options: WINDOW_POLICY_OPTIONS },
-      { key: 'free_text', label: 'Testo libero (entro 24h)', kind: 'text', placeholder: 'Ciao {name}, …' },
+      {
+        key: 'free_text',
+        label: 'Testo libero (entro 24h)',
+        kind: 'text',
+        // Stesse variabili numerate del template: una sola sintassi da imparare.
+        placeholder: 'Ciao {{1}}, …',
+      },
       { key: 'template_id', label: 'Template approvato (fuori 24h)', kind: 'template' },
     ],
   },

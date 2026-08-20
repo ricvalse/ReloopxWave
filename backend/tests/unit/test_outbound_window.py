@@ -264,3 +264,153 @@ async def test_persist_template_send_falls_back_to_placeholder_when_no_copy(
         sender_type="automation",
     )
     assert captured[0]["content"] == "Template «promo»"
+
+
+# ---- le variabili numerate nel testo libero --------------------------------
+#
+# Sul nodo `send` convivono un testo libero e un template. Il template si scrive
+# con `{{1}}`; il testo libero, prima, no — "1" veniva cercato fra le chiavi di
+# contesto, non c'era, e diventava vuoto. Il cliente riceveva «Ciao , il team
+# HR…». Ora la sintassi è una sola e la mappatura si imposta una volta sola.
+
+_MAPPATURA = {"1": "lead.first_name", "2": "appointment.datetime"}
+_CTX = {
+    "lead.first_name": "Sara",
+    "lead.name": "Sara Bianchi",
+    "contact.name": "Sara Bianchi",
+    "appointment.datetime": "giovedì alle 15",
+}
+
+
+def _solo_testo(**over: object) -> ResolvedFlowStep:
+    """Un nodo col solo testo libero: isola il percorso che stiamo verificando."""
+    base: dict[str, object] = {
+        "free_text": "Ciao {{1}}, tutto bene?",
+        "variable_mapping": _MAPPATURA,
+        "template_name": None,
+        "template_language": None,
+        "template_variables": [],
+        "template_approved": False,
+    }
+    base.update(over)
+    return _step(**base)
+
+
+def test_il_testo_libero_risolve_le_variabili_numerate_del_template() -> None:
+    reso = render_free_text("Ciao {{1}}, ci vediamo {{2}}?", _CTX, _MAPPATURA)
+    assert reso == "Ciao Sara, ci vediamo giovedì alle 15?"
+
+
+def test_il_caso_del_cliente_non_perde_piu_il_nome() -> None:
+    """La riga esatta che il merchant aveva scritto sul nodo."""
+    scritto = (
+        "Ciao {{1}}, il team HR sta per prendere in esame la tua candidatura, "
+        "mi confermi di aver compilato il questionario? Grazie"
+    )
+    reso = render_free_text(scritto, _CTX, {"1": "lead.first_name"})
+    assert reso.startswith("Ciao Sara,")
+    assert "{{1}}" not in reso
+
+
+def test_le_forme_storiche_continuano_a_funzionare() -> None:
+    """Chiavi puntate e `{name}` non devono essere toccate dall'aggiunta."""
+    assert render_free_text("Promemoria: {{appointment.datetime}}", _CTX, _MAPPATURA) == (
+        "Promemoria: giovedì alle 15"
+    )
+    assert render_free_text("Ciao {first_name}", _CTX, _MAPPATURA) == "Ciao Sara"
+    assert render_free_text("Ciao {name}", _CTX, _MAPPATURA) == "Ciao Sara Bianchi"
+    # Senza mappatura si comporta come prima: nessuna regressione per chi non la usa.
+    assert render_free_text("Promemoria: {{appointment.datetime}}", _CTX) == (
+        "Promemoria: giovedì alle 15"
+    )
+
+
+def test_uno_slot_senza_mappatura_resta_vuoto_nella_resa() -> None:
+    """La resa non inventa niente e non lascia parentesi grezze: sostituisce col
+    vuoto, spazio incluso. È `decide_outbound` a decidere se un testo così si
+    può mandare."""
+    assert render_free_text("Ciao {{3}}", _CTX, _MAPPATURA) == "Ciao "
+
+
+def test_dentro_la_finestra_il_testo_libero_parte_col_nome_risolto() -> None:
+    d = decide_outbound(within_window=True, step=_solo_testo(), context=_CTX)
+    assert d.mode == MODE_TEXT
+    assert d.text == "Ciao Sara, tutto bene?"
+
+
+def test_una_variabile_irrisolvibile_non_manda_un_messaggio_bucato() -> None:
+    """Stessa regola del template: meglio non mandare che mandare «Ciao ,»."""
+    ctx = dict(_CTX)
+    ctx["lead.first_name"] = ""
+    ctx["lead.name"] = ""
+    ctx["contact.name"] = ""
+
+    d = decide_outbound(within_window=True, step=_solo_testo(), context=ctx)
+
+    assert d.mode == MODE_SKIP
+    assert d.reason == "incomplete_variable_mapping"
+
+
+def test_col_buco_nel_testo_libero_ma_un_template_pronto_parte_il_template() -> None:
+    """Meglio il template che il salto — ma solo se il template regge da solo.
+
+    La mappatura è una sola per nodo, quindi uno slot irrisolvibile lo è per
+    entrambi: l'unico caso in cui il template se la cava è quando non dichiara
+    variabili proprie. Ed è il caso che conta, perché è il ripiego naturale di un
+    testo libero scritto male.
+    """
+    passo = _solo_testo(
+        free_text="Ciao {{9}}",  # slot senza mappatura: buco garantito
+        template_name="promemoria",
+        template_language="it",
+        template_approved=True,
+        template_variables=[],
+        template_body="Un promemoria per te",
+    )
+
+    d = decide_outbound(within_window=True, step=passo, context=_CTX)
+
+    assert d.mode == MODE_TEMPLATE
+
+
+def test_senza_mappatura_la_guardia_non_scatta_e_la_risposta_ai_parte() -> None:
+    """`ai_reply` passa il testo del modello con `variable_mapping={}`.
+
+    Se l'AI scrivesse per caso un `{{1}}`, applicare lì la guardia vorrebbe dire
+    far sparire una risposta in una conversazione dal vivo. Con la mappatura
+    vuota si torna alla resa storica: lo slot diventa vuoto, ma il messaggio parte.
+    """
+    passo = _solo_testo(free_text="Ecco {{1}} per te", variable_mapping={})
+
+    d = decide_outbound(within_window=True, step=passo, context=_CTX)
+
+    assert d.mode == MODE_TEXT
+    assert d.text == "Ecco  per te"
+
+
+def test_il_ripiego_sul_template_dichiara_il_perche() -> None:
+    """Il merchant aveva scritto un testo e ne riceve un altro: va detto."""
+    passo = _solo_testo(
+        free_text="Ciao {{9}}",
+        template_name="promemoria",
+        template_language="it",
+        template_approved=True,
+        template_variables=[],
+        template_body="Un promemoria per te",
+    )
+
+    d = decide_outbound(within_window=True, step=passo, context=_CTX)
+
+    assert d.mode == MODE_TEMPLATE
+    assert d.reason == "free_text_incompleto_uso_template"
+
+
+def test_fuori_finestra_il_testo_bucato_non_cambia_nulla() -> None:
+    """Fuori dalla finestra il testo libero non parte comunque: serve il template."""
+    ctx = dict(_CTX)
+    ctx["lead.first_name"] = ""
+
+    d = decide_outbound(within_window=False, step=_solo_testo(), context=ctx)
+
+    assert d.mode == MODE_SKIP
+    assert d.reason == "no_template_outside_window"

@@ -438,6 +438,7 @@ function NodeConfigPanel({
         <TemplateVariableMapping
           templateId={String(config.template_id ?? '')}
           templates={approvedTemplates}
+          freeText={String(config.free_text ?? '')}
           value={(config.variable_mapping as Record<string, string> | undefined) ?? {}}
           onChange={(mapping) => onChange('variable_mapping', mapping)}
         />
@@ -517,24 +518,40 @@ const MAPPING_SOURCES = [
 // Per-variable mapping for the selected template: without a complete mapping the
 // engine refuses to send (skip `incomplete_template_mapping`), so surface one
 // select per {{n}} placeholder instead of leaving the config invisible.
+// Gli slot `{{1}}`, `{{2}}` … scritti a mano nel testo libero. Il testo libero
+// usa le STESSE variabili numerate del template (una sola sintassi da imparare,
+// una sola mappatura da impostare), quindi anche i suoi slot vanno mappati —
+// altrimenti restano vuoti e il messaggio non parte.
+const SLOT_NEL_TESTO = /\{\{\s*(\d+)\s*\}\}/g;
+
+function slotDelTestoLibero(freeText: string): string[] {
+  return [...freeText.matchAll(SLOT_NEL_TESTO)].flatMap((m) => (m[1] ? [m[1]] : []));
+}
+
 function TemplateVariableMapping({
   templateId,
   templates,
+  freeText,
   value,
   onChange,
 }: {
   templateId: string;
   templates: Template[];
+  freeText: string;
   value: Record<string, string>;
   onChange: (mapping: Record<string, string>) => void;
 }) {
   const tpl = templates.find((t) => t.id === templateId);
-  const variables = tpl?.variables ?? [];
-  if (!tpl || variables.length === 0) return null;
+  // Unione: le variabili dichiarate dal template più quelle scritte nel testo
+  // libero. La mappatura è una sola per nodo e vale per entrambi.
+  const variables = [...new Set([...(tpl?.variables ?? []), ...slotDelTestoLibero(freeText)])].sort(
+    (a, b) => Number(a) - Number(b),
+  );
+  if (variables.length === 0) return null;
   const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm';
   return (
     <div className="space-y-1">
-      <Label className="text-xs">Variabili del template</Label>
+      <Label className="text-xs">Variabili del messaggio</Label>
       {variables.map((v) => (
         <div key={v} className="flex items-center gap-2">
           <span className="w-12 shrink-0 text-xs text-muted-foreground">{`{{${v}}}`}</span>
@@ -553,7 +570,8 @@ function TemplateVariableMapping({
         </div>
       ))}
       <p className="text-[10px] text-muted-foreground">
-        Ogni variabile deve avere un valore: con il mapping incompleto il template non viene inviato.
+        Valgono sia nel template sia nel testo libero: scrivi <code>{'{{1}}'}</code> in entrambi. Ogni
+        variabile deve avere un valore — con il mapping incompleto il messaggio non viene inviato.
       </p>
     </div>
   );
