@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Badge, Button, Input, Label, Textarea, toast } from '@reloop/ui';
+import { Badge, Button, Input, Label, Textarea, toast, useListDraft } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 import { flatten, inflate, type FormState } from '@/components/bot-config/override-bag';
@@ -290,24 +290,7 @@ function FieldInput({
   }
 
   if (field.kind === 'lines') {
-    // Una regola per riga: le direttive sono una lista lato backend, e mostrarle
-    // come righe evita che il merchant debba pensare in termini di array.
-    return (
-      <Textarea
-        id={id}
-        rows={field.rows ?? 4}
-        placeholder={field.placeholder}
-        value={Array.isArray(value) ? (value as string[]).join('\n') : String(value ?? '')}
-        onChange={(e) =>
-          onChange(
-            e.target.value
-              .split('\n')
-              .map((line) => line.trim())
-              .filter(Boolean),
-          )
-        }
-      />
-    );
+    return <LinesFieldInput id={id} field={field} value={value} onChange={onChange} />;
   }
 
   if (field.kind === 'multiselect') {
@@ -345,6 +328,50 @@ function FieldInput({
       placeholder={field.placeholder}
       value={String(value ?? '')}
       onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+/**
+ * Una regola per riga: le direttive sono una lista lato backend, e mostrarle
+ * come righe evita che il merchant debba pensare in termini di array.
+ *
+ * Il testo passa da `useListDraft`, così lo spazio a fine parola e la riga
+ * aperta con Invio restano dove sono stati battuti — prima la lista ripulita
+ * rientrava nel `value` a ogni tasto e il campo era inscrivibile. Stesso difetto
+ * e stesso rimedio del pannello Configurazione bot: i profili sono un delta
+ * della medesima `BotConfigSchema`.
+ *
+ * Componente a sé — e non un ramo di `FieldInput` — perché un hook non può
+ * stare dentro un `if`.
+ */
+function LinesFieldInput({
+  id,
+  field,
+  value,
+  onChange,
+}: {
+  id: string;
+  field: FieldDef;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  // Una stringa arriva solo da un valore storico: spezzarla per righe la mostra
+  // esattamente com'era e la normalizza al primo tocco.
+  const items = Array.isArray(value)
+    ? (value as unknown[]).map(String)
+    : value
+      ? String(value).split('\n')
+      : [];
+  const { text, setText } = useListDraft({ items, separator: '\n', join: '\n', onChange });
+
+  return (
+    <Textarea
+      id={id}
+      rows={field.rows ?? 4}
+      placeholder={field.placeholder}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
     />
   );
 }

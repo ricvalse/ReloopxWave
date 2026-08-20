@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Input, Select, Switch, Textarea, WeeklyHoursEditor } from '@reloop/ui';
+import { Input, Select, Switch, Textarea, WeeklyHoursEditor, useListDraft } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 import type { FieldDef } from './sections';
@@ -110,24 +110,13 @@ export function FieldInput({
   }
 
   if (field.kind === 'tags') {
-    // Value is a string[]; render one item per line. Emit null when empty so
-    // `inflate` drops it and the field reads as inherited (not an empty override).
-    const arr = Array.isArray(value) ? (value as unknown[]).map(String) : [];
     return (
-      <Textarea
-        id={field.key}
+      <TagsFieldInput
+        field={field}
+        value={value}
         disabled={disabled}
-        value={arr.join('\n')}
-        onChange={(e) => {
-          const lines = e.target.value
-            .split('\n')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          onChange(lines.length ? lines : null);
-        }}
-        placeholder={placeholder ?? field.placeholder}
-        rows={field.rows ?? 3}
-        className="w-full font-mono text-[13px] leading-relaxed"
+        onChange={onChange}
+        placeholder={placeholder}
       />
     );
   }
@@ -172,6 +161,54 @@ export function FieldInput({
       value={value === null || value === undefined ? '' : String(value)}
       onChange={(e) => onChange(e.target.value || null)}
       placeholder={placeholder ?? field.placeholder}
+    />
+  );
+}
+
+/**
+ * Lista a una voce per riga.
+ *
+ * Il testo passa da `useListDraft`, quindi lo spazio a fine parola e la riga
+ * aperta con Invio restano dove l'utente li ha messi: la lista ripulita esce
+ * solo verso il form, che è l'unico a doverla vedere normalizzata. Prima la
+ * normalizzazione rientrava nel `value` a ogni battuta e questi campi
+ * risultavano impossibili da scrivere.
+ *
+ * Componente a sé — e non un ramo di `FieldInput` — perché un hook non può
+ * stare dentro un `if`.
+ */
+function TagsFieldInput({
+  field,
+  value,
+  disabled,
+  onChange,
+  placeholder,
+}: {
+  field: FieldDef;
+  value: unknown;
+  disabled: boolean;
+  onChange: (v: unknown) => void;
+  placeholder?: string;
+}) {
+  const items = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+  const { text, setText } = useListDraft({
+    items,
+    separator: '\n',
+    join: '\n',
+    // Lista vuota → null, così `inflate` lascia cadere la chiave e il campo
+    // torna a leggersi come ereditato invece che come override vuoto.
+    onChange: (lines) => onChange(lines.length ? lines : null),
+  });
+
+  return (
+    <Textarea
+      id={field.key}
+      disabled={disabled}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      placeholder={placeholder ?? field.placeholder}
+      rows={field.rows ?? 3}
+      className="w-full font-mono text-[13px] leading-relaxed"
     />
   );
 }

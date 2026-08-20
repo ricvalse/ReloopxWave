@@ -17,7 +17,7 @@ import {
   type Node,
 } from '@xyflow/react';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, Input, Label } from '@reloop/ui';
+import { Button, Card, CardContent, Input, Label, useListDraft } from '@reloop/ui';
 import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
 import { useOutcomeOptions, useProfileOptions } from './use-reference-options';
@@ -633,18 +633,7 @@ function ConfigField({
           ))}
         </select>
       ) : field.kind === 'keywords' ? (
-        <Input
-          placeholder={field.placeholder}
-          value={Array.isArray(value) ? value.join(', ') : ''}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
-        />
+        <KeywordsInput placeholder={field.placeholder} value={value} onChange={onChange} />
       ) : field.kind === 'template' ? (
         <select className={selectClass} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)}>
           <option value="">— seleziona —</option>
@@ -703,6 +692,30 @@ function ConfigField({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Parole chiave separate da virgola.
+ *
+ * Il testo passa da `useListDraft`: la virgola appena battuta e lo spazio che la
+ * segue restano a schermo invece di essere riassorbiti dalla normalizzazione a
+ * ogni battuta — che era il motivo per cui non si riusciva ad aggiungere la
+ * seconda parola chiave, né a scriverne una di due parole.
+ */
+function KeywordsInput({
+  value,
+  placeholder,
+  onChange,
+}: {
+  value: unknown;
+  placeholder?: string;
+  onChange: (value: unknown) => void;
+}) {
+  const items = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+  const { text, setText } = useListDraft({ items, separator: ',', join: ', ', onChange });
+  return (
+    <Input placeholder={placeholder} value={text} onChange={(e) => setText(e.target.value)} />
   );
 }
 
