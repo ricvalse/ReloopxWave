@@ -10,6 +10,11 @@ export interface FieldDef {
   label: string;
   kind:
     | 'text'
+    // Corpo di un messaggio: l'a-capo è contenuto, non formattazione, perché
+    // arriva testualmente alla persona. Un `<input>` monoriga lo rende
+    // impossibile da battere e cancella in silenzio quelli di un testo
+    // importato da un template.
+    | 'textarea'
     | 'number'
     | 'select'
     | 'keywords'
@@ -236,7 +241,12 @@ export const ACTION_DEFS: TypeDef[] = [
     description: 'Rispetta la finestra 24h: testo entro, template approvato fuori.',
     fields: [
       { key: 'window_policy', label: 'Politica finestra 24h', kind: 'select', options: WINDOW_POLICY_OPTIONS },
-      { key: 'free_text', label: 'Testo libero (entro 24h)', kind: 'text', placeholder: 'Ciao {name}, …' },
+      {
+        key: 'free_text',
+        label: 'Testo libero (entro 24h)',
+        kind: 'textarea',
+        placeholder: 'Ciao {name}, …',
+      },
       { key: 'template_id', label: 'Template approvato (fuori 24h)', kind: 'template' },
     ],
   },
@@ -303,7 +313,7 @@ export const ACTION_DEFS: TypeDef[] = [
       {
         key: 'text',
         label: 'Testo personalizzato (opzionale)',
-        kind: 'text',
+        kind: 'textarea',
         placeholder: 'Vuoto = avviso automatico. Placeholder: {name} {phone} {reason} {last_message}',
       },
     ],
@@ -340,7 +350,7 @@ export const ACTION_DEFS: TypeDef[] = [
     type: 'send_message',
     label: 'Invia testo (legacy)',
     description: 'Testo libero (solo entro la finestra 24h).',
-    fields: [{ key: 'text', label: 'Testo', kind: 'text', placeholder: 'Ciao {name}, …' }],
+    fields: [{ key: 'text', label: 'Testo', kind: 'textarea', placeholder: 'Ciao {name}, …' }],
   },
 ];
 

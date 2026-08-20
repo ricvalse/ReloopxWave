@@ -17,7 +17,7 @@ import {
   type Node,
 } from '@xyflow/react';
 import type { components } from '@reloop/api-client';
-import { Button, Card, CardContent, Input, Label, useListDraft } from '@reloop/ui';
+import { Button, Card, CardContent, Input, Label, Textarea, useListDraft } from '@reloop/ui';
 import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
 import { useOutcomeOptions, useProfileOptions } from './use-reference-options';
@@ -632,6 +632,15 @@ function ConfigField({
             </option>
           ))}
         </select>
+      ) : field.kind === 'textarea' ? (
+        // Corpo di un messaggio: qui l'a-capo è parte del testo che il lead
+        // legge, quindi serve un campo che sappia contenerlo.
+        <Textarea
+          placeholder={field.placeholder}
+          value={String(value ?? '')}
+          onChange={(e) => onChange(e.target.value)}
+          rows={4}
+        />
       ) : field.kind === 'keywords' ? (
         <KeywordsInput placeholder={field.placeholder} value={value} onChange={onChange} />
       ) : field.kind === 'template' ? (
