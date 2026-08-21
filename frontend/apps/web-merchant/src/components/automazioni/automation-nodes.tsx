@@ -10,6 +10,11 @@ export interface FieldDef {
   label: string;
   kind:
     | 'text'
+    // Corpo di un messaggio: l'a-capo è contenuto, non formattazione, perché
+    // arriva testualmente alla persona. Un `<input>` monoriga lo rende
+    // impossibile da battere e cancella in silenzio quelli di un testo
+    // importato da un template.
+    | 'textarea'
     | 'number'
     | 'select'
     | 'keywords'
@@ -240,7 +245,7 @@ export const ACTION_DEFS: TypeDef[] = [
       {
         key: 'free_text',
         label: 'Testo libero (entro 24h)',
-        kind: 'text',
+        kind: 'textarea',
         // Stesse variabili numerate del template: una sola sintassi da imparare.
         placeholder: 'Ciao {{1}}, …',
       },
@@ -310,7 +315,7 @@ export const ACTION_DEFS: TypeDef[] = [
       {
         key: 'text',
         label: 'Testo personalizzato (opzionale)',
-        kind: 'text',
+        kind: 'textarea',
         placeholder: 'Vuoto = avviso automatico. Placeholder: {name} {phone} {reason} {last_message}',
       },
     ],
@@ -347,7 +352,7 @@ export const ACTION_DEFS: TypeDef[] = [
     type: 'send_message',
     label: 'Invia testo (legacy)',
     description: 'Testo libero (solo entro la finestra 24h).',
-    fields: [{ key: 'text', label: 'Testo', kind: 'text', placeholder: 'Ciao {name}, …' }],
+    fields: [{ key: 'text', label: 'Testo', kind: 'textarea', placeholder: 'Ciao {name}, …' }],
   },
 ];
 

@@ -11,6 +11,7 @@ import {
   CardTitle,
   PageHeader,
   WeeklyHoursEditor,
+  useListDraft,
 } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { BulkApplyDialog } from '@/components/merchants/bulk-apply-dialog';
@@ -655,24 +656,7 @@ function TemplateFieldInput({
     );
   }
   if (field.kind === 'tags') {
-    // string[] as one item per line. Empty → undefined (inherit / omit on save).
-    const arr = Array.isArray(value) ? (value as unknown[]).map(String) : [];
-    return (
-      <textarea
-        id={`f-${field.key}`}
-        value={arr.join('\n')}
-        onChange={(e) => {
-          const lines = e.target.value
-            .split('\n')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          onChange(lines.length ? lines : undefined);
-        }}
-        rows={3}
-        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-        placeholder="Eredita (una voce per riga)"
-      />
-    );
+    return <TemplateTagsInput field={field} value={value} onChange={onChange} />;
   }
   if (field.kind === 'multiselect') {
     // string[] allowlist. Nothing selected → undefined (inherit = all allowed).
@@ -708,6 +692,48 @@ function TemplateFieldInput({
       onChange={(e) => onChange(e.target.value || undefined)}
       className={cls}
       placeholder={field.placeholder ?? 'Eredita'}
+    />
+  );
+}
+
+/**
+ * Lista a una voce per riga.
+ *
+ * Il testo passa da `useListDraft`, così lo spazio a fine parola e la riga
+ * aperta con Invio non vengono riscritti mentre si digita: normalizziamo solo
+ * ciò che esce verso il form. Prima il valore ripulito rientrava nel `value` a
+ * ogni battuta e il campo era di fatto inscrivibile.
+ *
+ * Componente a sé — e non un ramo di `TemplateFieldInput` — perché un hook non
+ * può stare dentro un `if`.
+ */
+function TemplateTagsInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: TField;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const items = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+  const { text, setText } = useListDraft({
+    items,
+    separator: '\n',
+    join: '\n',
+    // Lista vuota → undefined: la chiave sparisce dal bag e il default torna a
+    // essere ereditato invece che sovrascritto con una lista vuota.
+    onChange: (lines) => onChange(lines.length ? lines : undefined),
+  });
+
+  return (
+    <textarea
+      id={`f-${field.key}`}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      rows={3}
+      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+      placeholder="Eredita (una voce per riga)"
     />
   );
 }
