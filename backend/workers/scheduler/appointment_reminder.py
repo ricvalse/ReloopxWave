@@ -21,7 +21,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.automations import SendPlan, resolve_send_node_at, resolve_send_plan
-from ai_core.response_hours import resolve_response_hours
+from ai_core.response_hours import resolve_automation_hours
 from db import (
     AnalyticsRepository,
     AppointmentReminderCandidate,
@@ -166,8 +166,8 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         # di già cominciato — un danno che oggi non esiste e che il rinvio
         # introdurrebbe. In quel caso si lascia cadere e si consuma la voce,
         # altrimenti il promemoria scaduto verrebbe ritentato per sempre.
-        hours = await resolve_response_hours(session, cand.merchant_id)
-        if hours.apply_to_automations and not hours.is_open(now):
+        hours = await resolve_automation_hours(session, cand.merchant_id)
+        if hours is not None and not hours.is_open(now):
             next_open = hours.next_opening(now)
             # `next_opening` è sempre aware; `start_at` lo è quasi sempre
             # (timestamptz), ma un confronto aware/naive alza TypeError e qui
@@ -195,7 +195,13 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
                 properties={
                     "start_at": cand.start_at.isoformat(),
                     "next_opening": next_open.isoformat() if next_open else None,
-                    "reason": "reopening_after_appointment",
+                    # Due cause diverse dietro lo stesso esito: l'agenda riapre
+                    # troppo tardi, oppure non riapre affatto. Un'unica
+                    # etichetta le renderebbe indistinguibili nelle Statistiche
+                    # se non guardando `next_opening: null`.
+                    "reason": (
+                        "reopening_after_appointment" if next_open is not None else "never_reopens"
+                    ),
                 },
             )
             logger.info(

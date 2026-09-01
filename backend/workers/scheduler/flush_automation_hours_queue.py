@@ -39,7 +39,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from ai_core.response_hours import resolve_response_hours
+from ai_core.response_hours import resolve_automation_hours
 from db import (
     AnalyticsRepository,
     AutomationHoursQueueRepository,
@@ -153,8 +153,8 @@ async def _flush_one(cand: QueuedAutomationRun, *, redis: Any, now: datetime) ->
         # il motivo per cui questo è uno sweep. E si rilegge anche
         # `apply_to_automations` — se il merchant l'ha spento durante la
         # chiusura, la coda va consegnata, non trattenuta per sempre.
-        hours = await resolve_response_hours(session, cand.merchant_id)
-        if hours.apply_to_automations and not hours.is_open(now):
+        hours = await resolve_automation_hours(session, cand.merchant_id)
+        if hours is not None and not hours.is_open(now):
             return "still_closed"
 
         # Il claim viene per ultimo: i controlli qui sopra sono a costo zero e

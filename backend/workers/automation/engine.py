@@ -47,7 +47,7 @@ from ai_core.conversation_service import TurnContext, build_cascade_system_promp
 from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
-from ai_core.response_hours import resolve_response_hours
+from ai_core.response_hours import resolve_automation_hours
 from ai_core.router import RoutingRequest
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -436,8 +436,8 @@ async def automation_run(
         # paga la cascata (che comunque ha la cache Redis a ~60s).
         hours_closed = False
         if needs_channel:
-            hours = await resolve_response_hours(session, UUID(merchant_id))
-            hours_closed = hours.apply_to_automations and not hours.is_open()
+            hours = await resolve_automation_hours(session, UUID(merchant_id))
+            hours_closed = hours is not None and not hours.is_open()
 
         run_ctx.api_key = wa.api_key if wa else ""
         run_ctx.waba_base_url = wa.waba_base_url if wa else None
@@ -509,6 +509,20 @@ async def automation_run(
                     f"offhours:{automation_id}:{subject_id}:{'-'.join(sorted(off_hours_keys))}"
                 ),
             )
+            if not queued_new:
+                # Collasso voluto (stesso flusso, stesso soggetto, stessi nodi:
+                # un messaggio solo alla riapertura), ma non silenzioso —
+                # altrimenti "il secondo tocco non è mai arrivato" non sarebbe
+                # diagnosticabile da nessuna parte. La riga esistente ha appena
+                # preso l'ancora d'episodio di *questo* evento: vedi
+                # `AutomationHoursQueueRepository.enqueue`.
+                logger.info(
+                    "automation.off_hours.already_queued",
+                    automation_id=automation_id,
+                    subject_id=subject_id,
+                    nodes=sorted(off_hours_keys),
+                    episode_anchor=episode_anchor,
+                )
             if queued_new:
                 await AnalyticsRepository(session).emit(
                     tenant_id=UUID(tenant_id),

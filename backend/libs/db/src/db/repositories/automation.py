@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, literal_column, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -264,15 +264,37 @@ class AutomationHoursQueueRepository:
         episode_anchor: str | None,
         dedup_key: str,
     ) -> bool:
-        """Accoda un ramo sospeso. Idempotente su `dedup_key`.
+        """Accoda un ramo sospeso. Una riga sola per `dedup_key`, con l'ancora fresca.
 
-        `ON CONFLICT DO NOTHING`: la ri-scansione del dispatcher entro i 120s di
-        lookback, o una ri-consegna arq, ripassano dagli stessi nodi con la
-        stessa chiave — accodare due volte significherebbe due messaggi identici
-        alla riapertura. Ritorna True solo per l'inserimento vincente, così il
-        chiamante può emettere l'evento una volta sola.
+        Il conflitto è la norma, non l'eccezione: la ri-scansione del dispatcher
+        entro i 120s di lookback, una ri-consegna arq, o semplicemente un secondo
+        evento notturno sullo stesso lead e sullo stesso nodo. Accodare due volte
+        significherebbe due messaggi identici alla riapertura.
+
+        Ma il conflitto **aggiorna `episode_anchor`** invece di ignorare la
+        seconda scrittura, e questa è la parte che si paga cara a sbagliarla.
+        L'ancora è ciò contro cui `_episode_ended` decide, alla ripresa, se la
+        cadenza ha ancora senso: "il lead ha scritto dopo il momento che ha
+        autorizzato questo messaggio?". Tenendo la **prima** ancora, questo
+        scenario perdeva un invio legittimo, in silenzio:
+
+            02:00  il lead è muto da un po' → episodio no-answer, ancora 02:00,
+                   fuori orario → in coda
+            04:00  il lead risponde → quell'episodio è chiuso, giustamente
+            06:00  torna muto → nuovo episodio, ancora 06:00 → stesso nodo,
+                   stessa chiave → con DO NOTHING la riga conserva 02:00
+            09:00  riapertura: `last_inbound_at` (04:00) è successivo all'ancora
+                   (02:00) → "episodio finito" → non parte niente
+
+        L'ancora nuova arriva da un evento più recente, quindi è per costruzione
+        l'autorizzazione più attuale: è quella contro cui va fatto il confronto.
+
+        Ritorna True solo per l'inserimento vero — non per l'aggiornamento — così
+        il chiamante emette l'evento una volta sola. `xmax = 0` è l'idioma
+        Postgres per distinguerli: su una riga appena inserita non c'è nessuna
+        transazione che l'abbia aggiornata, quindi `xmax` vale 0.
         """
-        stmt = (
+        stmt: Any = (
             pg_insert(AutomationHoursQueue)
             .values(
                 tenant_id=tenant_id,
@@ -284,10 +306,17 @@ class AutomationHoursQueueRepository:
                 episode_anchor=episode_anchor,
                 dedup_key=dedup_key,
             )
-            .on_conflict_do_nothing(constraint="uq_automation_hours_queue_dedup")
-            .returning(AutomationHoursQueue.id)
+            .on_conflict_do_update(
+                constraint="uq_automation_hours_queue_dedup",
+                set_={"episode_anchor": episode_anchor, "updated_at": func.now()},
+            )
+            .returning(
+                AutomationHoursQueue.id,
+                literal_column("xmax = 0").label("inserted"),
+            )
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+        row = (await self._session.execute(stmt)).first()
+        return bool(row is not None and row.inserted)
 
     async def list_pending(self, *, limit: int = 500) -> list[QueuedAutomationRun]:
         """Scansione cross-tenant, i più vecchi per primi.

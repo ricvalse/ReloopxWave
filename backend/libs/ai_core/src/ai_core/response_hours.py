@@ -84,6 +84,42 @@ _UNRESTRICTED = ResponseHours(
 )
 
 
+async def resolve_automation_hours(session: Any, merchant_id: UUID) -> ResponseHours | None:
+    """Gli orari **se** valgono per le automazioni, altrimenti `None` (ADR 0030).
+
+    Esiste per l'ordine in cui legge, non per quello che ritorna: risolve prima
+    la sola `schedule.apply_to_automations` — una lettura dalla cascata, con la
+    cache Redis davanti — e solo se è accesa paga `resolve_response_hours`.
+
+    Il motivo è concreto. In `mode="business_hours"` la risoluzione completa fa
+    **due query non cachate** (`business_hours` + `business_closures`), e il
+    chiamante principale è `automation_run`, che parte a ogni messaggio in
+    ingresso sui trigger `message_received`. Chiedere quelle due query a ogni
+    run di ogni merchant — comprese le automazioni di chi il vincolo non l'ha
+    mai acceso — vuol dire pagare per tutti una funzione che usano in pochi, su
+    un pool che in questo repo si è già esaurito in burst.
+
+    `None` significa "nessun vincolo orario da applicare qui", non "sempre
+    aperto": UC-01 continua a chiamare `resolve_response_hours`, che gli orari
+    li vuole comunque.
+    """
+    try:
+        applies = await ConfigResolver(session).resolve(
+            ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS, merchant_id=merchant_id
+        )
+    except Exception as e:  # pragma: no cover — difesa, non flusso
+        # Fail-open come il resto del modulo: un errore qui deve degradare in
+        # automazioni che partono, mai in automazioni mute.
+        logger.warning(
+            "schedule.automation_flag_failed", error=str(e), merchant_id=str(merchant_id)
+        )
+        return None
+    if not applies:
+        return None
+    hours = await resolve_response_hours(session, merchant_id)
+    return hours if hours.apply_to_automations else None
+
+
 def _weekly_from_config(raw: Any) -> dict[int, list[tuple[str, str]]]:
     """`schedule.weekly` (lista di dict dal JSONB) → finestre per giorno.
 

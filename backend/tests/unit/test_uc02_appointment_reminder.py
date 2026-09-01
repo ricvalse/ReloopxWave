@@ -225,11 +225,11 @@ async def test_multi_reminder_picks_send_matching_offset(
 # --- ADR 0030: gli orari valgono anche per il promemoria --------------------
 
 
-def _hours(*, apply: bool, is_open: bool, next_opening: datetime | None) -> object:
+def _hours(*, is_open: bool, next_opening: datetime | None) -> object:
+    """`resolve_automation_hours` ritorna None quando il vincolo e' spento."""
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        apply_to_automations=apply,
         is_open=lambda _now=None: is_open,
         next_opening=lambda _now=None: next_opening,
     )
@@ -239,7 +239,7 @@ def _patch_hours(monkeypatch: pytest.MonkeyPatch, hours: object) -> None:
     async def _resolve(_session, _merchant_id):
         return hours
 
-    monkeypatch.setattr(mod, "resolve_response_hours", _resolve)
+    monkeypatch.setattr(mod, "resolve_automation_hours", _resolve)
 
 
 async def test_promemoria_rimandato_fuori_orario_non_consuma_la_voce(
@@ -257,7 +257,7 @@ async def test_promemoria_rimandato_fuori_orario_non_consuma_la_voce(
     # Riapre alle 09:00 di domani, cioè PRIMA dell'appuntamento (NOW+12h).
     _patch_hours(
         monkeypatch,
-        _hours(apply=True, is_open=False, next_opening=NOW + timedelta(hours=4)),
+        _hours(is_open=False, next_opening=NOW + timedelta(hours=4)),
     )
 
     cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
@@ -284,7 +284,7 @@ async def test_promemoria_lasciato_cadere_se_si_riapre_dopo_l_appuntamento(
     # L'appuntamento è a NOW+12h, si riapre a NOW+20h: troppo tardi.
     _patch_hours(
         monkeypatch,
-        _hours(apply=True, is_open=False, next_opening=NOW + timedelta(hours=20)),
+        _hours(is_open=False, next_opening=NOW + timedelta(hours=20)),
     )
 
     cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
@@ -303,7 +303,7 @@ async def test_promemoria_ignora_gli_orari_se_il_vincolo_e_spento(
     marked: list = []
     events: list = []
     _patch(monkeypatch, marked=marked, events=events, persisted=[])
-    _patch_hours(monkeypatch, _hours(apply=False, is_open=False, next_opening=None))
+    _patch_hours(monkeypatch, None)
 
     cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
     sent = await mod._maybe_send(cand, now=NOW, kek="unused")

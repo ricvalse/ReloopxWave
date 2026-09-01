@@ -73,6 +73,13 @@ ripresa: il testo è quello attuale del nodo, la finestra 24h viene rivalutata
 d'episodio di ADR 0015 riparte — se il lead ha risposto nel frattempo, la
 cadenza si spegne da sola invece di insistere.
 
+Quello che **non** viene rivalutato sono le condizioni a monte: si riprende da
+metà grafo, quindi un `condition_group` "solo se lead caldo" deciso alle 22:00
+vale ancora alle 09:00. È la stessa semantica del resume di un `wait` — un nodo
+già attraversato non si riattraversa — e va saputa: chi vuole una condizione
+valutata al momento della consegna la mette **dopo** il nodo di invio, non
+prima.
+
 ### 4. Una tabella e uno sweep, non un job arq differito
 
 `automation_hours_queue` + il cron `flush_automation_hours_queue` ogni 5
@@ -104,10 +111,22 @@ si può fare.
 sweep si sovrappongono senza spedire due volte, e il claim si libera da solo se
 il worker muore a metà.
 
-L'unicità è su `dedup_key`, costruita con la stessa formula della continuazione
-arq (`{dedup_base}:{nodi ordinati}`): la ri-scansione del dispatcher entro i 120
-secondi di lookback, o una ri-consegna arq, trovano la riga già in coda invece
-di accodarne una seconda.
+L'unicità è su `dedup_key` = `offhours:{automazione}:{soggetto}:{nodi}` —
+deliberatamente **senza** la dedup del run che l'ha prodotta, così due eventi
+notturni sullo stesso nodo e sullo stesso lead producono un messaggio solo alla
+riapertura (la regola di §4 di ADR 0028, applicata all'altro verso).
+
+Il conflitto però **aggiorna `episode_anchor`**, non si limita a ignorare la
+seconda scrittura. Tenendo la prima ancora si perdeva un invio legittimo in
+silenzio: lead muto alle 02:00 → episodio in coda con ancora 02:00; il lead
+risponde alle 04:00 (quell'episodio è chiuso, giustamente); torna muto e alle
+06:00 ne parte uno nuovo, che collide e non aggiorna nulla; alle 09:00 la
+guardia d'episodio confronta l'inbound delle 04:00 con l'ancora delle 02:00,
+conclude "episodio finito" e non manda niente. L'ancora più recente viene da
+un'autorizzazione più recente ed è quella contro cui va fatto il confronto.
+
+Il ritorno distingue inserimento da aggiornamento (`xmax = 0`) perché l'evento
+`automation.send_queued` deve essere emesso una volta sola.
 
 ### 6. Il promemoria appuntamento si rimanda, ma **mai oltre l'appuntamento**
 
