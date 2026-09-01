@@ -21,6 +21,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.automations import SendPlan, resolve_send_node_at, resolve_send_plan
+from ai_core.response_hours import resolve_response_hours
 from db import (
     AnalyticsRepository,
     AppointmentReminderCandidate,
@@ -153,6 +154,56 @@ async def _maybe_send(cand: AppointmentReminderCandidate, *, now: datetime, kek:
         # `free_text` on the lavagnetta (via `step`), which can render
         # `{{appointment.datetime}}` from the context below. A blank send → skip.
         when = _format_slot(cand.start_at, cand.tz_name)
+
+        # ADR 0030 — anche il promemoria rispetta gli orari del merchant, se
+        # acceso. Qui però non serve una riga in coda: lo scan gira ogni 30
+        # minuti su `reminder_due_at <= now` e `mark_reminded` scatta solo dopo
+        # un invio riuscito, quindi non consumare la voce **è già** la coda.
+        #
+        # L'eccezione che va gestita a mano: questo è l'unico invio con una
+        # scadenza propria. Se la riapertura cade dopo l'inizio
+        # dell'appuntamento, rimandare consegnerebbe un promemoria per qualcosa
+        # di già cominciato — un danno che oggi non esiste e che il rinvio
+        # introdurrebbe. In quel caso si lascia cadere e si consuma la voce,
+        # altrimenti il promemoria scaduto verrebbe ritentato per sempre.
+        hours = await resolve_response_hours(session, cand.merchant_id)
+        if hours.apply_to_automations and not hours.is_open(now):
+            next_open = hours.next_opening(now)
+            # `next_opening` è sempre aware; `start_at` lo è quasi sempre
+            # (timestamptz), ma un confronto aware/naive alza TypeError e qui
+            # ucciderebbe il promemoria per tutti i merchant col vincolo acceso.
+            # Stessa guardia di `resume_after_hours` su `last_inbound_at`.
+            start_at = (
+                cand.start_at
+                if cand.start_at.tzinfo is not None
+                else cand.start_at.replace(tzinfo=UTC)
+            )
+            if next_open is not None and next_open < start_at:
+                logger.info(
+                    "uc02.reminder.postponed",
+                    appointment_id=str(cand.appointment_id),
+                    next_opening=next_open.isoformat(),
+                )
+                return False
+            await appts.mark_reminded(cand.appointment_id, at=now)
+            await analytics.emit(
+                tenant_id=cand.tenant_id,
+                merchant_id=cand.merchant_id,
+                event_type="automation.send_dropped",
+                subject_type="appointment",
+                subject_id=cand.appointment_id,
+                properties={
+                    "start_at": cand.start_at.isoformat(),
+                    "next_opening": next_open.isoformat() if next_open else None,
+                    "reason": "reopening_after_appointment",
+                },
+            )
+            logger.info(
+                "uc02.reminder.dropped_off_hours",
+                appointment_id=str(cand.appointment_id),
+                start_at=cand.start_at.isoformat(),
+            )
+            return False
 
         within_window = is_within_24h(cand.last_inbound_at, now)
         plan_context = {

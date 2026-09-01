@@ -100,7 +100,7 @@ async def test_walk_condition_follows_true_branch() -> None:
         ],
     )
     sender = _FakeSender()
-    sent, deferrals = await _walk(
+    _outcome = await _walk(
         automation,
         _run_ctx(within_window=True, score=50),
         start_keys=["c"],
@@ -108,8 +108,8 @@ async def test_walk_condition_follows_true_branch() -> None:
         templates=_FakeTemplates(),
     )
     assert sender.texts == ["sei caldo"]
-    assert sent == 1
-    assert deferrals == []
+    assert _outcome.sent == 1
+    assert _outcome.deferrals == []
 
 
 async def test_walk_condition_follows_false_branch() -> None:
@@ -125,7 +125,7 @@ async def test_walk_condition_follows_false_branch() -> None:
         ],
     )
     sender = _FakeSender()
-    sent, _ = await _walk(
+    _outcome = await _walk(
         automation,
         _run_ctx(within_window=True, score=10),  # cold → condition fails
         start_keys=["c"],
@@ -133,7 +133,7 @@ async def test_walk_condition_follows_false_branch() -> None:
         templates=_FakeTemplates(),
     )
     assert sender.texts == ["sei freddo"]
-    assert sent == 1
+    assert _outcome.sent == 1
 
 
 # --- _walk: wait deferral ---------------------------------------------------
@@ -149,7 +149,7 @@ async def test_walk_wait_defers_and_stops_branch() -> None:
         edges=[_edge("w", "after")],
     )
     sender = _FakeSender()
-    sent, deferrals = await _walk(
+    _outcome = await _walk(
         automation,
         _run_ctx(within_window=True),
         start_keys=["w"],
@@ -158,8 +158,8 @@ async def test_walk_wait_defers_and_stops_branch() -> None:
     )
     # Nothing sent yet; the continuation is deferred with the successor keys.
     assert sender.texts == []
-    assert sent == 0
-    assert deferrals == [(30, ["after"])]
+    assert _outcome.sent == 0
+    assert _outcome.deferrals == [(30, ["after"])]
 
 
 async def test_walk_wait_zero_minutes_does_not_defer() -> None:
@@ -170,15 +170,15 @@ async def test_walk_wait_zero_minutes_does_not_defer() -> None:
         ],
         edges=[_edge("w", "after")],
     )
-    sent, deferrals = await _walk(
+    _outcome = await _walk(
         automation,
         _run_ctx(),
         start_keys=["w"],
         sender=_FakeSender(),
         templates=_FakeTemplates(),
     )
-    assert deferrals == []
-    assert sent == 0
+    assert _outcome.deferrals == []
+    assert _outcome.sent == 0
 
 
 async def test_walk_wait_honours_unit_days() -> None:
@@ -194,15 +194,15 @@ async def test_walk_wait_honours_unit_days() -> None:
         ],
         edges=[_edge("w", "after")],
     )
-    sent, deferrals = await _walk(
+    _outcome = await _walk(
         automation,
         _run_ctx(within_window=True),
         start_keys=["w"],
         sender=_FakeSender(),
         templates=_FakeTemplates(),
     )
-    assert deferrals == [(7 * 1440, ["after"])]
-    assert sent == 0
+    assert _outcome.deferrals == [(7 * 1440, ["after"])]
+    assert _outcome.sent == 0
 
 
 # --- _do_action: send_message 24h window ------------------------------------

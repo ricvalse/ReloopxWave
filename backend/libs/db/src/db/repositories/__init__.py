@@ -6,7 +6,11 @@ from db.repositories.appointment import (
     build_reminder_schedule,
     next_reminder_due,
 )
-from db.repositories.automation import AutomationRepository
+from db.repositories.automation import (
+    AutomationHoursQueueRepository,
+    AutomationRepository,
+    QueuedAutomationRun,
+)
 from db.repositories.catalog import (
     BotCorrectionRepository,
     FaqRepository,
@@ -63,7 +67,9 @@ __all__ = [
     "AppointmentRepository",
     "build_reminder_schedule",
     "next_reminder_due",
+    "AutomationHoursQueueRepository",
     "AutomationRepository",
+    "QueuedAutomationRun",
     "BotCorrectionRepository",
     "BotTemplateRepository",
     "CategoryCount",

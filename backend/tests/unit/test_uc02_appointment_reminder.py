@@ -220,3 +220,93 @@ async def test_multi_reminder_picks_send_matching_offset(
 
     assert sent is True
     assert captured["attempt_index"] == 1
+
+
+# --- ADR 0030: gli orari valgono anche per il promemoria --------------------
+
+
+def _hours(*, apply: bool, is_open: bool, next_opening: datetime | None) -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        apply_to_automations=apply,
+        is_open=lambda _now=None: is_open,
+        next_opening=lambda _now=None: next_opening,
+    )
+
+
+def _patch_hours(monkeypatch: pytest.MonkeyPatch, hours: object) -> None:
+    async def _resolve(_session, _merchant_id):
+        return hours
+
+    monkeypatch.setattr(mod, "resolve_response_hours", _resolve)
+
+
+async def test_promemoria_rimandato_fuori_orario_non_consuma_la_voce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fuori orario non si invia e NON si marca: il tick dopo riprova.
+
+    Qui la coda è già implicita nel ritentativo ogni 30 minuti — non serve una
+    riga in `automation_hours_queue`. Ma non marcare è ciò che la rende vera:
+    marcare consumerebbe il promemoria senza averlo mandato.
+    """
+    marked: list = []
+    events: list = []
+    _patch(monkeypatch, marked=marked, events=events)
+    # Riapre alle 09:00 di domani, cioè PRIMA dell'appuntamento (NOW+12h).
+    _patch_hours(
+        monkeypatch,
+        _hours(apply=True, is_open=False, next_opening=NOW + timedelta(hours=4)),
+    )
+
+    cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is False
+    assert marked == [], "non marcato → il promemoria riparte al tick successivo"
+    assert events == []
+
+
+async def test_promemoria_lasciato_cadere_se_si_riapre_dopo_l_appuntamento(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Riapertura oltre `start_at` → si lascia cadere, e si registra.
+
+    È l'unico invio con una scadenza propria: rimandarlo comunque consegnerebbe
+    un promemoria per un appuntamento già cominciato — un danno che senza il
+    gate non esiste e che il rinvio introdurrebbe. Qui la voce SI consuma,
+    altrimenti il promemoria scaduto verrebbe ritentato per sempre.
+    """
+    marked: list = []
+    events: list = []
+    _patch(monkeypatch, marked=marked, events=events)
+    # L'appuntamento è a NOW+12h, si riapre a NOW+20h: troppo tardi.
+    _patch_hours(
+        monkeypatch,
+        _hours(apply=True, is_open=False, next_opening=NOW + timedelta(hours=20)),
+    )
+
+    cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is False
+    assert marked == [cand.appointment_id], "consumato: non si ritenta all'infinito"
+    assert [e["event_type"] for e in events] == ["automation.send_dropped"]
+    assert events[0]["properties"]["reason"] == "reopening_after_appointment"
+
+
+async def test_promemoria_ignora_gli_orari_se_il_vincolo_e_spento(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`apply_to_automations` è False di default: nulla cambia per chi non l'ha acceso."""
+    marked: list = []
+    events: list = []
+    _patch(monkeypatch, marked=marked, events=events, persisted=[])
+    _patch_hours(monkeypatch, _hours(apply=False, is_open=False, next_opening=None))
+
+    cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is True
+    assert marked == [cand.appointment_id]

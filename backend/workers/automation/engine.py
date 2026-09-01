@@ -16,6 +16,13 @@ Two ARQ handlers:
 All WhatsApp sends respect the 24h window: free-text ``send_message`` only
 inside it, ``send_template`` (approved template) anywhere — mirroring
 ``workers.outbound``.
+
+E, quando il merchant accende ``schedule.apply_to_automations`` (ADR 0030), gli
+stessi invii rispettano anche i suoi **orari di risposta**: fuori orario il ramo
+si ferma sul nodo customer-facing e viene accodato in
+``automation_hours_queue``, da dove lo sweep ``flush_automation_hours_queue`` lo
+riprende alla riapertura. Si rimanda, non si salta: un invio saltato è perso per
+sempre e nessuno se ne accorge.
 """
 
 from __future__ import annotations
@@ -40,10 +47,12 @@ from ai_core.conversation_service import TurnContext, build_cascade_system_promp
 from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
+from ai_core.response_hours import resolve_response_hours
 from ai_core.router import RoutingRequest
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
+    AutomationHoursQueueRepository,
     AutomationRepository,
     ConversationProfileRepository,
     ConversationRepository,
@@ -386,6 +395,7 @@ async def automation_run(
     )
 
     deferrals: list[tuple[int, list[str]]] = []
+    off_hours_keys: list[str] = []
     sent = 0
     async with tenant_session(tenant_ctx) as session:
         automation = await AutomationRepository(session).get(UUID(automation_id))
@@ -420,6 +430,15 @@ async def automation_run(
         if wa is None and needs_channel:
             return {"skipped": "no_channel"}
 
+        # ADR 0030 — gli orari di risposta valgono anche qui, se il merchant lo
+        # ha chiesto. Risolti una volta per run e **solo** se il flusso ha
+        # almeno un nodo che parla al cliente: un flusso di sole notifiche non
+        # paga la cascata (che comunque ha la cache Redis a ~60s).
+        hours_closed = False
+        if needs_channel:
+            hours = await resolve_response_hours(session, UUID(merchant_id))
+            hours_closed = hours.apply_to_automations and not hours.is_open()
+
         run_ctx.api_key = wa.api_key if wa else ""
         run_ctx.waba_base_url = wa.waba_base_url if wa else None
         run_ctx.trigger_type = automation.trigger_type or ""
@@ -446,7 +465,7 @@ async def automation_run(
             else None
         )
         try:
-            sent, deferrals = await _walk(
+            outcome = await _walk(
                 automation,
                 run_ctx,
                 start_keys=start,
@@ -455,10 +474,61 @@ async def automation_run(
                 ai_deps=ai_deps,
                 session=session,
                 settings=settings,
+                hours_closed=hours_closed,
+            )
+            sent, deferrals, off_hours_keys = (
+                outcome.sent,
+                outcome.deferrals,
+                outcome.off_hours,
             )
         finally:
             if sender is not None:
                 await sender.close()
+
+        # I rami fermati fuori orario finiscono in tabella, non in Redis: qui
+        # l'attesa va da una notte a un fine settimana lungo, e soprattutto il
+        # momento dell'apertura **cambia** — un job differito porterebbe con sé
+        # l'orario calcolato stanotte (ADR 0030 §4). La riga è un puntatore ai
+        # nodi da riprendere: il testo lo ricalcola la lavagnetta alla consegna.
+        if off_hours_keys:
+            # La chiave è (automazione, soggetto, nodi) — di proposito NON la
+            # dedup del run che l'ha prodotta. Due eventi diversi che di notte
+            # arrivano allo stesso nodo per lo stesso lead devono produrre UN
+            # messaggio alla riapertura, non due: è la stessa regola della
+            # cortesia una-volta-per-episodio di ADR 0028 §4. Ed è stabile fra
+            # una ripresa e l'altra, quindi non cresce a ogni generazione.
+            queued_new = await AutomationHoursQueueRepository(session).enqueue(
+                tenant_id=UUID(tenant_id),
+                merchant_id=UUID(merchant_id),
+                automation_id=UUID(automation_id),
+                subject_type=subject_type,
+                subject_id=UUID(subject_id),
+                node_keys=sorted(off_hours_keys),
+                episode_anchor=episode_anchor,
+                dedup_key=(
+                    f"offhours:{automation_id}:{subject_id}:{'-'.join(sorted(off_hours_keys))}"
+                ),
+            )
+            if queued_new:
+                await AnalyticsRepository(session).emit(
+                    tenant_id=UUID(tenant_id),
+                    merchant_id=UUID(merchant_id),
+                    event_type="automation.send_queued",
+                    subject_type="lead",
+                    subject_id=run_ctx.lead_id,
+                    # Colonna, non chiave di `properties`: è la dimensione su
+                    # cui la pagina Statistiche affetta (ADR 0021/0023), e
+                    # senza, "quanti invii ha rimandato questa campagna" non è
+                    # rispondibile.
+                    automation_id=UUID(automation_id),
+                    profile_id=run_ctx.profile_id,
+                    properties={
+                        "nodes": sorted(off_hours_keys),
+                        "conversation_id": (
+                            str(run_ctx.conversation_id) if run_ctx.conversation_id else None
+                        ),
+                    },
+                )
 
     # Schedule wait-node continuations after the session closes. Each continuation
     # carries a deterministic dedup key derived from this run's key + the resume
@@ -490,8 +560,29 @@ async def automation_run(
         merchant_id=merchant_id,
         sent=sent,
         deferred=len(deferrals),
+        queued_off_hours=len(off_hours_keys),
     )
-    return {"sent": sent, "deferred": len(deferrals)}
+    return {
+        "sent": sent,
+        "deferred": len(deferrals),
+        "queued_off_hours": len(off_hours_keys),
+    }
+
+
+@dataclass(slots=True)
+class WalkOutcome:
+    """Cosa ha prodotto una passata del grafo.
+
+    Era una tupla `(sent, deferrals)`; ADR 0030 aggiunge un terzo esito — i nodi
+    fermati perché fuori orario — e tre valori posizionali di cui due sono liste
+    di cose diverse si confondono al primo sguardo.
+    """
+
+    sent: int = 0
+    # (minuti, nodi da riprendere) — le continuazioni dei nodi `wait`.
+    deferrals: list[tuple[int, list[str]]] = field(default_factory=list)
+    # I nodi customer-facing fermati fuori orario, da riprendere alla riapertura.
+    off_hours: list[str] = field(default_factory=list)
 
 
 async def _walk(
@@ -504,15 +595,22 @@ async def _walk(
     ai_deps: AiReplyDeps | _LazyAiDeps | None = None,
     session: AsyncSession | None = None,
     settings: Any = None,
-) -> tuple[int, list[tuple[int, list[str]]]]:
+    hours_closed: bool = False,
+) -> WalkOutcome:
     """Breadth-first graph walk. The graph is validated acyclic before enabling,
-    so a visited-set is enough to guarantee termination."""
+    so a visited-set is enough to guarantee termination.
+
+    `hours_closed` (ADR 0030) arriva già risolto da `automation_run`: qui dentro
+    non si fa IO, così il walk resta testabile senza DB — e la risoluzione degli
+    orari costa una volta per run invece di una per nodo.
+    """
     nodes = {n.node_key: n for n in automation.nodes}
     edges = [
         {"source_key": e.source_key, "target_key": e.target_key, "branch": e.branch}
         for e in automation.edges
     ]
     deferrals: list[tuple[int, list[str]]] = []
+    off_hours: list[str] = []
     sent = 0
     ai_reply_fired = False  # anti-loop: at most one ai_reply per run
     visited: set[str] = set()
@@ -561,6 +659,21 @@ async def _walk(
                 # node. The event engine stops the branch here so it doesn't also
                 # fire the reminder at booking time.
                 continue
+            # ADR 0030 — fuori dagli orari del merchant il messaggio non parte
+            # ora: il ramo si ferma qui e riprende **da questo nodo** alla
+            # riapertura. Il gate sta nel walk e non in `_do_action` per lo
+            # stesso motivo del `wait`: un `_do_action` che ritorna False lascia
+            # comunque proseguire la coda sui successori, quindi il ramo
+            # verrebbe eseguito due volte — i successori adesso, il nodo e di
+            # nuovo i successori alla ripresa.
+            #
+            # I nodi interni (notify_slack, set_lead_field, human_handoff, le
+            # condizioni) non sono toccati, esattamente come sotto il gate
+            # takeover: avvisare un operatore alle 3 di notte è il punto.
+            if hours_closed and node.type in _CUSTOMER_FACING_NODES:
+                logger.info("automation.action.postponed", node=node.node_key, reason="off_hours")
+                off_hours.append(key)
+                continue
             if node.type == "ai_reply" and ai_reply_fired:
                 logger.info(
                     "automation.ai_reply.skipped", node=node.node_key, reason="already_fired"
@@ -583,7 +696,7 @@ async def _walk(
         else:  # trigger — only as the start anchor; follow its successors
             queue.extend(outgoing_targets(edges, key))
 
-    return sent, deferrals
+    return WalkOutcome(sent=sent, deferrals=deferrals, off_hours=off_hours)
 
 
 async def _send_proactive(
