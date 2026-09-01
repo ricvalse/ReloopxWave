@@ -299,7 +299,12 @@ async def test_promemoria_lasciato_cadere_se_si_riapre_dopo_l_appuntamento(
 async def test_promemoria_ignora_gli_orari_se_il_vincolo_e_spento(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`apply_to_automations` è False di default: nulla cambia per chi non l'ha acceso."""
+    """Vincolo spento (o `mode=always`) → il promemoria parte come sempre.
+
+    `resolve_automation_hours` ritorna None in entrambi i casi, ed è la porta da
+    cui passa chi il vincolo non lo vuole: da ADR 0030 la chiave è accesa di
+    default, ma resta spegnibile per merchant.
+    """
     marked: list = []
     events: list = []
     _patch(monkeypatch, marked=marked, events=events, persisted=[])

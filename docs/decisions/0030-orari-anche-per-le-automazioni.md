@@ -150,11 +150,24 @@ avvisare: il cliente non sa che stava per ricevere qualcosa. Mandargli "ti
 scrivo domani" significherebbe inventare un testo che non è sulla lavagnetta,
 cioè violare ADR 0014 per notificare un non-evento.
 
-### 8. Resta `False` di default
+### 8. E di default è **acceso** — qui ADR 0028 §5 viene ribaltata
 
-ADR 0028 §5 non viene ribaltata: accendere il gate su flussi già in produzione
-cambierebbe in silenzio quando partono i messaggi. La chiave è già esposta nei
-due pannelli (merchant e template d'agenzia) ed è già lockabile dall'agenzia.
+0028 lo teneva spento per non "cambiare in silenzio il comportamento di flussi
+già in produzione". Guardando chi tocca davvero, l'argomento non regge:
+`schedule.mode` vale `always` di default, quindi questa chiave **non ha alcun
+effetto** finché il merchant non ha deliberatamente scelto `business_hours` o
+`custom`. La popolazione interessata è esattamente quella che ha scritto
+"rispondi solo 09:00-18:00" — e non intendeva "tranne i promemoria automatici
+delle 3 di notte".
+
+Tenerlo spento voleva dire chiedere allo stesso merchant di configurare due
+volte lo stesso fatto del mondo, e nel frattempo svegliargli i clienti: è
+l'errore che 0028 stessa (§1, sul riuso di `business_hours`) aveva rifiutato di
+fare per il bot.
+
+Resta una chiave della cascata: spegnibile per merchant, impostabile e lockabile
+dal template d'agenzia. Chi vuole il vecchio comportamento lo ha con un click,
+ed è una scelta che ora deve dichiarare invece di ereditare.
 
 ## Conseguenze
 
