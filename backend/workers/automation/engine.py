@@ -32,14 +32,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ai_core.automations import (
     _ASYNC_CONDITION_TYPES,
     _ATOMIC_CONDITION_TYPES,
+    GHL_NOTE_MAX_LEN,
     evaluate_condition,
     outgoing_targets,
     wait_minutes,
 )
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
-from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
+from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.router import RoutingRequest
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -75,6 +76,7 @@ from workers.outbound import (
     OutboundDecision,
     decide_outbound,
     is_within_24h,
+    render_free_text,
     send_and_persist_decision,
     send_decision,
 )
@@ -155,6 +157,10 @@ class RunContext:
     # Sono l'attribuzione che finisce su ogni Message inviato dal grafo, e la
     # dimensione su cui la pagina Statistiche affetta le bolle.
     automation_id: UUID | None = None
+    # Il nome dell'automazione, non solo il suo id: finisce nella nota che il
+    # nodo `set_lead_field` scrive sul contatto GHL. Su GHL si legge *chi* ha
+    # messo il tag senza dover risalire a un UUID a mano.
+    automation_name: str = ""
     profile_id: UUID | None = None
     # L'ultimo messaggio in uscita del thread: da quale automazione e da quale
     # nodo. Precalcolati in `_resolve_context` così la condizione
@@ -427,6 +433,7 @@ async def automation_run(
         # saperlo (risolve lead/conversazione, non il flusso): è qui che il
         # contesto viene legato all'automazione che lo sta percorrendo.
         run_ctx.automation_id = automation.id
+        run_ctx.automation_name = automation.name or ""
         # Pigre di proposito: costruirle qui costava una query di storico e due
         # letture di config per ogni run di un flusso con nodi AI — cioè per ogni
         # messaggio in ingresso del merchant su un trigger `message_received`,
@@ -1176,6 +1183,12 @@ async def _do_set_lead_field(
             score=new_score,
             reasons=[f"automation:set_lead_field:{delta:+d}"],
         )
+        # Il contesto del walk deve vedere il punteggio che ha appena scritto: i
+        # nodi a valle leggono da qui (condizioni su `lead_score`, `{{lead.score}}`
+        # nei testi, la nota GHL), e senza questo allineamento lavorerebbero sul
+        # valore di prima del delta — cioe' su un numero che a DB non esiste piu'.
+        run_ctx.score = new_score
+        run_ctx.temperature = _temperature(new_score)
         logger.info(
             "automation.set_lead_field", node=node.node_key, field=field, new_score=new_score
         )
@@ -1208,7 +1221,11 @@ async def _set_ghl_contact_field(
     field: str,
 ) -> None:
     """Write a tag / custom field onto the GHL contact via upsert_contact (the
-    client has no dedicated add_tag). Best-effort: a GHL error is logged, not raised."""
+    client has no dedicated add_tag). Best-effort: a GHL error is logged, not raised.
+
+    Se il nodo lo chiede (`ghl_note`), subito dopo la scrittura lascia anche una
+    nota sul contatto: il tag da solo dice *cosa* e' stato deciso, la nota dice
+    *perche'* e *da parte di chi*."""
     integrations = IntegrationRepository(session, kek_base64=settings.integrations_kek_base64)
     ghl = await integrations.resolve_ghl(run_ctx.merchant_id)
     if ghl is None:
@@ -1242,21 +1259,118 @@ async def _set_ghl_contact_field(
         on_token_refresh=_persist_tokens,
     )
     payload: dict[str, Any] = {"phone": run_ctx.phone}
-    if field == "tag":
-        tag = str(cfg.get("value", "")).strip()
-        if not tag:
-            await client.close()
-            return
-        payload["tags"] = [tag]
-    else:  # custom_field
-        payload["customFields"] = {str(cfg.get("key", "")): cfg.get("value")}
     try:
-        await client.upsert_contact(payload)
+        if field == "tag":
+            tag = str(cfg.get("value", "")).strip()
+            if not tag:
+                return
+            payload["tags"] = [tag]
+        else:  # custom_field
+            payload["customFields"] = {str(cfg.get("key", "")): cfg.get("value")}
+        contact = await client.upsert_contact(payload)
         logger.info("automation.set_lead_field", node=node.node_key, field=field, ghl=True)
+        await _maybe_add_ghl_note(client, contact, node, cfg, run_ctx, field=field)
     except Exception as e:
         logger.warning("automation.set_lead_field.failed", node=node.node_key, error=str(e))
     finally:
+        # Chiusura unica. Prima il ramo "tag vuoto" usciva con un `close()` suo,
+        # fuori dal try: con un secondo passo dopo l'upsert (la nota) quel doppio
+        # percorso e' il modo classico di lasciarsi un client aperto.
         await client.close()
+
+
+def _compose_ghl_note(cfg: dict[str, Any], run_ctx: RunContext, *, field: str) -> str:
+    """Il corpo della nota che accompagna la scrittura del tag/campo su GHL.
+
+    Testo personalizzato -> passa da `render_free_text`, cioe' **le stesse
+    variabili del testo libero e del template** (`{{lead.first_name}}`,
+    `{{contact.phone}}`, `{name}`/`{first_name}`): una sola sintassi da imparare
+    in tutta la lavagnetta.
+
+    Testo vuoto -> nota automatica. Non e' contenuto per il cliente: l'ADR 0014
+    vieta i testi cablati negli *invii WhatsApp*, e questa non esce mai dal CRM.
+    E' la riga di diario che su GHL risponde a "chi ha messo questo tag, e
+    quando" - la stessa ragione per cui `move_pipeline` scrive gia'
+    "[Reloop AI] Lead spostato in pipeline...".
+    """
+    custom = str(cfg.get("ghl_note_text") or "").strip()
+    if custom:
+        # Solo variabili puntate: gli slot numerati `{{1}}` li rifiuta la
+        # validazione (qui non c'e' il `variable_mapping` che li risolve sul
+        # nodo `send`), quindi non si passa nessuna mappatura.
+        return render_free_text(custom, run_ctx.as_template_context())
+    if field == "tag":
+        cosa = f"Tag «{str(cfg.get('value', '')).strip()}» applicato"
+    else:
+        campo = str(cfg.get("key", "")).strip()
+        valore = "" if cfg.get("value") is None else str(cfg.get("value")).strip()
+        cosa = (
+            f"Campo «{campo}» aggiornato a «{valore}»" if valore else f"Campo «{campo}» aggiornato"
+        )
+    origine = run_ctx.automation_name or run_ctx.trigger_type or "automazione"
+    righe = [f"[Reloop AI] {cosa} dall'automazione «{origine}»."]
+    if run_ctx.name:
+        righe.append(f"Lead: {run_ctx.name}")
+    righe.append(f"Telefono: {run_ctx.phone}")
+    righe.append(f"Punteggio: {run_ctx.score} · Temperatura: {run_ctx.temperature}")
+    return "\n".join(righe)
+
+
+async def _maybe_add_ghl_note(
+    client: GHLClient,
+    contact: dict[str, Any],
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    field: str,
+) -> None:
+    """Scrive la nota sul contatto GHL appena aggiornato, se il nodo la chiede.
+
+    Best-effort per costruzione: quando arriviamo qui il tag **e' gia' scritto**,
+    e una nota che fallisce non deve far risultare fallito il tag - percio'
+    l'errore si logga e basta (stessa politica di
+    `MovePipelineHandler._maybe_note`).
+
+    Attenzione a un limite noto: `upsert_contact` e' idempotente, `add_contact_note`
+    no. Il motore e' stateless (ADR 0015) e ripercorre il grafo a ogni evento, quindi
+    un nodo attraversato N volte lascia N note. Va bene per i trigger a un colpo
+    (`lead.no_answer`, `lead.dormant`, un evento CRM); su un `message_received` che
+    ripassa dallo stesso nodo la nota va accesa sapendolo.
+    """
+    if not cfg.get("ghl_note"):
+        return
+    raw = contact.get("contact")
+    contact_id = (raw or {}).get("id") if isinstance(raw, dict) else None
+    contact_id = contact_id or contact.get("id")
+    if not contact_id:
+        # GHL ha accettato l'upsert ma non ha detto su quale contatto: senza id
+        # la nota non ha dove atterrare.
+        logger.warning("automation.set_lead_field.note_no_contact_id", node=node.node_key)
+        return
+    body = _compose_ghl_note(cfg, run_ctx, field=field).strip()
+    if not body:
+        # Il testo si e' svuotato interpolando: una variabile puntata che non
+        # esiste nel contesto diventa stringa vuota. La validazione non puo'
+        # vederlo (controlla la sintassi, non le chiavi), quindi senza questo log
+        # sarebbe una nota "configurata, accesa, mai scritta" - esattamente il
+        # fallimento silenzioso che il resto di questa feature cerca di evitare.
+        logger.warning("automation.set_lead_field.note_empty", node=node.node_key)
+        return
+    # GHL rifiuta i body fuori misura con un 400 e il client non tronca: meglio
+    # una nota accorciata che una nota persa. Si tronca prima del log, cosi' la
+    # lunghezza registrata e' quella davvero inviata.
+    body = body[:GHL_NOTE_MAX_LEN]
+    try:
+        await client.add_contact_note(str(contact_id), body=body)
+        logger.info(
+            "automation.set_lead_field.note_added",
+            node=node.node_key,
+            contact_id=str(contact_id),
+            body_len=len(body),
+        )
+    except Exception as e:
+        logger.warning("automation.set_lead_field.note_failed", node=node.node_key, error=str(e))
 
 
 async def _do_emit_outcome(

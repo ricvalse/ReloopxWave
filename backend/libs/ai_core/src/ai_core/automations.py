@@ -12,10 +12,23 @@ A graph is `nodes` + `edges` as plain dicts:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from db.models.automation import ACTION_TYPES, CONDITION_TYPES, NODE_KINDS, TRIGGER_TYPES
+
+# Tetto al testo della nota che il nodo `set_lead_field` scrive sul contatto GHL.
+# Vive qui e non nel motore perche' il contratto della config del nodo e' di
+# questo modulo: il validatore rifiuta al salvataggio quello che il motore
+# tronca all'esecuzione, con lo stesso numero.
+GHL_NOTE_MAX_LEN = 4000
+
+# Slot numerati stile template (`{{1}}`). Sul nodo `send` sono risolti dal
+# `variable_mapping`; sulla nota GHL quel mapping non c'e', quindi uno slot
+# numerato diventerebbe stringa vuota in silenzio - la stessa trappola che il
+# testo libero ha gia' pagato ("Ciao , il team HR..."). Meglio rifiutarlo.
+_NUMBERED_SLOT_RE = re.compile(r"\{\{\s*\d+\s*\}\}")
 
 _VALID_TYPES: dict[str, set[str]] = {
     "trigger": set(TRIGGER_TYPES),
@@ -219,6 +232,25 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
             return [f"node {key!r}: set_lead_field custom_field needs a key"]
         if field == "score_delta" and not _is_int(cfg.get("value")):
             return [f"node {key!r}: set_lead_field score_delta needs an integer value"]
+        if cfg.get("ghl_note"):
+            # Una nota su un campo che su GHL non scrive niente, o senza la
+            # sincronizzazione accesa, verrebbe ignorata in silenzio: si
+            # configura, sembra attiva, non fa nulla. Meglio un errore al
+            # salvataggio che un merchant convinto di avere le note.
+            if field not in ("tag", "custom_field"):
+                return [f"node {key!r}: set_lead_field note is only available for tag/custom_field"]
+            if not cfg.get("ghl_sync"):
+                return [f"node {key!r}: set_lead_field note needs ghl_sync enabled"]
+            testo = str(cfg.get("ghl_note_text", "") or "")
+            if len(testo) > GHL_NOTE_MAX_LEN:
+                return [
+                    f"node {key!r}: set_lead_field note text is too long (max {GHL_NOTE_MAX_LEN})"
+                ]
+            if _NUMBERED_SLOT_RE.search(testo):
+                return [
+                    f"node {key!r}: set_lead_field note supports only dotted variables "
+                    f"like {{{{lead.first_name}}}}, not numbered slots"
+                ]
         return []
     if atype == "emit_outcome":
         # L'`outcome_id` arriva da una tendina, non digitato: è il motivo per cui

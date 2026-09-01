@@ -2,6 +2,7 @@
 
 from ai_core.automations import (
     _ATOMIC_CONDITION_TYPES,  # type: ignore[attr-defined]
+    GHL_NOTE_MAX_LEN,
     evaluate_condition,
     outgoing_targets,
     resolve_send_node_at,
@@ -301,6 +302,77 @@ def test_validate_set_lead_field_and_handoff_config() -> None:
         [],
     )
     assert handoff.ok
+
+
+def test_validate_set_lead_field_ghl_note() -> None:
+    """La nota GHL si rifiuta al salvataggio quando non potrebbe fare niente.
+
+    Una nota configurata che poi viene ignorata in silenzio e' il bug peggiore
+    su questo prodotto: sembra accesa, non scrive mai. Meglio un errore adesso.
+    """
+
+    def _slf(**cfg: object) -> dict:
+        return {"node_key": "a", "kind": "action", "type": "set_lead_field", "config": cfg}
+
+    # Senza sincronizzazione GHL non c'e' nessun contatto su cui scrivere.
+    senza_sync = validate_graph(
+        [_trigger(), _slf(field="tag", value="VIP", ghl_note=True, ghl_sync=False)], []
+    )
+    assert any("needs ghl_sync" in e for e in senza_sync.errors)
+
+    # `score_delta` non tocca GHL: la nota non avrebbe dove atterrare.
+    su_score = validate_graph(
+        [_trigger(), _slf(field="score_delta", value=10, ghl_note=True, ghl_sync=True)], []
+    )
+    assert any("only available for tag/custom_field" in e for e in su_score.errors)
+
+    # Slot numerati: sul nodo `send` li risolve il `variable_mapping`, qui quel
+    # mapping non esiste e diventerebbero stringa vuota senza dirlo.
+    numerati = validate_graph(
+        [
+            _trigger(),
+            _slf(
+                field="tag",
+                value="VIP",
+                ghl_note=True,
+                ghl_sync=True,
+                ghl_note_text="Tag per {{1}}",
+            ),
+        ],
+        [],
+    )
+    assert any("dotted variables" in e for e in numerati.errors)
+
+    troppo_lungo = validate_graph(
+        [
+            _trigger(),
+            _slf(
+                field="tag",
+                value="VIP",
+                ghl_note=True,
+                ghl_sync=True,
+                ghl_note_text="x" * (GHL_NOTE_MAX_LEN + 1),
+            ),
+        ],
+        [],
+    )
+    assert any("too long" in e for e in troppo_lungo.errors)
+
+    # Il caso buono, e il caso "nota spenta" (tutti i grafi gia' salvati).
+    assert validate_graph(
+        [
+            _trigger(),
+            _slf(
+                field="tag",
+                value="VIP",
+                ghl_sync=True,
+                ghl_note=True,
+                ghl_note_text="Tag per {{lead.first_name}}",
+            ),
+        ],
+        [],
+    ).ok
+    assert validate_graph([_trigger(), _slf(field="tag", value="VIP", ghl_sync=False)], []).ok
 
 
 def test_outgoing_targets_branch_filter() -> None:

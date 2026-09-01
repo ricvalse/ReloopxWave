@@ -268,12 +268,27 @@ export const ACTION_DEFS: TypeDef[] = [
   {
     type: 'set_lead_field',
     label: 'Aggiorna lead/CRM',
-    description: 'Aggiorna un campo del lead: tag, punteggio (delta) o campo personalizzato.',
+    description:
+      'Aggiorna un campo del lead: tag, punteggio (delta) o campo personalizzato. Con la sincronizzazione GHL può lasciare anche una nota sul contatto: il tag dice cosa è stato deciso, la nota perché.',
     fields: [
       { key: 'field', label: 'Campo', kind: 'select', options: SET_FIELD_OPTIONS },
       { key: 'key', label: 'Nome campo (per campo personalizzato)', kind: 'text', placeholder: 'es. citta' },
       { key: 'value', label: 'Valore', kind: 'text', placeholder: 'es. VIP, oppure 10 / -5 per il punteggio' },
       { key: 'ghl_sync', label: 'Sincronizza su GHL', kind: 'bool', placeholder: 'Propaga tag/campo su GHL' },
+      {
+        key: 'ghl_note',
+        label: 'Nota sul contatto GHL',
+        kind: 'bool',
+        placeholder: 'Scrivi una nota insieme al tag o al campo (richiede la sincronizzazione GHL)',
+      },
+      {
+        key: 'ghl_note_text',
+        label: 'Testo della nota (vuoto = nota automatica, max 4000 caratteri)',
+        // Variabili puntate, non slot numerati: sul nodo send il {{1}} passa dal
+        // variable_mapping, qui quella mappatura non esiste e il validatore lo rifiuta.
+        kind: 'textarea',
+        placeholder: 'Es. Tag applicato a {{lead.first_name}} — {{contact.phone}}',
+      },
     ],
   },
   {
@@ -395,7 +410,9 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
     }
     if (type === 'ai_reply') return String(config.objective || 'AI');
     if (type === 'set_lead_field')
-      return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}`;
+      return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}${
+        config.ghl_note ? ' + nota' : ''
+      }`;
     if (type === 'human_handoff') return String(config.reason || 'operatore umano');
     if (type === 'notify_slack') return config.text ? String(config.text) : 'Slack';
     if (type === 'send_message') return String(config.text ?? '');

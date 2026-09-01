@@ -73,7 +73,8 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
         allowed_actions: [],
         model_override: '',
       };
-    if (type === 'set_lead_field') return { field: 'tag', key: '', value: '', ghl_sync: false };
+    if (type === 'set_lead_field')
+      return { field: 'tag', key: '', value: '', ghl_sync: false, ghl_note: false, ghl_note_text: '' };
     if (type === 'human_handoff') return { reason: '' };
     if (type === 'notify_slack') return { text: '' };
   }
@@ -370,9 +371,15 @@ function NodeConfigPanel({
   // With the GHL pipelines loaded, the CRM trigger's manual id fields are
   // replaced by the dropdown picker below (fallback: manual fields).
   const usePipelinePicker = data.type === 'crm_opportunity_created' && pipelines.length > 0;
-  const visibleFields = (def?.fields ?? []).filter(
-    (f) => !(usePipelinePicker && (f.key === 'pipeline_id' || f.key === 'stage_id')),
-  );
+  const visibleFields = (def?.fields ?? []).filter((f) => {
+    if (usePipelinePicker && (f.key === 'pipeline_id' || f.key === 'stage_id')) return false;
+    // Il testo della nota compare solo quando la nota è accesa. La spunta invece
+    // resta SEMPRE visibile, anche a sincronizzazione GHL spenta: nasconderla
+    // renderebbe impossibile disattivare una nota già salvata, e il salvataggio
+    // continuerebbe a fallire su un campo che non si vede.
+    if (f.key === 'ghl_note_text' && !config.ghl_note) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-3 rounded-md border border-input p-3">
