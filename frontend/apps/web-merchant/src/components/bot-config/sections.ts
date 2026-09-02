@@ -275,8 +275,12 @@ export const SECTIONS: SectionDef[] = [
         label: 'Vale anche per le automazioni',
         kind: 'bool',
         help:
-          'Estende il vincolo orario agli invii automatici (follow-up, riattivazioni). ' +
-          'Normalmente il loro momento di invio è deciso dalla lavagnetta.',
+          'Estende il vincolo orario agli invii automatici (follow-up, riattivazioni, ' +
+          'promemoria). Un messaggio che cadrebbe fuori orario non viene perso: resta ' +
+          'in coda e parte alla riapertura, insieme al resto di quel ramo. Le ' +
+          'notifiche interne (Slack, passaggio a un operatore) partono subito a ' +
+          'qualsiasi ora, a meno che sulla lavagnetta non siano disegnate dopo un ' +
+          'messaggio al cliente: in quel caso aspettano il loro turno.',
       },
       {
         key: 'schedule.timezone',

@@ -41,6 +41,7 @@ from workers.scheduler.handlers import (
     close_idle_conversations,
     daily_kpi_rollup,
     enforce_retention,
+    flush_automation_hours_queue,
     followup_no_answer,
     handoff_sla_sweep,
     integration_health_check,
@@ -113,6 +114,8 @@ class WorkerSettings:
         handoff_sla_sweep,
         # Orari di risposta: risponde alle domande sospese fuori orario
         resume_after_hours,
+        # …e l'altro verso: riaccoda gli invii delle automazioni sospesi
+        flush_automation_hours_queue,
         build_analytics_export,
         enforce_retention,
         # queue: scheduler:jobs — UC-02 appointment reconcile poll + reminders
@@ -188,6 +191,11 @@ class WorkerSettings:
         # arrotondamento. Gli orari sono rivalutati a ogni passata, quindi una
         # modifica alla settimana-tipo ha effetto entro un tick.
         cron(resume_after_hours, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=300, max_tries=1),
+        # ADR 0030 — l'altro verso del traffico: gli invii proattivi che gli
+        # orari hanno fermato durante la chiusura. Stessa cadenza e stessa
+        # ragione: gli orari vanno rivalutati freschi a ogni passata, perché il
+        # merchant può correggerli mentre la coda aspetta.
+        cron(flush_automation_hours_queue, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}, timeout=300, max_tries=1),
         # S-05: compute optimal send hour per lead — weekly (Sunday 06:00 UTC).
         cron(optimize_send_times, weekday=6, hour=6, minute=0, timeout=600, max_tries=1),
     ]

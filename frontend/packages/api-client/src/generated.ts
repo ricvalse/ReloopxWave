@@ -4087,7 +4087,7 @@ export interface components {
             resume_on_open: boolean;
             /**
              * Apply To Automations
-             * @default false
+             * @default true
              */
             apply_to_automations: boolean;
             /**

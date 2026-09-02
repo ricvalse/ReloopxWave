@@ -287,3 +287,54 @@ async def test_next_opening_is_the_following_morning(monkeypatch: pytest.MonkeyP
     assert nxt is not None
     local = nxt.astimezone(hours.tz)
     assert (local.date(), local.hour) == (dt.date(2026, 1, 16), 9)
+
+
+# --- ADR 0030: il vincolo sulle automazioni è acceso di default -------------
+
+
+def test_apply_to_automations_e_acceso_di_default() -> None:
+    """Default `True` (ADR 0030, che su questo ribalta ADR 0028 §5).
+
+    Il default è sicuro solo grazie alla riga successiva: `schedule.mode` vale
+    `always`, quindi la chiave non ha alcun effetto finché il merchant non
+    sceglie deliberatamente `business_hours` o `custom`. Se un domani `mode`
+    cambiasse default, questo test cadrebbe insieme all'argomento che lo regge.
+    """
+    from config_resolver.schema import SYSTEM_DEFAULTS, BotConfigSchema
+
+    assert SYSTEM_DEFAULTS[ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS] is True
+    assert SYSTEM_DEFAULTS[ConfigKey.SCHEDULE_MODE] == "always"
+    assert BotConfigSchema().schedule.apply_to_automations is True
+    assert BotConfigSchema().schedule.mode == "always"
+
+
+@pytest.mark.asyncio
+async def test_automation_hours_e_none_quando_il_merchant_lo_spegne(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spento per merchant → None, cioè "nessun vincolo da applicare qui".
+
+    E il flag viene letto **prima** della risoluzione completa: in
+    `mode="business_hours"` quest'ultima fa due query non cachate, e il
+    chiamante principale è `automation_run`, che parte a ogni messaggio in
+    ingresso. Il test lo prova indirettamente: la risoluzione non è nemmeno
+    stata patchata, quindi se venisse invocata il fake non reggerebbe.
+    """
+    values = _base("custom")
+    values[ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS] = False
+    _patch(monkeypatch, values=values)
+
+    assert await rh.resolve_automation_hours(object(), MERCHANT) is None
+
+
+@pytest.mark.asyncio
+async def test_automation_hours_ritorna_gli_orari_quando_e_acceso(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = _base("custom")
+    values[ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS] = True
+    _patch(monkeypatch, values=values)
+
+    hours = await rh.resolve_automation_hours(object(), MERCHANT)
+    assert hours is not None
+    assert hours.is_open(NIGHT) is False

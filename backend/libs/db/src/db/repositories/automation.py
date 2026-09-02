@@ -7,14 +7,22 @@ source of truth), so there's no per-node patch API. The worker dispatcher calls
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, literal_column, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from db.models import AutomationEdge, AutomationFlow, AutomationNode
+from db.models import (
+    AutomationEdge,
+    AutomationFlow,
+    AutomationHoursQueue,
+    AutomationNode,
+)
 
 
 class AutomationRepository:
@@ -213,3 +221,176 @@ class AutomationRepository:
     async def delete(self, flow: AutomationFlow) -> None:
         await self._session.delete(flow)
         await self._session.flush()
+
+
+@dataclass(slots=True, frozen=True)
+class QueuedAutomationRun:
+    """Una riga di `automation_hours_queue` pronta da riprendere (ADR 0030)."""
+
+    id: UUID
+    tenant_id: UUID
+    merchant_id: UUID
+    automation_id: UUID
+    subject_type: str
+    subject_id: UUID
+    node_keys: list[str]
+    episode_anchor: str | None
+    dedup_key: str
+    queued_at: datetime
+
+
+class AutomationHoursQueueRepository:
+    """La coda dei rami di automazione sospesi fuori orario (ADR 0030).
+
+    Stessa forma di `ConversationRepository.list_off_hours_pending` +
+    `claim_off_hours_resume`: scansione cross-tenant **senza** filtro orario —
+    gli orari dipendono dalla cascata di config per merchant e li risolve lo
+    sweep in Python, su valori freschi a ogni passata. È il motivo per cui
+    questo è uno sweep e non un job differito: il momento dell'apertura cambia.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def enqueue(
+        self,
+        *,
+        tenant_id: UUID,
+        merchant_id: UUID,
+        automation_id: UUID,
+        subject_type: str,
+        subject_id: UUID,
+        node_keys: list[str],
+        episode_anchor: str | None,
+        dedup_key: str,
+    ) -> bool:
+        """Accoda un ramo sospeso. Una riga sola per `dedup_key`, con l'ancora fresca.
+
+        Il conflitto è la norma, non l'eccezione: la ri-scansione del dispatcher
+        entro i 120s di lookback, una ri-consegna arq, o semplicemente un secondo
+        evento notturno sullo stesso lead e sullo stesso nodo. Accodare due volte
+        significherebbe due messaggi identici alla riapertura.
+
+        Ma il conflitto **aggiorna `episode_anchor`** invece di ignorare la
+        seconda scrittura, e questa è la parte che si paga cara a sbagliarla.
+        L'ancora è ciò contro cui `_episode_ended` decide, alla ripresa, se la
+        cadenza ha ancora senso: "il lead ha scritto dopo il momento che ha
+        autorizzato questo messaggio?". Tenendo la **prima** ancora, questo
+        scenario perdeva un invio legittimo, in silenzio:
+
+            02:00  il lead è muto da un po' → episodio no-answer, ancora 02:00,
+                   fuori orario → in coda
+            04:00  il lead risponde → quell'episodio è chiuso, giustamente
+            06:00  torna muto → nuovo episodio, ancora 06:00 → stesso nodo,
+                   stessa chiave → con DO NOTHING la riga conserva 02:00
+            09:00  riapertura: `last_inbound_at` (04:00) è successivo all'ancora
+                   (02:00) → "episodio finito" → non parte niente
+
+        L'ancora nuova arriva da un evento più recente, quindi è per costruzione
+        l'autorizzazione più attuale: è quella contro cui va fatto il confronto.
+
+        Ritorna True solo per l'inserimento vero — non per l'aggiornamento — così
+        il chiamante emette l'evento una volta sola. `xmax = 0` è l'idioma
+        Postgres per distinguerli: su una riga appena inserita non c'è nessuna
+        transazione che l'abbia aggiornata, quindi `xmax` vale 0.
+        """
+        stmt: Any = (
+            pg_insert(AutomationHoursQueue)
+            .values(
+                tenant_id=tenant_id,
+                merchant_id=merchant_id,
+                automation_id=automation_id,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                node_keys=list(node_keys),
+                episode_anchor=episode_anchor,
+                dedup_key=dedup_key,
+            )
+            .on_conflict_do_update(
+                constraint="uq_automation_hours_queue_dedup",
+                set_={"episode_anchor": episode_anchor, "updated_at": func.now()},
+            )
+            .returning(
+                AutomationHoursQueue.id,
+                literal_column("xmax = 0").label("inserted"),
+            )
+        )
+        row = (await self._session.execute(stmt)).first()
+        return bool(row is not None and row.inserted)
+
+    async def list_pending(self, *, limit: int = 500) -> list[QueuedAutomationRun]:
+        """Scansione cross-tenant, i più vecchi per primi.
+
+        Il cap fa sì che il pool si dreni da solo; con l'ordinamento per attesa,
+        se tronca a restare indietro è chi ha aspettato meno.
+        """
+        stmt = select(AutomationHoursQueue).order_by(AutomationHoursQueue.queued_at).limit(limit)
+        rows = (await self._session.execute(stmt)).scalars()
+        return [
+            QueuedAutomationRun(
+                id=r.id,
+                tenant_id=r.tenant_id,
+                merchant_id=r.merchant_id,
+                automation_id=r.automation_id,
+                subject_type=r.subject_type,
+                subject_id=r.subject_id,
+                node_keys=[str(k) for k in (r.node_keys or [])],
+                episode_anchor=r.episode_anchor,
+                dedup_key=r.dedup_key,
+                queued_at=r.queued_at,
+            )
+            for r in rows
+        ]
+
+    async def claim(self, queue_id: UUID, *, stale_after_minutes: int = 15) -> bool:
+        """Prende in carico una riga. Compare-and-swap: vince una sola passata.
+
+        Due passate dello sweep possono sovrapporsi e senza claim il cliente
+        riceverebbe due volte lo stesso messaggio alla riapertura. Il claim
+        scade da solo dopo `stale_after_minutes`, altrimenti un worker morto a
+        metà bloccherebbe la riga per sempre.
+
+        Il cast è scritto `CAST(:nome AS uuid)` e non con la sintassi a due
+        due-punti: quella lascia il parametro letterale invece di legarlo, e
+        l'UPDATE muore con un syntax error (guardia in
+        tests/unit/test_sql_bind_params.py, che questo modulo ha già fatto
+        scattare una volta — dal commento, non dal codice).
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE automation_hours_queue
+                SET claimed_at = now(), updated_at = now()
+                WHERE id = CAST(:queue_id AS uuid)
+                  AND (
+                      claimed_at IS NULL
+                      OR claimed_at < now() - make_interval(mins => :stale_after)
+                  )
+                RETURNING id
+                """
+            ),
+            {"queue_id": str(queue_id), "stale_after": stale_after_minutes},
+        )
+        return result.first() is not None
+
+    async def release(self, queue_id: UUID) -> None:
+        """Libera il claim lasciando la riga in coda: il prossimo tick riprova.
+
+        Un riaccodamento fallito non deve consumare l'attesa in silenzio.
+        """
+        await self._session.execute(
+            text(
+                """
+                UPDATE automation_hours_queue
+                SET claimed_at = NULL, updated_at = now()
+                WHERE id = CAST(:queue_id AS uuid)
+                """
+            ),
+            {"queue_id": str(queue_id)},
+        )
+
+    async def delete(self, queue_id: UUID) -> None:
+        """Toglie la riga: ripresa avvenuta, oppure caduta (scaduta/orfana)."""
+        await self._session.execute(
+            delete(AutomationHoursQueue).where(AutomationHoursQueue.id == queue_id)
+        )
