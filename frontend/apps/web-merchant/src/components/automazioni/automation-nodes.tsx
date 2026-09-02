@@ -282,12 +282,18 @@ export const ACTION_DEFS: TypeDef[] = [
         placeholder: 'Scrivi una nota insieme al tag o al campo (richiede la sincronizzazione GHL)',
       },
       {
+        key: 'ghl_note_summary',
+        label: 'Riassunto AI della conversazione',
+        kind: 'bool',
+        placeholder: 'Aggiunge alla nota 2-3 frasi su cosa si sono detti',
+      },
+      {
         key: 'ghl_note_text',
         label: 'Testo della nota (vuoto = nota automatica, max 4000 caratteri)',
         // Variabili puntate, non slot numerati: sul nodo send il {{1}} passa dal
         // variable_mapping, qui quella mappatura non esiste e il validatore lo rifiuta.
         kind: 'textarea',
-        placeholder: 'Es. Tag applicato a {{lead.first_name}} — {{contact.phone}}',
+        placeholder: 'Es. Tag applicato a {{lead.first_name}} — {{conversation.summary}}',
       },
     ],
   },
@@ -411,7 +417,7 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
     if (type === 'ai_reply') return String(config.objective || 'AI');
     if (type === 'set_lead_field')
       return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}${
-        config.ghl_note ? ' + nota' : ''
+        config.ghl_note ? (config.ghl_note_summary ? ' + nota AI' : ' + nota') : ''
       }`;
     if (type === 'human_handoff') return String(config.reason || 'operatore umano');
     if (type === 'notify_slack') return config.text ? String(config.text) : 'Slack';

@@ -74,7 +74,15 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
         model_override: '',
       };
     if (type === 'set_lead_field')
-      return { field: 'tag', key: '', value: '', ghl_sync: false, ghl_note: false, ghl_note_text: '' };
+      return {
+        field: 'tag',
+        key: '',
+        value: '',
+        ghl_sync: false,
+        ghl_note: false,
+        ghl_note_text: '',
+        ghl_note_summary: false,
+      };
     if (type === 'human_handoff') return { reason: '' };
     if (type === 'notify_slack') return { text: '' };
   }
@@ -377,7 +385,8 @@ function NodeConfigPanel({
     // resta SEMPRE visibile, anche a sincronizzazione GHL spenta: nasconderla
     // renderebbe impossibile disattivare una nota già salvata, e il salvataggio
     // continuerebbe a fallire su un campo che non si vede.
-    if (f.key === 'ghl_note_text' && !config.ghl_note) return false;
+    if ((f.key === 'ghl_note_text' || f.key === 'ghl_note_summary') && !config.ghl_note)
+      return false;
     return true;
   });
 

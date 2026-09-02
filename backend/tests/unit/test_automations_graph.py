@@ -375,6 +375,61 @@ def test_validate_set_lead_field_ghl_note() -> None:
     assert validate_graph([_trigger(), _slf(field="tag", value="VIP", ghl_sync=False)], []).ok
 
 
+def test_validate_set_lead_field_riassunto_ai() -> None:
+    """Il riassunto AI si rifiuta quando non finirebbe da nessuna parte.
+
+    Le due combinazioni sbagliate sono simmetriche: il riassunto acceso senza la
+    nota (non ha dove andare) e la variabile nel testo senza il riassunto acceso
+    (diventerebbe stringa vuota, e la nota arriverebbe sul CRM mutilata).
+    """
+
+    def _slf(**cfg: object) -> dict:
+        return {"node_key": "a", "kind": "action", "type": "set_lead_field", "config": cfg}
+
+    senza_nota = validate_graph(
+        [_trigger(), _slf(field="tag", value="VIP", ghl_sync=True, ghl_note_summary=True)], []
+    )
+    assert any("summary needs ghl_note" in e for e in senza_nota.errors)
+
+    variabile_orfana = validate_graph(
+        [
+            _trigger(),
+            _slf(
+                field="tag",
+                value="VIP",
+                ghl_sync=True,
+                ghl_note=True,
+                ghl_note_text="Chat: {{conversation.summary}}",
+            ),
+        ],
+        [],
+    )
+    assert any("ghl_note_summary is off" in e for e in variabile_orfana.errors)
+
+    assert validate_graph(
+        [
+            _trigger(),
+            _slf(
+                field="tag",
+                value="VIP",
+                ghl_sync=True,
+                ghl_note=True,
+                ghl_note_summary=True,
+                ghl_note_text="Chat: {{conversation.summary}}",
+            ),
+        ],
+        [],
+    ).ok
+    # La nota automatica col riassunto: nessun testo, solo le due spunte.
+    assert validate_graph(
+        [
+            _trigger(),
+            _slf(field="tag", value="VIP", ghl_sync=True, ghl_note=True, ghl_note_summary=True),
+        ],
+        [],
+    ).ok
+
+
 def test_outgoing_targets_branch_filter() -> None:
     edges = [
         {"source_key": "c", "target_key": "hot", "branch": "true"},

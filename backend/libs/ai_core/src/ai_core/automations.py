@@ -251,6 +251,16 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
                     f"node {key!r}: set_lead_field note supports only dotted variables "
                     f"like {{{{lead.first_name}}}}, not numbered slots"
                 ]
+            if "conversation.summary" in testo and not cfg.get("ghl_note_summary"):
+                # Il testo chiede il riassunto ma il nodo non lo calcola: la
+                # variabile diventerebbe stringa vuota e la nota arriverebbe sul
+                # CRM mutilata, senza che nessuno se ne accorga.
+                return [
+                    f"node {key!r}: set_lead_field note uses "
+                    f"{{{{conversation.summary}}}} but ghl_note_summary is off"
+                ]
+        elif cfg.get("ghl_note_summary"):
+            return [f"node {key!r}: set_lead_field note summary needs ghl_note enabled"]
         return []
     if atype == "emit_outcome":
         # L'`outcome_id` arriva da una tendina, non digitato: è il motivo per cui

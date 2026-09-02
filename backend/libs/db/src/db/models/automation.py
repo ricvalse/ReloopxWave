@@ -108,13 +108,16 @@ ACTION_TYPES = (
     # Update a lead/CRM field without involving the AI.
     # cfg: {"field": "tag|score_delta|custom_field|stage", "key": str (custom_field),
     #       "value": Any, "ghl_sync": bool,
-    #       "ghl_note": bool, "ghl_note_text": str}
+    #       "ghl_note": bool, "ghl_note_text": str, "ghl_note_summary": bool}
     # `ghl_note` lascia anche una nota sul contatto GHL insieme al tag/campo: il
     # tag dice *cosa* e' stato deciso, la nota *perche'* e *da parte di chi*.
     # Richiede `ghl_sync` (senza, non c'e' nessun contatto su cui scrivere).
     # `ghl_note_text` vuoto = nota automatica (tag, automazione, lead, punteggio);
     # se valorizzato accetta le variabili puntate del testo libero
     # ({{lead.first_name}}, {{contact.phone}}, ...).
+    # `ghl_note_summary` aggiunge alla nota un riassunto AI della chat (gpt-5-nano,
+    # cache su `conversations.meta`); nel testo personalizzato lo si posiziona con
+    # {{conversation.summary}}.
     "set_lead_field",
     # Hand the conversation to a human operator (takeover), as an explicit flow step.
     # cfg: {"reason": str}

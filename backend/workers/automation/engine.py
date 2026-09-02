@@ -38,6 +38,7 @@ from ai_core.automations import (
     wait_minutes,
 )
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
+from ai_core.crm_summary import build_transcript, summarize_for_crm
 from ai_core.llm import ChatMessage
 from ai_core.orchestrator import ConversationContext
 from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
@@ -128,6 +129,18 @@ _ADVANCE_SCORE = 60
 # run needs a resolvable WhatsApp channel at all. Keep in sync with the
 # message-sending branches of `_do_action` / `ACTION_TYPES`.
 _CUSTOMER_FACING_NODES = frozenset({"ai_reply", "send", "send_template", "send_message"})
+
+# Ogni quanti messaggi nuovi si rifà il riassunto della chat per la nota GHL. Il
+# motore e' stateless e ripassa dallo stesso nodo a ogni evento: senza questa
+# soglia una conversazione viva pagherebbe una chiamata LLM per ogni inbound.
+# Contiamo messaggi e non minuti perche' e' la chat che cambia il riassunto, non
+# l'orologio.
+_SUMMARY_REFRESH_AFTER_MESSAGES = 4
+
+# Quanti messaggi leggere dal DB per costruirlo. Piu' largo del tetto di
+# `crm_summary.MAX_MESSAGES` perche' `list_history` non filtra per ruolo: i
+# `system`/`tool` occuperebbero altrimenti posti che servono alla chat vera.
+_SUMMARY_HISTORY_FETCH = 40
 
 
 @dataclass(slots=True)
@@ -434,6 +447,13 @@ async def automation_run(
         # contesto viene legato all'automazione che lo sta percorrendo.
         run_ctx.automation_id = automation.id
         run_ctx.automation_name = automation.name or ""
+        # Il router LLM del runtime, preso SENZA passare dalle deps AI: quelle si
+        # costruiscono solo se `_flow_uses_ai`, che non guarda `set_lead_field` —
+        # un flusso col solo nodo tag non le costruirebbe mai, ma il riassunto per
+        # la nota GHL gli serve lo stesso. Qui e' una lettura di attributo su un
+        # oggetto gia' vivo dall'avvio del worker: non costa niente.
+        _runtime = ctx.get("runtime")
+        router = getattr(getattr(_runtime, "orchestrator", None), "_router", None)
         # Pigre di proposito: costruirle qui costava una query di storico e due
         # letture di config per ogni run di un flusso con nodi AI — cioè per ogni
         # messaggio in ingresso del merchant su un trigger `message_received`,
@@ -462,6 +482,7 @@ async def automation_run(
                 ai_deps=ai_deps,
                 session=session,
                 settings=settings,
+                router=router,
             )
         finally:
             if sender is not None:
@@ -511,6 +532,7 @@ async def _walk(
     ai_deps: AiReplyDeps | _LazyAiDeps | None = None,
     session: AsyncSession | None = None,
     settings: Any = None,
+    router: Any = None,
 ) -> tuple[int, list[tuple[int, list[str]]]]:
     """Breadth-first graph walk. The graph is validated acyclic before enabling,
     so a visited-set is enough to guarantee termination."""
@@ -584,6 +606,7 @@ async def _walk(
                 ai_deps=ai_deps,
                 session=session,
                 settings=settings,
+                router=router,
             ):
                 sent += 1
             queue.extend(outgoing_targets(edges, key))
@@ -637,6 +660,7 @@ async def _do_action(
     ai_deps: AiReplyDeps | _LazyAiDeps | None = None,
     session: AsyncSession | None = None,
     settings: Any = None,
+    router: Any = None,
 ) -> bool:
     cfg = node.config or {}
     # A human owns this thread — nothing addressed to the customer goes out over
@@ -659,7 +683,9 @@ async def _do_action(
             session=session,
         )
     if node.type == "set_lead_field":
-        return await _do_set_lead_field(node, cfg, run_ctx, session=session, settings=settings)
+        return await _do_set_lead_field(
+            node, cfg, run_ctx, session=session, settings=settings, router=router
+        )
     if node.type == "emit_outcome":
         return await _do_emit_outcome(node, cfg, run_ctx, session=session)
     if node.type == "set_conversation_profile":
@@ -1166,6 +1192,7 @@ async def _do_set_lead_field(
     *,
     session: AsyncSession | None,
     settings: Any,
+    router: Any = None,
 ) -> bool:
     """Update a lead/CRM field. Returns False (sends no WhatsApp message); success
     is observable via the info logs."""
@@ -1200,7 +1227,7 @@ async def _do_set_lead_field(
             )
             return False
         await _set_ghl_contact_field(
-            node, cfg, run_ctx, session=session, settings=settings, field=field
+            node, cfg, run_ctx, session=session, settings=settings, field=field, router=router
         )
         return False
     # `stage` (a pipeline move) is intentionally out of scope for V1 — use the
@@ -1219,6 +1246,7 @@ async def _set_ghl_contact_field(
     session: AsyncSession,
     settings: Any,
     field: str,
+    router: Any = None,
 ) -> None:
     """Write a tag / custom field onto the GHL contact via upsert_contact (the
     client has no dedicated add_tag). Best-effort: a GHL error is logged, not raised.
@@ -1269,7 +1297,9 @@ async def _set_ghl_contact_field(
             payload["customFields"] = {str(cfg.get("key", "")): cfg.get("value")}
         contact = await client.upsert_contact(payload)
         logger.info("automation.set_lead_field", node=node.node_key, field=field, ghl=True)
-        await _maybe_add_ghl_note(client, contact, node, cfg, run_ctx, field=field)
+        await _maybe_add_ghl_note(
+            client, contact, node, cfg, run_ctx, field=field, session=session, router=router
+        )
     except Exception as e:
         logger.warning("automation.set_lead_field.failed", node=node.node_key, error=str(e))
     finally:
@@ -1279,7 +1309,9 @@ async def _set_ghl_contact_field(
         await client.close()
 
 
-def _compose_ghl_note(cfg: dict[str, Any], run_ctx: RunContext, *, field: str) -> str:
+def _compose_ghl_note(
+    cfg: dict[str, Any], run_ctx: RunContext, *, field: str, summary: str | None = None
+) -> str:
     """Il corpo della nota che accompagna la scrittura del tag/campo su GHL.
 
     Testo personalizzato -> passa da `render_free_text`, cioe' **le stesse
@@ -1298,7 +1330,11 @@ def _compose_ghl_note(cfg: dict[str, Any], run_ctx: RunContext, *, field: str) -
         # Solo variabili puntate: gli slot numerati `{{1}}` li rifiuta la
         # validazione (qui non c'e' il `variable_mapping` che li risolve sul
         # nodo `send`), quindi non si passa nessuna mappatura.
-        return render_free_text(custom, run_ctx.as_template_context())
+        contesto = run_ctx.as_template_context()
+        # Disponibile solo qui e solo se il nodo l'ha chiesto: `run_ctx` non sa
+        # niente di riassunti, e non deve pagarne uno per costruire un contesto.
+        contesto["conversation.summary"] = summary or ""
+        return render_free_text(custom, contesto)
     if field == "tag":
         cosa = f"Tag «{str(cfg.get('value', '')).strip()}» applicato"
     else:
@@ -1313,7 +1349,101 @@ def _compose_ghl_note(cfg: dict[str, Any], run_ctx: RunContext, *, field: str) -
         righe.append(f"Lead: {run_ctx.name}")
     righe.append(f"Telefono: {run_ctx.phone}")
     righe.append(f"Punteggio: {run_ctx.score} · Temperatura: {run_ctx.temperature}")
+    if summary:
+        # In coda, non in testa: il troncamento a `GHL_NOTE_MAX_LEN` taglia da
+        # destra, e con il riassunto in cima si perderebbe l'intestazione di
+        # diario (tag, automazione, lead) — cioe' la parte certa a favore di
+        # quella generata.
+        righe.append(f"Riassunto della conversazione: {summary}")
     return "\n".join(righe)
+
+
+def _messaggi_dopo(messages: list[Any], covered_until: Any) -> int:
+    """Quanti messaggi sono arrivati dopo l'istante gia' coperto dal riassunto."""
+    if not covered_until:
+        return len(messages)
+    try:
+        soglia = datetime.fromisoformat(str(covered_until))
+    except (TypeError, ValueError):
+        return len(messages)
+    return sum(1 for m in messages if m.created_at is not None and m.created_at > soglia)
+
+
+async def _conversation_summary(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    session: AsyncSession | None,
+    router: Any,
+) -> str | None:
+    """Riassunto AI della chat per la nota, con cache su `conversations.meta`.
+
+    Si paga una chiamata al modello solo quando il riassunto finirebbe **davvero**
+    dentro la nota: se il merchant ha scritto un testo personalizzato che non
+    nomina `{{conversation.summary}}`, chiamare il modello sarebbe pagare una
+    frase che nessuno stampa.
+
+    La cache e' la ragione per cui questa feature e' sostenibile: il motore e'
+    stateless e ripassa dallo stesso nodo a ogni evento, quindi su un trigger
+    `message_received` una conversazione viva chiederebbe un riassunto per ogni
+    messaggio in arrivo. Si rigenera solo dopo
+    `_SUMMARY_REFRESH_AFTER_MESSAGES` messaggi nuovi.
+    """
+    if not cfg.get("ghl_note_summary"):
+        return None
+    custom = str(cfg.get("ghl_note_text") or "").strip()
+    if custom and "conversation.summary" not in custom:
+        return None
+    if session is None or router is None or run_ctx.conversation_id is None:
+        logger.info(
+            "automation.set_lead_field.summary_skipped",
+            node=node.node_key,
+            reason="no_context",
+        )
+        return None
+
+    # Si pesca piu' largo del tetto del riassunto: `list_history` non filtra per
+    # ruolo, e i `system`/`tool` occuperebbero altrimenti posti utili.
+    messages = await MessageRepository(session).list_history(
+        run_ctx.conversation_id, limit=_SUMMARY_HISTORY_FETCH
+    )
+    transcript = build_transcript(messages)
+    if not transcript:
+        logger.info(
+            "automation.set_lead_field.summary_skipped", node=node.node_key, reason="too_short"
+        )
+        return None
+
+    conv = await session.get(Conversation, run_ctx.conversation_id)
+    cache = dict((conv.meta or {}).get("crm_summary") or {}) if conv is not None else {}
+    in_cache = str(cache.get("text") or "")
+    if in_cache and _messaggi_dopo(messages, cache.get("covered_until")) < (
+        _SUMMARY_REFRESH_AFTER_MESSAGES
+    ):
+        return in_cache
+
+    testo = await summarize_for_crm(
+        router,
+        merchant_id=run_ctx.merchant_id,
+        tenant_id=run_ctx.tenant_id,
+        transcript=transcript,
+    )
+    if not testo:
+        # Fail-open: la nota si scrive comunque. Un riassunto vecchio in cache e'
+        # pur sempre meglio di nessun riassunto.
+        return in_cache or None
+    if conv is not None:
+        ultimo = max((m.created_at for m in messages if m.created_at is not None), default=None)
+        conv.meta = {
+            **(conv.meta or {}),
+            "crm_summary": {
+                "text": testo,
+                "covered_until": ultimo.isoformat() if ultimo else None,
+                "created_at": datetime.now(tz=UTC).isoformat(),
+            },
+        }
+    return testo
 
 
 async def _maybe_add_ghl_note(
@@ -1324,6 +1454,8 @@ async def _maybe_add_ghl_note(
     run_ctx: RunContext,
     *,
     field: str,
+    session: AsyncSession | None = None,
+    router: Any = None,
 ) -> None:
     """Scrive la nota sul contatto GHL appena aggiornato, se il nodo la chiede.
 
@@ -1348,7 +1480,10 @@ async def _maybe_add_ghl_note(
         # la nota non ha dove atterrare.
         logger.warning("automation.set_lead_field.note_no_contact_id", node=node.node_key)
         return
-    body = _compose_ghl_note(cfg, run_ctx, field=field).strip()
+    # Dopo la guardia sul contatto, non prima: senza un contatto su cui scrivere
+    # il riassunto sarebbe una chiamata al modello buttata via.
+    riassunto = await _conversation_summary(node, cfg, run_ctx, session=session, router=router)
+    body = _compose_ghl_note(cfg, run_ctx, field=field, summary=riassunto).strip()
     if not body:
         # Il testo si e' svuotato interpolando: una variabile puntata che non
         # esiste nel contesto diventa stringa vuota. La validazione non puo'

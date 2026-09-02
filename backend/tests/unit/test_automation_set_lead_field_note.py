@@ -18,6 +18,7 @@ Complementa test_notify_slack_node.py (stesso stile: nodo d'azione con
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -110,9 +111,10 @@ async def _scrivi_tag(monkeypatch: pytest.MonkeyPatch, cfg: dict[str, Any], **ov
         _node(),
         cfg,
         over.pop("run_ctx", None) or _run_ctx(),
-        session=object(),
+        session=over.pop("session", None) or object(),
         settings=_settings(),
         field=cfg.get("field", "tag"),
+        router=over.pop("router", None),
     )
     return creati[0] if creati else None
 
@@ -383,3 +385,288 @@ async def test_campo_personalizzato_senza_valore_non_scrive_none(
     body = client.notes[0][1]
     assert "None" not in body
     assert "citta" in body
+
+
+# --- riassunto AI della conversazione --------------------------------------
+
+
+class _FakeConv:
+    """Riga `conversations` finta: serve solo per il campo `meta` (la cache)."""
+
+    def __init__(self) -> None:
+        self.meta: dict[str, Any] = {}
+
+
+class _SessionConConv:
+    def __init__(self, conv: Any) -> None:
+        self._conv = conv
+
+    async def get(self, _model: Any, _id: Any) -> Any:
+        return self._conv
+
+
+class _FakeRouterRiassunto:
+    def __init__(self, *, reply: str = "Il lead chiede il prezzo.", error: Any = None) -> None:
+        self.reply = reply
+        self.error = error
+        self.chiamate = 0
+
+    async def select(self, req: Any) -> Any:
+        router = self
+
+        class Client:
+            async def complete(self, **kw: Any) -> Any:
+                router.chiamate += 1
+                if router.error is not None:
+                    raise router.error
+                return SimpleNamespace(
+                    content=router.reply,
+                    model="gpt-5-nano",
+                    tokens_in=10,
+                    tokens_out=5,
+                    latency_ms=1,
+                    raw={},
+                )
+
+        return Client()
+
+
+def _patch_storico(monkeypatch: pytest.MonkeyPatch, quanti: int = 6) -> list[Any]:
+    """Storico finto per `MessageRepository.list_history`. Ritorna la lista, che i
+    test possono allungare per simulare messaggi nuovi arrivati dopo."""
+    base = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
+    messaggi: list[Any] = [
+        SimpleNamespace(
+            role="user" if i % 2 == 0 else "assistant",
+            content=f"messaggio {i}",
+            created_at=base + timedelta(minutes=i),
+        )
+        for i in range(quanti)
+    ]
+
+    class FakeMessageRepo:
+        def __init__(self, session: Any) -> None: ...
+
+        async def list_history(self, conversation_id: Any, *, limit: int = 30) -> list[Any]:
+            return messaggi[-limit:]
+
+    monkeypatch.setattr(engine, "MessageRepository", FakeMessageRepo)
+    return messaggi
+
+
+def _aggiungi_messaggi(messaggi: list[Any], quanti: int) -> None:
+    ultimo = messaggi[-1].created_at
+    for i in range(quanti):
+        messaggi.append(
+            SimpleNamespace(
+                role="user",
+                content=f"nuovo {i}",
+                created_at=ultimo + timedelta(minutes=i + 1),
+            )
+        )
+
+
+async def test_senza_flag_il_riassunto_non_si_paga(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Il default e' spento: chi non lo chiede non chiama il modello."""
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {"field": "tag", "value": "VIP", "ghl_sync": True, "ghl_note": True},
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    assert router.chiamate == 0
+    assert "Riassunto" not in client.notes[0][1]
+
+
+async def test_riassunto_finisce_in_coda_alla_nota(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+        },
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    body = client.notes[0][1]
+    assert router.chiamate == 1
+    assert body.endswith("Riassunto della conversazione: Il lead chiede il prezzo.")
+    # L'intestazione di diario resta sopra: e' la parte certa, e il troncamento
+    # a GHL_NOTE_MAX_LEN taglia da destra.
+    assert body.startswith("[Reloop AI] Tag")
+
+
+async def test_la_cache_evita_di_ripagare_lo_stesso_riassunto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Il motore e' stateless e ripassa dal nodo: senza cache si pagherebbe a ogni
+    evento. Con la stessa chat, la seconda passata non chiama il modello."""
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+    conv = _FakeConv()
+    cfg = {
+        "field": "tag",
+        "value": "VIP",
+        "ghl_sync": True,
+        "ghl_note": True,
+        "ghl_note_summary": True,
+    }
+
+    primo = await _scrivi_tag(monkeypatch, cfg, session=_SessionConConv(conv), router=router)
+    secondo = await _scrivi_tag(monkeypatch, cfg, session=_SessionConConv(conv), router=router)
+
+    assert router.chiamate == 1
+    assert conv.meta["crm_summary"]["text"] == "Il lead chiede il prezzo."
+    assert primo.notes[0][1] == secondo.notes[0][1]
+
+
+async def test_la_cache_si_rinfresca_quando_la_chat_va_avanti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messaggi = _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+    conv = _FakeConv()
+    cfg = {
+        "field": "tag",
+        "value": "VIP",
+        "ghl_sync": True,
+        "ghl_note": True,
+        "ghl_note_summary": True,
+    }
+
+    await _scrivi_tag(monkeypatch, cfg, session=_SessionConConv(conv), router=router)
+    _aggiungi_messaggi(messaggi, engine._SUMMARY_REFRESH_AFTER_MESSAGES)
+    router.reply = "Il lead ha accettato la proposta."
+    client = await _scrivi_tag(monkeypatch, cfg, session=_SessionConConv(conv), router=router)
+
+    assert router.chiamate == 2
+    assert "accettato la proposta" in client.notes[0][1]
+
+
+async def test_testo_personalizzato_che_non_cita_il_riassunto_non_lo_paga(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una chiamata al modello che nessuno stampa e' solo un costo."""
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+            "ghl_note_text": "Tag applicato a {{lead.first_name}}",
+        },
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    assert router.chiamate == 0
+    assert client.notes[0][1] == "Tag applicato a Mario"
+
+
+async def test_testo_personalizzato_puo_posizionare_il_riassunto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto()
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+            "ghl_note_text": "{{lead.first_name}}: {{conversation.summary}}",
+        },
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    assert client.notes[0][1] == "Mario: Il lead chiede il prezzo."
+
+
+async def test_modello_giu_la_nota_si_scrive_lo_stesso(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-open: una nota senza riassunto e' un dettaglio, una nota mancante no."""
+    _patch_storico(monkeypatch)
+    router = _FakeRouterRiassunto(error=RuntimeError("429"))
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+        },
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    body = client.notes[0][1]
+    assert "Riassunto" not in body
+    assert "VIP" in body
+
+
+async def test_chat_troppo_corta_non_chiama_il_modello(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_storico(monkeypatch, quanti=2)
+    router = _FakeRouterRiassunto()
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+        },
+        session=_SessionConConv(_FakeConv()),
+        router=router,
+    )
+
+    assert router.chiamate == 0
+    assert "Riassunto" not in client.notes[0][1]
+
+
+async def test_senza_router_la_nota_resta_senza_riassunto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Il runtime senza orchestratore (test, job spogli) non deve far saltare la nota."""
+    _patch_storico(monkeypatch)
+
+    client = await _scrivi_tag(
+        monkeypatch,
+        {
+            "field": "tag",
+            "value": "VIP",
+            "ghl_sync": True,
+            "ghl_note": True,
+            "ghl_note_summary": True,
+        },
+        session=_SessionConConv(_FakeConv()),
+    )
+
+    assert "Riassunto" not in client.notes[0][1]
+    assert "VIP" in client.notes[0][1]
