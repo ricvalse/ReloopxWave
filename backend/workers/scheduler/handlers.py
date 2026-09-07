@@ -16,6 +16,9 @@ from workers.scheduler.appointment_reminder import send_appointment_reminders  #
 from workers.scheduler.appointment_sync import sync_appointments  # re-export
 from workers.scheduler.close_conversations import close_idle_conversations  # re-export
 from workers.scheduler.handoff_sla import handoff_sla_sweep  # re-export
+from workers.scheduler.flush_automation_hours_queue import (  # re-export
+    flush_automation_hours_queue,
+)
 from workers.scheduler.resume_after_hours import resume_after_hours  # re-export
 from workers.scheduler.integration_health import integration_health_check  # re-export
 from workers.scheduler.kpi_rollup import daily_kpi_rollup  # re-export
@@ -37,6 +40,7 @@ __all__ = [
     "close_idle_conversations",
     "daily_kpi_rollup",
     "enforce_retention",
+    "flush_automation_hours_queue",
     "followup_no_answer",
     "handoff_sla_sweep",
     "integration_health_check",

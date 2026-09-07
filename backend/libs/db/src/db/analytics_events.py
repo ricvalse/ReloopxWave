@@ -60,6 +60,14 @@ class EventType(StrEnum):
     # messaggio del cliente) si è chiusa durante l'attesa. Tipico delle
     # chiusure lunghe, venerdì sera → lunedì mattina.
     CONVERSATION_RESUME_EXPIRED = "conversation.resume_expired"
+    # ADR 0030 — invio proattivo rimandato perché il merchant era fuori orario
+    # (`schedule.apply_to_automations`). Riparte alla riapertura.
+    AUTOMATION_SEND_QUEUED = "automation.send_queued"
+    # …e l'invio rimandato che non è mai partito: agenda mai riaperta entro il
+    # tetto d'attesa, oppure promemoria la cui riapertura cade dopo
+    # l'appuntamento. Un rinvio silenzioso che scade è indistinguibile da un
+    # invio riuscito, se non lo si registra.
+    AUTOMATION_SEND_DROPPED = "automation.send_dropped"
 
     # -- Escalation / handoff ---------------------------------------------
     CONVERSATION_ESCALATED = "conversation.escalated"
@@ -247,6 +255,22 @@ EVENT_CATALOG: dict[EventType, EventTypeDef] = {
             "finestra WhatsApp di 24h: servirebbe un template approvato.",
             EventCategory.ESCALATION,
             "conversation",
+        ),
+        EventTypeDef(
+            EventType.AUTOMATION_SEND_QUEUED,
+            "Invii rimandati a fine chiusura",
+            "Messaggi delle automazioni sospesi perché il merchant era fuori "
+            "orario: ripartono alla riapertura (ADR 0030).",
+            EventCategory.CONVERSATION,
+            "lead",
+        ),
+        EventTypeDef(
+            EventType.AUTOMATION_SEND_DROPPED,
+            "Invii rimandati e mai partiti",
+            "Messaggi sospesi fuori orario che la riapertura non ha più "
+            "recuperato: agenda mai riaperta, o promemoria ormai scaduto.",
+            EventCategory.CONVERSATION,
+            "lead",
         ),
         EventTypeDef(
             EventType.ESCALATION_RISK_HIGH,

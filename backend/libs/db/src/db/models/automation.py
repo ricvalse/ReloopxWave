@@ -20,9 +20,19 @@ node/edge set on each save.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -225,3 +235,68 @@ class AutomationEdge(Base, TimestampMixin):
     branch: Mapped[str] = mapped_column(String(16), nullable=False, default="default")
 
     automation: Mapped[AutomationFlow] = relationship(back_populates="edges")
+
+
+class AutomationHoursQueue(Base, TimestampMixin):
+    """Un ramo di automazione sospeso perché il merchant era fuori orario.
+
+    ADR 0030. Quando `schedule.apply_to_automations` è acceso e il merchant è
+    chiuso, il walk si ferma sul nodo customer-facing — come fa su un `wait` —
+    e lascia qui una riga. Lo sweep `flush_automation_hours_queue` la ripesca
+    alla riapertura e riaccoda `automation_run` con `start_keys=node_keys`.
+
+    La riga è un **puntatore, non un payload**: nessun testo qui dentro. Il
+    contenuto viene ricalcolato dalla lavagnetta al momento della consegna
+    (ADR 0014), così un nodo corretto nel frattempo parte nella sua versione
+    nuova, la finestra 24h viene rivalutata su stato fresco, e la guardia
+    d'episodio di ADR 0015 può ancora spegnere una cadenza il cui lead ha
+    risposto durante la notte.
+
+    `dedup_key` è ``offhours:{automazione}:{soggetto}:{nodi ordinati}`` — di
+    proposito **senza** la dedup del run che l'ha prodotta. Due eventi diversi
+    che di notte arrivano allo stesso nodo per lo stesso lead devono produrre un
+    solo messaggio alla riapertura, non due: è la stessa regola della cortesia
+    una-volta-per-episodio di ADR 0028 §4. Ed essendo stabile fra una ripresa e
+    l'altra, non cresce a ogni generazione.
+    """
+
+    __tablename__ = "automation_hours_queue"
+    __table_args__ = (UniqueConstraint("dedup_key", name="uq_automation_hours_queue_dedup"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    # Denormalizzato (le altre `automation_*` non ce l'hanno) perché lo sweep
+    # gira cross-tenant e deve ricostruire il TenantContext senza una join.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    merchant_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("merchants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    automation_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("automation_flows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    # I nodi da cui riprendere il walk (gli stessi `start_keys` di automation_run).
+    node_keys: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    # ADR 0015: l'ancora dell'episodio, riportata alla ripresa così la cadenza
+    # può ancora annullarsi se il lead ha ri-ingaggiato durante la chiusura.
+    episode_anchor: Mapped[str | None] = mapped_column(String(64))
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # Indicizzata perché è l'ordinamento della scansione: i più vecchi per
+    # primi, così se il cap tronca resta indietro chi ha aspettato meno.
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    # Claim a scadenza: due passate dello sweep possono sovrapporsi e senza
+    # questo il cliente riceverebbe due volte lo stesso messaggio.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

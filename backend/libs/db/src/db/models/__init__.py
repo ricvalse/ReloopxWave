@@ -1,7 +1,12 @@
 from db.models.ab import ABAssignment, ABExperiment
 from db.models.analytics import AnalyticsEvent
 from db.models.appointment import Appointment
-from db.models.automation import AutomationEdge, AutomationFlow, AutomationNode
+from db.models.automation import (
+    AutomationEdge,
+    AutomationFlow,
+    AutomationHoursQueue,
+    AutomationNode,
+)
 from db.models.base import Base, TimestampMixin
 from db.models.bot import BotConfig, BotTemplate, PromptTemplate
 from db.models.catalog import BotCorrection, FaqEntry, StorePolicy
@@ -25,6 +30,7 @@ __all__ = [
     "Appointment",
     "AutomationEdge",
     "AutomationFlow",
+    "AutomationHoursQueue",
     "AutomationNode",
     "Base",
     "BotConfig",

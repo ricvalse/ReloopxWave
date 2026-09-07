@@ -262,7 +262,7 @@ async def test_ghilea_flow_dies_after_first_template() -> None:
     conversazione in cui il lead non ha ancora parlato.
     """
     sender = _FakeSender()
-    sent, deferrals = await _walk(
+    _outcome = await _walk(
         _ghilea_automation(),
         _run_ctx(within_window=False, last_message=""),
         start_keys=["n2"],
@@ -276,12 +276,12 @@ async def test_ghilea_flow_dies_after_first_template() -> None:
 
     # n3 (ai_check) → False → ramo n13 (send freeform_only) → finestra chiusa → skip.
     assert sender.texts == [], "nessun testo libero puo' uscire a finestra chiusa"
-    assert sent == 1, "un solo nodo ha prodotto un invio: n2"
+    assert _outcome.sent == 1, "un solo nodo ha prodotto un invio: n2"
 
     # IL PUNTO CHIAVE: nessun deferral → nessun job di resume viene mai schedulato.
     # Il grafo non ha nodi `wait`, quindi il walk finisce qui e non ripartira' mai,
     # qualunque cosa il lead risponda dopo.
-    assert deferrals == [], (
+    assert _outcome.deferrals == [], (
         "il flusso Ghilea non schedula alcun resume: quando il lead rispondera' "
         "'Si ok' non ci sara' nessun run a raccoglierlo"
     )
@@ -301,7 +301,7 @@ async def test_ghilea_both_branches_of_n3_are_dead_at_trigger_time() -> None:
     for verdict_branch in ("true", "false"):
         sender = _FakeSender()
         start = "n4" if verdict_branch == "true" else "n13"
-        sent, deferrals = await _walk(
+        _outcome = await _walk(
             _ghilea_automation(),
             _run_ctx(within_window=False, last_message=""),
             start_keys=[start],
@@ -310,8 +310,8 @@ async def test_ghilea_both_branches_of_n3_are_dead_at_trigger_time() -> None:
             ai_deps=None,
         )
         assert sender.texts == [], f"ramo {verdict_branch}: nulla puo' uscire"
-        assert sent == 0, f"ramo {verdict_branch}: nessun invio a finestra chiusa"
-        assert deferrals == []
+        assert _outcome.sent == 0, f"ramo {verdict_branch}: nessun invio a finestra chiusa"
+        assert _outcome.deferrals == []
 
 
 async def test_ghilea_walk_is_single_pass_no_inbound_resume() -> None:
@@ -324,7 +324,7 @@ async def test_ghilea_walk_is_single_pass_no_inbound_resume() -> None:
     del lead fra un nodo e l'altro. Nessun deferral viene prodotto.
     """
     sender = _FakeSender()
-    _, deferrals = await _walk(
+    _outcome = await _walk(
         _ghilea_automation(),
         _run_ctx(within_window=True, last_message="Si ok"),
         start_keys=["n2"],
@@ -332,7 +332,7 @@ async def test_ghilea_walk_is_single_pass_no_inbound_resume() -> None:
         templates=_FakeTemplates(),
         ai_deps=None,
     )
-    assert deferrals == [], "nessun nodo `wait` nel grafo → nessuna pausa possibile"
+    assert _outcome.deferrals == [], "nessun nodo `wait` nel grafo → nessuna pausa possibile"
 
 
 async def test_ghilea_n5_routes_pomeriggio_to_the_morning_branch() -> None:

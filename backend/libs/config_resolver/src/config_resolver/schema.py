@@ -90,9 +90,11 @@ class ConfigKey(StrEnum):
     # invece di lasciarla cadere. False = fuori orario si perde (solo cortesia).
     SCHEDULE_RESUME_ON_OPEN = "schedule.resume_on_open"
     # Se il vincolo orario valga anche per gli invii proattivi delle automazioni
-    # (follow-up, riattivazioni, promemoria). Default False: il timing delle
-    # automazioni viene dal grafo (ADR 0011/0014) e sovrascriverlo di default
-    # cambierebbe in silenzio il comportamento di flussi già in produzione.
+    # (follow-up, riattivazioni, promemoria). Fuori orario il messaggio non si
+    # perde: si accoda e parte alla riapertura (ADR 0030). Acceso di default —
+    # `mode` vale `always`, quindi non ha effetto finché il merchant non sceglie
+    # deliberatamente `business_hours` o `custom`, e chi lo fa non intendeva
+    # "tranne i promemoria delle 3 di notte".
     SCHEDULE_APPLY_TO_AUTOMATIONS = "schedule.apply_to_automations"
     SCHEDULE_TIMEZONE = "schedule.timezone"
     # Drop (don't auto-reply to) an inbound older than this many minutes. Guards
@@ -329,8 +331,7 @@ STRUCTURAL_METRIC_PRESETS: list[dict[str, Any]] = [
 # significherebbero "il bot non risponde mai").
 # `day`: 0=lunedì … 6=domenica, la stessa convenzione di `BusinessHour`.
 _DEFAULT_WEEKLY_SCHEDULE: list[dict[str, Any]] = [
-    {"day": d, "enabled": d <= 4, "windows": [{"start": "09:00", "end": "18:00"}]}
-    for d in range(7)
+    {"day": d, "enabled": d <= 4, "windows": [{"start": "09:00", "end": "18:00"}]} for d in range(7)
 ]
 
 
@@ -365,7 +366,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE: "Grazie per averci contattato! Ti risponderemo al più presto.",
     ConfigKey.SCHEDULE_OFF_HOURS_MESSAGE_ONCE: True,
     ConfigKey.SCHEDULE_RESUME_ON_OPEN: True,
-    ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS: False,
+    ConfigKey.SCHEDULE_APPLY_TO_AUTOMATIONS: True,
     ConfigKey.SCHEDULE_TIMEZONE: "Europe/Rome",
     ConfigKey.SCHEDULE_INBOUND_STALENESS_MIN: 10,
     ConfigKey.RAG_TOP_K: 5,
@@ -579,7 +580,20 @@ class ScheduleConfig(_StrictModel):
     # Alla riapertura rispondi davvero a ciò che è rimasto in sospeso.
     resume_on_open: bool = True
     # Estendi il vincolo orario anche agli invii proattivi delle automazioni.
-    apply_to_automations: bool = False
+    #
+    # Acceso di default da ADR 0030, che su questo punto sostituisce ADR 0028 §5.
+    # Il motivo per cui allora era spento — "cambierebbe in silenzio flussi già
+    # in produzione" — non regge una volta guardato chi tocca davvero: `mode`
+    # qui sopra vale `always` di default, quindi questa chiave non ha alcun
+    # effetto finché il merchant non ha *deliberatamente* impostato
+    # `business_hours` o `custom`. E un merchant che ha scritto "rispondi solo
+    # 09:00-18:00" non intendeva "tranne i promemoria automatici delle 3 di
+    # notte": tenerlo spento significava chiedergli di configurare due volte lo
+    # stesso fatto del mondo, e intanto svegliargli i clienti.
+    #
+    # Resta una chiave della cascata: spegnibile per merchant, impostabile e
+    # lockabile dal template d'agenzia.
+    apply_to_automations: bool = True
     timezone: str = "Europe/Rome"
     # Skip auto-replying to an inbound older than this many minutes (still
     # persisted). 0 = disabled. Defends against answering a stale backlog
