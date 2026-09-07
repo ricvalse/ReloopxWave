@@ -2527,6 +2527,18 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /**
+             * Propose When Hot
+             * @default false
+             */
+            propose_when_hot: boolean;
+            /** Propose Instructions */
+            propose_instructions?: string | null;
+            /**
+             * Propose Max Per Conversation
+             * @default 1
+             */
+            propose_max_per_conversation: number;
         };
         /** BootstrapOut */
         BootstrapOut: {

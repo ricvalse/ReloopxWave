@@ -51,6 +51,10 @@ class FakeConversation:
     last_message_at: Any = None
     current_state: str | None = None
     context_summary: dict | None = None
+    # `conversations.meta` è NOT NULL con default `{}` sul modello reale: il
+    # fake lo rispecchia perché il servizio ci legge il contatore anti-riproposta
+    # della proposta di appuntamento (`booking_nudge_count`).
+    meta: dict = field(default_factory=dict)
     # Profilo di conversazione attivo (ADR 0022 / migrazione 0047). None =
     # nessun profilo, cioè il comportamento identico a prima dei profili.
     profile_id: uuid.UUID | None = None
