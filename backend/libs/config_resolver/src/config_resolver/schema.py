@@ -183,6 +183,14 @@ class ConfigKey(StrEnum):
     # per-thread `conversations.auto_reply` flag (AND).
     BOT_AUTO_REPLY_ENABLED = "bot.auto_reply_enabled"
 
+    # A *chi* risponde il bot, quando il master switch è acceso. "tutti" è il
+    # comportamento storico. "solo_automazioni" restringe la risposta automatica
+    # alle conversazioni in cui l'azienda ha già mandato qualcosa — una campagna,
+    # un promemoria, una riattivazione — leggendo `conversations.last_automation_at`.
+    # Chi scrive a freddo resta all'operatore. Non sostituisce il master switch:
+    # ci si somma (AND), così i lock d'agenzia esistenti continuano a valere.
+    BOT_AUTO_REPLY_SCOPE = "bot.auto_reply_scope"
+
     # Bot persona — structured, guided knobs that drive the system prompt.
     # `formality` is the new primary tone-of-address driver (tu / Lei); when
     # "auto" the builder falls back to the freeform legacy `bot.tone` string.
@@ -408,6 +416,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOT_SYSTEM_PROMPT_ADDITIONS: None,
     ConfigKey.BOT_FIRST_MESSAGE: None,
     ConfigKey.BOT_AUTO_REPLY_ENABLED: False,
+    ConfigKey.BOT_AUTO_REPLY_SCOPE: "tutti",
     # Persona — sensible "on" defaults (mild prompt enrichment for everyone).
     ConfigKey.BOT_FORMALITY: "auto",
     ConfigKey.BOT_VERBOSITY: "equilibrato",
@@ -674,6 +683,11 @@ class BotSurfaceConfig(_StrictModel):
     # Master kill switch for auto-reply. AND-ed with `conversations.auto_reply`
     # at the worker. False = bot stays silent, agent must reply via composer.
     auto_reply_enabled: bool = False
+    # A chi risponde il bot quando `auto_reply_enabled` è acceso.
+    # "solo_automazioni" = solo dove è già partito un invio automatico
+    # (`conversations.last_automation_at` valorizzato); il contatto a freddo
+    # non riceve risposta automatica.
+    auto_reply_scope: Literal["tutti", "solo_automazioni"] = "tutti"
 
 
 class BusinessConfig(_StrictModel):

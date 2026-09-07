@@ -207,14 +207,23 @@ class _FakeSender:
         return {"messages": [{"id": "wamid.tmpl"}]}
 
 
-def _patch_message_repo(monkeypatch: pytest.MonkeyPatch, captured: list) -> None:
+def _patch_message_repo(
+    monkeypatch: pytest.MonkeyPatch, captured: list, stamped: list | None = None
+) -> None:
     class FakeMessageRepo:
         def __init__(self, session): ...
         async def persist_outbound_message(self, **kw):
             captured.append(kw)
             return object()
 
+    class FakeConvRepo:
+        def __init__(self, session): ...
+        async def touch_last_automation(self, conversation_id):
+            if stamped is not None:
+                stamped.append(conversation_id)
+
     monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
+    monkeypatch.setattr(outbound, "ConversationRepository", FakeConvRepo)
 
 
 async def test_persist_template_send_uses_rendered_body_as_content(

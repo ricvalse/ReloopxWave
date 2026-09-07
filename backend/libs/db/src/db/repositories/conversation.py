@@ -267,6 +267,29 @@ class ConversationRepository:
             .values(last_inbound_at=now)
         )
 
+    async def touch_last_automation(self, conversation_id: UUID) -> None:
+        """Timbra che l'azienda ha mandato un invio automatico su questo thread.
+
+        Alimenta la modalità `bot.auto_reply_scope = "solo_automazioni"`: il gate
+        della risposta automatica risponde solo dove questo campo è valorizzato.
+        Chiamata da `send_and_persist_decision`, che è il punto unico da cui
+        passa ogni invio proattivo — campagna, nodo della lavagnetta, promemoria
+        appuntamento.
+
+        Il timestamp viene dall'orologio del **database**, come in
+        `mark_off_hours_pending` e per la stessa ragione: dentro una transazione
+        Postgres `now()` è costante, quindi il timbro coincide esattamente con il
+        `created_at` del messaggio salvato nella stessa transazione. È ciò che
+        rende il valore scritto a runtime indistinguibile da quello che
+        ricostruisce il backfill della migrazione 0052, che aggrega proprio su
+        `MAX(messages.created_at)`.
+        """
+        await self._session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(last_automation_at=func.now())
+        )
+
     async def list_reminder_candidates(self, *, min_idle_minutes: int) -> list[ReminderCandidate]:
         """Cross-tenant scan of conversations silent long enough to be a no-answer.
 
