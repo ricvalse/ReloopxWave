@@ -213,6 +213,28 @@ export const SECTIONS: SectionDef[] = [
         kind: 'calendar',
         help: 'Calendario GHL su cui il bot prenota. Se GHL non è collegato, inserisci l’ID manualmente.',
       },
+      {
+        key: 'booking.propose_when_hot',
+        label: 'Proponi tu l’appuntamento ai contatti caldi',
+        kind: 'bool',
+        help: 'Quando il punteggio del contatto supera la soglia “caldo” (sezione Punteggio dei lead), il bot smette di qualificare e porta il discorso sul fissare un appuntamento, leggendo le disponibilità reali dal calendario. Usa quella soglia, non un numero a parte.',
+      },
+      {
+        key: 'booking.propose_instructions',
+        label: 'Come proporre l’appuntamento',
+        kind: 'textarea',
+        rows: 2,
+        placeholder: 'es. Proponi solo la sede di Milano e mai il venerdì.',
+        help: 'Facoltativo. Indicazioni sul modo di proporre, non su quando.',
+      },
+      {
+        key: 'booking.propose_max_per_conversation',
+        label: 'Quante volte insistere (per conversazione)',
+        kind: 'int',
+        min: 1,
+        max: 3,
+        help: 'Quanti turni al massimo il bot può spingere sulla proposta. 1 = la propone una volta e poi lascia perdere. Alzalo a 2 se noti che a volte non la propone affatto.',
+      },
     ],
   },
   {

@@ -36,7 +36,7 @@ CACHE_TTL_SECONDS = 60
 # una chiave diversa — ed è il motivo per cui il suffisso va **sempre** alzato e
 # mai riusato: le due rimozioni sono nate su rami paralleli e avrebbero
 # rivendicato entrambe la v3, lasciando i bag di una delle due raggiungibili.
-RESOLVED_CACHE_KEY = "__resolved_v4__"
+RESOLVED_CACHE_KEY = "__resolved_v5__"
 
 # ADR 0026 — mappa nuova chiave → chiave legacy. Le override già salvate dai
 # merchant vivono nella JSONB nella forma `{"escalation": {...}}`: cercando solo

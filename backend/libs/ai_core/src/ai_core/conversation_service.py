@@ -15,7 +15,7 @@ Downstream UCs (02/04/05/…) plug in by registering an ActionHandler in the
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -87,6 +87,13 @@ _PHONE_ECHO_PAUSE_FALLBACK_MIN = 120
 # silently dropped. Keep this > the largest threshold you expect merchants to
 # set, or compression for those tenants degrades back to plain truncation.
 _HISTORY_FETCH_LIMIT = 80
+
+# Stati in cui spingere sulla proposta di appuntamento è sbagliato. BOOKED è il
+# più importante: `actions/booking.py` forza il punteggio a 100 dopo la
+# prenotazione, quindi chi ha già prenotato resta sopra qualsiasi soglia per
+# sempre e senza questo cancello si vedrebbe riproporre un appuntamento che ha
+# già. In ESCALATED la conversazione è di un operatore, in DEAD il lead è andato.
+_NO_BOOKING_NUDGE_STATES = frozenset({ConvState.BOOKED, ConvState.ESCALATED, ConvState.DEAD})
 
 
 def _to_chat_history(history: list[Any]) -> list[ChatMessage]:
@@ -336,6 +343,11 @@ class _ReplyContext:
     # per profilo comprendono i turni conversazionali e non solo gli invii
     # proattivi.
     conv_profile_id: UUID | None = None
+    # `conversations.meta` al momento della cattura. Serve al contatore
+    # anti-riproposta della proposta di appuntamento (`booking_nudge_count`):
+    # portarlo qui evita una query in più per turno, visto che la conversazione
+    # è già stata caricata in entrambi i punti di costruzione.
+    conv_meta: dict[str, Any] = field(default_factory=dict)
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -1229,6 +1241,7 @@ class ConversationService:
             # and updates the lead for the NEXT turn).
             lead_sentiment = lead.sentiment
             conv_current_state = conv.current_state
+            conv_meta = dict(conv.meta or {})
             chat_history = _to_chat_history(history)
 
             # Per-merchant debounce window (0 = off). Resolved here so the worker
@@ -1267,6 +1280,7 @@ class ConversationService:
                 text=text,
                 conv_current_state=conv_current_state,
                 conv_profile_id=conv_profile_id,
+                conv_meta=conv_meta,
                 latest_wa_message_id=wa_message_id,
                 proactive_reply_to=_trailing_proactive_text(history),
             )
@@ -1404,6 +1418,7 @@ class ConversationService:
                 text=effective_text,
                 conv_current_state=conv.current_state,
                 conv_profile_id=conv.profile_id,
+                conv_meta=dict(conv.meta or {}),
                 latest_wa_message_id=wa_message_id,
                 lead_avg_latency_seconds=lead.avg_response_latency_seconds,
                 proactive_reply_to=_trailing_proactive_text(history),
@@ -1553,6 +1568,16 @@ class ConversationService:
             qualified_stage_id = await self._resolve_optional_str(
                 session, resolved.merchant_id, ConfigKey.PIPELINE_QUALIFIED_STAGE_ID
             )
+            propose_when_hot = await self._resolve_bool(
+                session, resolved.merchant_id, ConfigKey.BOOKING_PROPOSE_WHEN_HOT, default=False
+            )
+            propose_instructions = (
+                await self._resolve_optional_str(
+                    session, resolved.merchant_id, ConfigKey.BOOKING_PROPOSE_INSTRUCTIONS
+                )
+                if propose_when_hot
+                else None
+            )
 
             # Playbook runtime (ADR 0018) — resolved once; gates the FSM hint,
             # scoring/pipeline side effects, action allowlist and directives.
@@ -1584,6 +1609,16 @@ class ConversationService:
                 )
             if fsm_hint:
                 system_prompt = system_prompt + "\n\n" + fsm_hint
+
+            propose_booking = await self._resolve_booking_nudge(
+                session,
+                rc,
+                caps=caps,
+                merchant_id=resolved.merchant_id,
+                enabled=propose_when_hot,
+                fsm_state=fsm_state,
+                hot_threshold=hot_threshold,
+            )
 
             # S-09: proactive escalation risk — inject empathy hint when risk ≥ 60
             from ai_core.escalation_predictor import predict_escalation_risk
@@ -1746,6 +1781,8 @@ class ConversationService:
                 advance_threshold=advance_threshold,
                 allowed_actions=caps.allowed_actions,
                 scoring_enabled=caps.scoring_enabled,
+                propose_booking=propose_booking,
+                propose_instructions=propose_instructions,
                 directives=caps.directives,
                 critical_keywords=caps.critical_keywords,
                 current_image=rc.current_image,
@@ -1770,7 +1807,10 @@ class ConversationService:
                 response = await self._run_orchestrator(session, ctx, rc)
                 # S-04: coherence guard — retry once if the reply contradicts prior facts
                 coherence_enabled = await self._resolve_bool(
-                    session, resolved.merchant_id, ConfigKey.AGENT_COHERENCE_GUARD_ENABLED, default=True
+                    session,
+                    resolved.merchant_id,
+                    ConfigKey.AGENT_COHERENCE_GUARD_ENABLED,
+                    default=True,
                 )
                 if coherence_enabled:
                     nano_client = self._rag_llm_client()
@@ -1916,7 +1956,9 @@ class ConversationService:
                     # the handoff copy would promise an operator who never comes —
                     # and would repeat on every following inbound. Drop the action
                     # and let the LLM's own reply go out.
-                    response.actions = [a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS]
+                    response.actions = [
+                        a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS
+                    ]
                 elif not await convs.claim_handoff(
                     rc.conv_id,
                     reason=escalate_action.payload.get("reason"),
@@ -1926,7 +1968,9 @@ class ConversationService:
                     # and the customer already received the handoff message. Stay
                     # silent and drop the action so the operator isn't re-notified.
                     suppress_reply = True
-                    response.actions = [a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS]
+                    response.actions = [
+                        a for a in response.actions if a.kind not in _HANDOFF_ACTION_KINDS
+                    ]
                 else:
                     handoff_claimed = True
                     silent = await self._resolve_bool(
@@ -1965,6 +2009,14 @@ class ConversationService:
                 )
                 if new_fsm_state != fsm_state:
                     await convs.update_state(rc.conv_id, new_fsm_state.value)
+
+            # Il tetto anti-insistenza si paga sull'iniezione, non sull'esito: se
+            # il modello ignora la direttiva il turno è comunque consumato. È la
+            # scelta prudente — l'alternativa (contare solo le proposte riuscite)
+            # riproverebbe a ogni turno finché il modello non cede, che è
+            # esattamente il bot assillante che il tetto esiste per evitare.
+            if propose_booking:
+                await convs.bump_booking_nudge(rc.conv_id)
 
             _out_msg = None
             if not suppress_reply:
@@ -2631,6 +2683,50 @@ class ConversationService:
         if isinstance(value, str) and value.strip():
             return value.strip()
         return None
+
+    async def _resolve_booking_nudge(
+        self,
+        session: Any,
+        rc: _ReplyContext,
+        *,
+        caps: Any,
+        merchant_id: UUID,
+        enabled: bool,
+        fsm_state: ConvState,
+        hot_threshold: int,
+    ) -> bool:
+        """Questo turno deve spingere sulla proposta di appuntamento?
+
+        Raccoglie i cancelli che dipendono dallo *stato del lead*; quello che
+        dipende dal turno (il loop dei tool gira davvero?) resta all'orchestrator,
+        che è l'unico a saperlo — vedi `_booking_nudge_block`.
+
+        Nota sul tempismo: `rc.lead_score` è il punteggio *prima* di questo turno,
+        perché `update_score` viene dispatchato dopo l'invio della risposta. La
+        spinta parte quindi al primo turno **successivo** al superamento della
+        soglia. È inerente al percorso inbound, non un difetto di questo gate: chi
+        si scalda con l'ultimo messaggio e poi tace non viene servito qui, ma dal
+        trigger a freddo previsto per la v2.
+        """
+        if not enabled:
+            return False
+        # Scoring spento: il punteggio non è mantenuto e non è nel prompt, quindi
+        # "caldo" non vuol dire niente. Booking spento: le azioni di prenotazione
+        # non sono nemmeno nominate nello schema, chiederle sarebbe un vicolo cieco.
+        if not getattr(caps, "scoring_enabled", True) or not getattr(caps, "booking_enabled", True):
+            return False
+        if rc.lead_score < hot_threshold:
+            return False
+        if fsm_state in _NO_BOOKING_NUDGE_STATES:
+            return False
+        max_per_conv = await self._resolve_int(
+            session,
+            merchant_id,
+            ConfigKey.BOOKING_PROPOSE_MAX_PER_CONVERSATION,
+            default=1,
+        )
+        used = rc.conv_meta.get("booking_nudge_count")
+        return (used if isinstance(used, int) else 0) < max(1, max_per_conv)
 
     async def _resolve_handoff_prompt(
         self, session: Any, merchant_id: UUID, *, profile_id: UUID | None = None

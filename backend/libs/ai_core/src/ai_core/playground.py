@@ -242,6 +242,25 @@ class PlaygroundRunner:
             # qualification context, injected directives).
             playbook = await resolve_playbook_runtime(session, req.merchant_id)
 
+            # Proposta proattiva al lead caldo (ADR 0032). Senza questo il
+            # merchant accende l'interruttore e nel playground non cambia nulla:
+            # la prima verifica reale finirebbe su un cliente vero.
+            # Qui non ci sono né stato FSM né `conversations.meta`, quindi i due
+            # cancelli che li usano (stati terminali, tetto anti-insistenza) non
+            # si applicano: il playground è una conversazione nuova a ogni prova,
+            # cioè esattamente il caso in cui entrambi passerebbero.
+            # Nota di fedeltà: il playground non ha GHL, quindi l'orchestrator
+            # gira senza tool e la direttiva rende la variante *senza orari*
+            # ("chiedi che giorno preferisce"). In produzione, con calendario
+            # collegato, il bot cita orari veri. È la stessa asimmetria che ADR
+            # 0010 accetta per tutte le azioni simulate, non un difetto nuovo.
+            propose_booking = (
+                _bool(ConfigKey.BOOKING_PROPOSE_WHEN_HOT, False)
+                and playbook.scoring_enabled
+                and playbook.booking_enabled
+                and state_in.lead_score >= hot_threshold
+            )
+
             orchestrator_ctx = ConversationContext(
                 merchant_id=req.merchant_id,
                 tenant_id=req.tenant_id,
@@ -257,6 +276,10 @@ class PlaygroundRunner:
                 advance_threshold=advance_threshold,
                 allowed_actions=playbook.allowed_actions,
                 scoring_enabled=playbook.scoring_enabled,
+                propose_booking=propose_booking,
+                propose_instructions=(
+                    _str(ConfigKey.BOOKING_PROPOSE_INSTRUCTIONS) if propose_booking else None
+                ),
                 directives=playbook.directives,
                 critical_keywords=playbook.critical_keywords,
                 assistant_name=_str(ConfigKey.BOT_ASSISTANT_NAME),

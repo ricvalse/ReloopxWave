@@ -155,6 +155,20 @@ class ConfigKey(StrEnum):
     # prenotabili" block is dropped from the prompt and booking actions are not
     # advertised. Use-case agnostic gate. Default True = today's behavior.
     BOOKING_ENABLED = "booking.enabled"
+    # Quando il lead supera `scoring.hot_threshold`, il prompt riceve l'obiettivo
+    # esplicito di proporre l'appuntamento. La soglia NON è un secondo numero: è
+    # quella dello scoring, così "caldo" vuol dire una cosa sola per il merchant.
+    # Default False = comportamento di oggi invariato (ADR 0014: niente feature
+    # accese di default).
+    BOOKING_PROPOSE_WHEN_HOT = "booking.propose_when_hot"
+    # Testo libero del merchant che modula *come* proporre ("solo la sede di
+    # Milano", "mai il venerdì"). Stessa forma di `handoff.instructions`.
+    BOOKING_PROPOSE_INSTRUCTIONS = "booking.propose_instructions"
+    # Quante volte per conversazione il prompt può spingere sulla proposta. Il
+    # contatore conta le *iniezioni*, non le proposte andate a buon fine: con 1
+    # si spinge un turno solo, e se il modello quel turno non obbedisce
+    # l'occasione è persa. Alzare a 2-3 se il modello risulta troppo timido.
+    BOOKING_PROPOSE_MAX_PER_CONVERSATION = "booking.propose_max_per_conversation"
 
     # Lead capture — whether the bot proactively asks for the lead's identity
     # (name/email/need). Off = a pure info/reminder bot that never interviews.
@@ -404,6 +418,9 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOOKING_LOOKAHEAD_DAYS: 14,
     ConfigKey.BOOKING_REMINDER_SCHEDULE: [24],
     ConfigKey.BOOKING_ENABLED: True,
+    ConfigKey.BOOKING_PROPOSE_WHEN_HOT: False,
+    ConfigKey.BOOKING_PROPOSE_INSTRUCTIONS: None,
+    ConfigKey.BOOKING_PROPOSE_MAX_PER_CONVERSATION: 1,
     ConfigKey.LEAD_CAPTURE_ENABLED: True,
     ConfigKey.BUSINESS_NAME: None,
     ConfigKey.BUSINESS_INDUSTRY: None,
@@ -781,6 +798,12 @@ class BookingConfig(_StrictModel):
     # Whether the bot offers/handles appointments at all. False drops the
     # "Servizi prenotabili" block and hides booking actions from the model.
     enabled: bool = True
+    # Proposta proattiva al lead caldo. La soglia è `scoring.hot_threshold`
+    # (riuso deliberato: un solo numero da tarare), il gate completo sta in
+    # `ConversationService._resolve_booking_nudge`.
+    propose_when_hot: bool = False
+    propose_instructions: str | None = Field(None, max_length=600)
+    propose_max_per_conversation: int = Field(1, ge=1, le=3)
 
 
 class ObjectionsConfig(_StrictModel):

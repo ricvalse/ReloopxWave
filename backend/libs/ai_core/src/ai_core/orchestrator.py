@@ -153,6 +153,16 @@ class ConversationContext:
     # Istruzioni di handoff del merchant (ADR 0026). None = i tre criteri
     # storici, cioè il prompt di prima.
     handoff: HandoffPrompt | None = None
+    # True quando *questo turno* deve spingere sulla proposta di appuntamento
+    # (lead caldo). Il servizio ha già valutato tutti i cancelli che dipendono
+    # dallo stato — config accesa, scoring e booking abilitati, punteggio sopra
+    # `scoring.hot_threshold`, stato FSM non terminale, contatore non esaurito —
+    # perché sono cancelli sul *lead*. Qui resta solo la scelta del testo, che
+    # dipende da una cosa che il servizio non sa: se il loop dei tool girerà
+    # davvero in questo turno. Vedi `_booking_nudge_block`.
+    propose_booking: bool = False
+    # Testo libero del merchant su *come* proporre (`booking.propose_instructions`).
+    propose_instructions: str | None = None
 
 
 class ConversationOrchestrator:
@@ -337,6 +347,12 @@ class ConversationOrchestrator:
                 f"configurata dal merchant {ctx.advance_threshold}. Emetti `move_pipeline` "
                 "quando il lead è qualificato e il punteggio è vicino o superiore alla soglia."
             )
+        # Proposta proattiva al lead caldo. In *append* al blocco qui sopra, mai in
+        # sostituzione: l'avanzamento pipeline e la proposta di appuntamento sono
+        # due cose diverse, e sostituire spegnerebbe `move_pipeline` proprio sui
+        # lead migliori. Il servizio ha già deciso l'eleggibilità del turno.
+        if ctx.propose_booking:
+            system_parts.append(_booking_nudge_block(ctx, tools_available=tools_available))
         if ctx.kb_chunks:
             kb_snippet = "\n---\n".join(
                 f"[{i + 1}] {c.content}" for i, c in enumerate(ctx.kb_chunks)
@@ -909,6 +925,52 @@ def _style_lock_block(assistant_name: str | None) -> str:
             "se nei messaggi precedenti ne compare uno diverso."
         )
     return "\n".join(lines)
+
+
+def _booking_nudge_block(ctx: ConversationContext, *, tools_available: bool) -> str:
+    """Direttiva "il lead è caldo: proponi tu l'appuntamento".
+
+    Due varianti, e la differenza non è cosmetica. Con il loop dei tool attivo il
+    modello legge le disponibilità vere e le cita nel testo, in un messaggio solo.
+    Senza, ordinargli di chiamare `check_availability` produrrebbe esattamente il
+    vicolo cieco che `render_schema_hint` documenta: scrive la frase d'attesa ("un
+    attimo che verifico"), la richiesta viene scartata prima del dispatcher e il
+    follow-up non arriva mai — al lead resta il silenzio. Quindi quando i tool non
+    sono disponibili si chiede una *fascia di preferenza*, mai un orario.
+
+    Il turno resta del cliente: la direttiva dice di rispondere prima a quello che
+    ha chiesto e solo dopo proporre, altrimenti il bot sequestra la conversazione
+    e risponde a una domanda con un orario.
+    """
+    can_read_slots = tools_available and (
+        ctx.allowed_actions is None or "check_availability" in ctx.allowed_actions
+    )
+    parts = [
+        "OBIETTIVO DI QUESTO TURNO — il lead ha superato la soglia di interesse "
+        f"configurata dal merchant ({ctx.lead_score}/100, soglia {ctx.hot_threshold}). "
+        "Prima rispondi a quello che ha appena chiesto, poi — nello stesso messaggio "
+        "— porta il discorso sul fissare un appuntamento."
+    ]
+    if can_read_slots:
+        parts.append(
+            "Usa `check_availability` per leggere le disponibilità reali e proponi "
+            "due o tre orari concreti dentro il tuo testo. Non inventare orari: se "
+            "lo strumento non restituisce nulla, chiedi che giorno e fascia preferisce."
+        )
+    else:
+        parts.append(
+            "Non hai modo di leggere il calendario in questo turno: NON citare orari "
+            "specifici e non promettere disponibilità. Chiedi che giorno e fascia "
+            "oraria preferisce, e fermati lì."
+        )
+    parts.append(
+        "Proponi una volta sola: se rimanda, rifiuta o dice che ci pensa, accetta e "
+        "prosegui la conversazione senza insistere. Se ha già un appuntamento "
+        "fissato non proporne un altro."
+    )
+    if ctx.propose_instructions:
+        parts.append(f"Indicazioni del merchant su come proporre: {ctx.propose_instructions}")
+    return " ".join(parts)
 
 
 def _directives_block(directives: tuple[str, ...]) -> str:

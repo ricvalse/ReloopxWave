@@ -841,6 +841,36 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id), "anchor": anchor.isoformat()},
         )
 
+    async def bump_booking_nudge(self, conversation_id: UUID) -> None:
+        """Conta di uno le volte che il prompt ha spinto sulla proposta di
+        appuntamento in questa conversazione (`booking.propose_when_hot`).
+
+        Conta le *iniezioni*, non le proposte riuscite: è il numero di turni in
+        cui il bot è stato spinto a proporre, ed è quello che va limitato per non
+        diventare insistente. Un lead che ha prenotato resta a punteggio 100 per
+        sempre (`actions/booking.py` lo forza), quindi senza questo tetto la
+        direttiva rientrerebbe a ogni turno successivo.
+
+        Merge in-place con `||`, come le altre scritture su `meta` in questo
+        repository: un UPDATE che riscrivesse l'intero JSONB cancellerebbe le
+        ancore scritte da altri percorsi nello stesso turno. L'incremento è letto
+        e scritto dentro la stessa istruzione, quindi due turni concorrenti sulla
+        stessa conversazione non si perdono a vicenda.
+        """
+        await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                    'booking_nudge_count',
+                    coalesce(CAST(meta ->> 'booking_nudge_count' AS int), 0) + 1
+                )
+                WHERE id = :conversation_id
+                """
+            ),
+            {"conversation_id": str(conversation_id)},
+        )
+
     async def mark_off_hours_pending(self, conversation_id: UUID) -> bool:
         """Segna che una risposta è stata rimandata alla riapertura.
 
