@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from shared import get_settings
+
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -75,12 +77,24 @@ class TenantContext:
 
 
 def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:
+    """Engine condiviso da API e worker.
+
+    Le dimensioni del pool arrivano dalle settings (`DB_POOL_SIZE` /
+    `DB_MAX_OVERFLOW`) e non sono più cablate qui, perché il valore giusto
+    dipende da **quanti processi** stanno addosso allo stesso pooler, non da
+    cosa fa il singolo processo. Il pooler Supabase in session mode concede 15
+    client in tutto: con i vecchi 5+10 per processo bastavano tre processi
+    inattivi a esaurirli, e `alembic upgrade head` al boot dell'API restava
+    senza nemmeno una connessione. Vedi il commento esteso in `shared.settings`.
+    """
+    settings = get_settings()
     return create_async_engine(
         dsn,
         echo=echo,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout,
     )
 
 
