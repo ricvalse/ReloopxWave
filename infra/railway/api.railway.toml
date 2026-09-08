@@ -13,7 +13,20 @@ dockerfilePath = "infra/docker/api.Dockerfile"
 # `startCommand` is left empty on purpose — the Dockerfile CMD
 # (api-entrypoint.sh) runs migrations then uvicorn on $PORT.
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+# 30s erano troppo pochi, e il modo in cui si rompeva era subdolo: il container
+# partiva bene ma *tardi*, perché l'entrypoint ritenta le migrazioni quando il
+# pooler non ha slot liberi (fino a ~75s con i default). Railway lo marcava
+# FAILED per timeout e non lo promuoveva, quindi restava in servizio il build
+# precedente — con l'aria di un deploy andato a buon fine visto che l'API
+# continuava a rispondere 200. Successo l'08/09/2026: il frontend nuovo era
+# online e l'API vecchia no, e ogni chiave di config nuova dava 422.
+#
+# Il valore deve coprire il caso peggiore dell'entrypoint (backoff completo +
+# la migrazione più lunga), non il caso felice.
+#
+# ATTENZIONE: questo file è documentazione, Railway non lo legge (build da
+# Dockerfile). Il valore va cambiato a mano nelle impostazioni del servizio.
+healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
 numReplicas = 1   # bump after the migration race is no longer an issue
