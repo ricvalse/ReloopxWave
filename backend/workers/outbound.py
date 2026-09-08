@@ -21,7 +21,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import MessageRepository, ResolvedFlowStep
+from db import ConversationRepository, MessageRepository, ResolvedFlowStep
 from integrations.whatsapp.factory import WhatsAppSender
 from integrations.whatsapp.templates import (
     build_send_components,
@@ -316,4 +316,16 @@ async def send_and_persist_decision(
         profile_id=profile_id,
         meta=meta,
     )
+
+    # L'azienda ha scritto per prima su questo thread. Il timbro alimenta la
+    # modalità `bot.auto_reply_scope = "solo_automazioni"`, in cui il bot
+    # risponde da solo soltanto dove è già partito un invio automatico.
+    #
+    # È qui e non nel motore di proposito: questa funzione è il collo di
+    # bottiglia di *ogni* invio proattivo, quindi il promemoria appuntamento —
+    # che non ha un'automazione dietro e non passa `automation_id` — risulta
+    # coperto senza un'eccezione da ricordare, e altrettanto varrà per un futuro
+    # broadcast. Incondizionato per la stessa ragione: tutto ciò che passa di
+    # qui è per definizione un invio automatico dell'azienda.
+    await ConversationRepository(session).touch_last_automation(conversation_id)
     return wa_message_id

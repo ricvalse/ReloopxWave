@@ -65,6 +65,7 @@ def _patch(
     events: list,
     integration_present: bool = True,
     persisted: list | None = None,
+    stamped: list | None = None,
 ) -> None:
     @asynccontextmanager
     async def fake_tenant_session(ctx):
@@ -82,6 +83,10 @@ def _patch(
 
         async def create(self, **kw):
             return _FakeConv()
+
+        async def touch_last_automation(self, conversation_id):
+            if stamped is not None:
+                stamped.append(conversation_id)
 
     class FakeMessageRepo:
         def __init__(self, session): ...
@@ -128,6 +133,9 @@ def _patch(
     monkeypatch.setattr(mod, "AnalyticsRepository", FakeAnalyticsRepo)
     monkeypatch.setattr(mod, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(outbound, "MessageRepository", FakeMessageRepo)
+    # Il timbro `last_automation_at` parte da dentro `send_and_persist_decision`,
+    # quindi va sostituito il riferimento che vede *quel* modulo.
+    monkeypatch.setattr(outbound, "ConversationRepository", FakeConvRepo)
     monkeypatch.setattr(mod, "build_whatsapp_sender", lambda **kw: FakeWAClient())
 
 
@@ -146,6 +154,37 @@ async def test_sends_reminder_inside_window(monkeypatch: pytest.MonkeyPatch) -> 
     # #29: the reminder is persisted as an outbound Message with its wa id.
     assert len(persisted) == 1
     assert persisted[0]["wa_message_id"] == "wamid.ok"
+
+
+async def test_il_promemoria_timbra_last_automation_sulla_conversazione(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Il promemoria appuntamento apre la porta alla risposta automatica.
+
+    ADR 0031: in modalità `solo_automazioni` il bot risponde unicamente dove
+    `conversations.last_automation_at` è valorizzato. Il promemoria è il caso
+    limite che rende il timbro non ovvio — non ha un'automazione dietro, è uno
+    scheduler, e infatti non passa `automation_id`. Se ci fossimo appoggiati a
+    quello, chi risponde "sì, confermo" a un promemoria non riceverebbe
+    risposta: il caso d'uso principale di un bot di prenotazioni.
+
+    Il timbro sta invece in `send_and_persist_decision`, che è il punto da cui
+    passa *ogni* invio proattivo, quindi il promemoria è coperto senza
+    eccezioni. Questo test è ciò che impedisce di spostarlo altrove.
+    """
+    marked: list = []
+    events: list = []
+    persisted: list = []
+    stamped: list = []
+    _patch(monkeypatch, marked=marked, events=events, persisted=persisted, stamped=stamped)
+
+    cand = _candidate(last_inbound_at=NOW - timedelta(hours=2))  # dentro le 24h
+    sent = await mod._maybe_send(cand, now=NOW, kek="unused")
+
+    assert sent is True
+    # Timbrata una volta sola, e proprio la conversazione su cui è stato
+    # scritto il messaggio.
+    assert stamped == [persisted[0]["conversation_id"]]
 
 
 async def test_skips_outside_window_without_template(monkeypatch: pytest.MonkeyPatch) -> None:

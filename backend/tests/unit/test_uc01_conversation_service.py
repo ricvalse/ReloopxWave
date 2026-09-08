@@ -54,6 +54,11 @@ class FakeConversation:
     # Profilo di conversazione attivo (ADR 0022 / migrazione 0047). None =
     # nessun profilo, cioè il comportamento identico a prima dei profili.
     profile_id: uuid.UUID | None = None
+    # Ultimo invio automatico dell'azienda (migrazione 0052). None = contatto a
+    # freddo: in modalità `solo_automazioni` il bot non risponde.
+    last_automation_at: Any = None
+    off_hours_pending_at: Any = None
+    wa_contact_phone: str | None = "39333"
 
 
 class FakeSession:
@@ -191,6 +196,13 @@ def service(
 
         async def save_context_summary(self, conversation_id, summary):
             return None
+
+        async def mark_off_hours_pending(self, conversation_id):
+            # Rispecchia il claim del repo vero: vince solo il primo.
+            if conv.off_hours_pending_at is not None:
+                return False
+            conv.off_hours_pending_at = datetime.now(UTC)
+            return True
 
         async def claim_handoff(self, conversation_id, *, reason=None, summary=None):
             # Mirrors the repo's conditional UPDATE: only the first caller on a
@@ -1100,3 +1112,144 @@ async def test_force_handoff_media_burst_emits_single_escalation_event(
     assert len(escalated) == 1
     assert conv.auto_reply is False
     assert conv.handoff_reason == "video_message"
+
+
+# ---- ADR 0031 — "rispondi solo dove è passata un'automazione" --------------
+
+
+class _ChiusoOra:
+    """Orari finti sempre chiusi, con cortesia configurata.
+
+    Serve a un test solo, ma è il test che protegge la scelta più sottile della
+    modalità: *dove* sta il gate nella catena.
+    """
+
+    mode = "custom"
+    off_hours_message = "Siamo chiusi, ti rispondiamo domani."
+    off_hours_message_once = True
+    resume_on_open = True
+    apply_to_automations = True
+
+    def is_open(self, moment=None) -> bool:
+        return False
+
+    def next_opening(self, moment=None):
+        return None
+
+
+def _con_scope(monkeypatch: pytest.MonkeyPatch, scope: str | None) -> None:
+    from ai_core import conversation_service as cs
+
+    async def fake_scope(self, session, merchant_id, key):
+        return scope
+
+    monkeypatch.setattr(cs.ConversationService, "_resolve_optional_str", fake_scope)
+
+
+async def test_solo_automazioni_il_contatto_a_freddo_non_riceve_risposta(
+    service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Il caso d'uso della modalità, in una riga: nessuno ha scritto per primo."""
+    svc, sender, _dispatcher, conv, _lead = service
+    _con_scope(monkeypatch, "solo_automazioni")
+    conv.last_automation_at = None
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao, quanto costa?",
+        wa_message_id="wamid.freddo",
+    )
+
+    # Il messaggio è comunque acquisito: la conversazione esiste, si vede in
+    # inbox, l'operatore può rispondere. Solo il turno del bot non parte.
+    assert result.handled is True
+    assert sender.calls == []
+    assert result.reason == "no_automation"
+
+
+async def test_solo_automazioni_risponde_dove_l_automazione_e_partita(
+    service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stessa modalità, stessa conversazione: cambia solo il timbro."""
+    svc, sender, _dispatcher, conv, _lead = service
+    _con_scope(monkeypatch, "solo_automazioni")
+    conv.last_automation_at = datetime.now(UTC) - timedelta(days=90)
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="sì, mi interessa",
+        wa_message_id="wamid.campagna",
+    )
+
+    assert result.handled is True
+    assert len(sender.calls) == 1
+    # Novanta giorni dopo: il permesso è un latch, non una finestra. Chi ha
+    # ricevuto la campagna resta un contatto dell'azienda anche se risponde
+    # tardi — ed è proprio il lead che il merchant ha pagato per acquisire.
+    assert result.reason is None
+
+
+async def test_solo_automazioni_a_freddo_di_notte_non_manda_la_cortesia(
+    service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Il gate sta PRIMA degli orari, e questo test è il motivo.
+
+    Da `would_reply_but_for_hours` discendono il messaggio di cortesia fuori
+    orario e il marcatore che fa riprendere la conversazione alla riapertura.
+    Valutando lo scope dopo gli orari invece che prima, un contatto a freddo che
+    scrive di notte si sentirebbe comunque rispondere "ti rispondiamo domani" e
+    verrebbe messo in coda per la mattina: il bot parlerebbe proprio a chi il
+    merchant ha deciso di escludere, e l'operatore troverebbe un thread che
+    sembra già preso in carico.
+    """
+    from ai_core import conversation_service as cs
+
+    svc, sender, _dispatcher, conv, _lead = service
+    _con_scope(monkeypatch, "solo_automazioni")
+    conv.last_automation_at = None
+
+    async def sempre_chiuso(session, merchant_id):
+        return _ChiusoOra()
+
+    monkeypatch.setattr(cs, "resolve_response_hours", sempre_chiuso)
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao",
+        wa_message_id="wamid.notte",
+    )
+
+    assert result.handled is True
+    assert sender.calls == []  # nessuna cortesia
+    assert conv.off_hours_pending_at is None  # niente ripresa alla riapertura
+    # `no_automation` vince su `off_hours`: la conversazione non è "in attesa",
+    # è fuori perimetro.
+    assert result.reason == "no_automation"
+
+
+async def test_scope_assente_si_comporta_come_prima(
+    service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-open: config irraggiungibile ⇒ `None` ⇒ "tutti".
+
+    `_resolve_optional_str` restituisce `None` a ogni errore (Redis giù, bag
+    malformato). Se quel `None` non venisse letto come "tutti", un guasto della
+    config farebbe ammutolire il bot su tutti i merchant insieme.
+    """
+    svc, sender, _dispatcher, conv, _lead = service
+    _con_scope(monkeypatch, None)
+    conv.last_automation_at = None
+
+    result = await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="ciao",
+        wa_message_id="wamid.failopen",
+    )
+
+    assert result.handled is True
+    assert len(sender.calls) == 1
+    assert result.reason is None

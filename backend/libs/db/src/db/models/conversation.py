@@ -61,6 +61,23 @@ class Conversation(Base, TimestampMixin):
     # motivo — opt-out, handoff, errore LLM — e il bot si metterebbe a
     # rispondere a conversazioni che qualcuno aveva deciso di non toccare.
     off_hours_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Ultimo invio automatico dell'azienda su questo thread — campagna, nodo
+    # della lavagnetta, promemoria appuntamento (migrazione 0052). Scritto in un
+    # punto solo, `send_and_persist_decision`, che è il collo di bottiglia di
+    # ogni invio proattivo.
+    #
+    # Serve alla modalità `bot.auto_reply_scope = "solo_automazioni"`: il bot
+    # risponde da solo soltanto dove questo campo è valorizzato, cioè dove
+    # l'azienda ha già scritto per prima. Chi arriva a freddo resta
+    # all'operatore. È denormalizzato di proposito: la conversazione è già
+    # caricata quando il gate decide, quindi la modalità non costa nemmeno una
+    # query — mentre dedurlo da `messages.automation_id` ne costerebbe una su
+    # ogni messaggio in ingresso.
+    #
+    # Timestamp e non booleano: risponde alla stessa domanda (`IS NOT NULL`) ma
+    # lascia aperta la decadenza ("solo se l'automazione è recente") senza una
+    # seconda migrazione.
+    last_automation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Structured human-handoff state (migration 0025) — drives inbox triage,
     # assignment and SLA. `handoff_summary` is the 1-2 sentence brief the AI
     # writes for the operator when it escalates.
