@@ -2653,6 +2653,12 @@ export interface components {
              * @default false
              */
             auto_reply_enabled: boolean;
+            /**
+             * Auto Reply Scope
+             * @default tutti
+             * @enum {string}
+             */
+            auto_reply_scope: "tutti" | "solo_automazioni";
         };
         /** BulkApplyIn */
         BulkApplyIn: {

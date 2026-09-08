@@ -997,6 +997,23 @@ class ConversationService:
                         stale = True
             auto_reply_on = auto_reply_on and not stale
 
+            # Solo-automazioni: il bot risponde da sé unicamente dove l'azienda
+            # ha già mandato qualcosa (ADR 0031). Il contatto a freddo viene
+            # persistito e mostrato in inbox, ma senza turno del bot.
+            #
+            # Il gate sta QUI, prima degli orari, e non subito dopo: da
+            # `would_reply_but_for_hours` (poche righe sotto) discendono il
+            # marcatore di ripresa e il messaggio di cortesia fuori orario.
+            # Valutandolo dopo, un contatto a freddo che scrive di notte si
+            # sentirebbe comunque rispondere "ti risponderemo al più presto" e
+            # verrebbe messo in coda per la riapertura — cioè il bot parlerebbe
+            # proprio a chi il merchant ha deciso di escludere. In più così si
+            # risparmia la risoluzione degli orari quando non serve.
+            no_automation = auto_reply_on and await self._automation_scope_blocks(
+                session, resolved.merchant_id, conv
+            )
+            auto_reply_on = auto_reply_on and not no_automation
+
             # Orari di risposta: fuori dalla finestra il bot tace, ma la domanda
             # NON si perde. Viene marcata sulla conversazione e ripresa dallo
             # sweep `resume_after_hours` appena il merchant riapre.
@@ -1180,6 +1197,14 @@ class ConversationService:
                         if soft_paused
                         else "stale"
                         if stale
+                        # Stesso motivo di `off_hours` qui sotto: senza un
+                        # `reason` suo, "il bot tace perché la conversazione non
+                        # è nata da un'automazione" sarebbe indistinguibile in
+                        # analytics da un thread preso in carico da un operatore
+                        # — ed è la diagnosi che servirà di più, perché in questa
+                        # modalità il merchant crede che il bot stia lavorando.
+                        else "no_automation"
+                        if no_automation
                         # Prima di `off_hours` questo ramo ricadeva in
                         # `conversation_off`, indistinguibile in analytics da un
                         # thread messo in takeover da un operatore.
@@ -1270,6 +1295,8 @@ class ConversationService:
                 if auto_reply_on
                 else "stale"
                 if stale
+                else "no_automation"
+                if no_automation
                 else "off_hours"
                 if off_hours
                 else "auto_reply_off"
@@ -1335,11 +1362,20 @@ class ConversationService:
             soft_paused = (
                 conv.ai_disabled_until is not None and conv.ai_disabled_until > datetime.now(UTC)
             )
+            # Anche lo scope va rivalutato qui: durante la finestra di debounce
+            # (o l'attesa fino alla riapertura) può essere partita un'automazione
+            # su questo thread, e in quel caso la risposta ora è dovuta. Con un
+            # latch non serve scegliere un istante di riferimento — il permesso
+            # o c'è o non c'è, e non scade.
+            no_automation = await self._automation_scope_blocks(
+                session, resolved.merchant_id, conv
+            )
             if (
                 not merchant_auto_reply
                 or not conv.auto_reply
                 or lead.opted_out_at is not None
                 or soft_paused
+                or no_automation
             ):
                 logger.info(
                     "uc01.reply_suppressed_at_flush",
@@ -1349,8 +1385,12 @@ class ConversationService:
                     thread_off=not conv.auto_reply,
                     opted_out=lead.opted_out_at is not None,
                     soft_paused=soft_paused,
+                    no_automation=no_automation,
                 )
-                return InboundResult(handled=False, reason="auto_reply_off")
+                return InboundResult(
+                    handled=False,
+                    reason="no_automation" if no_automation else "auto_reply_off",
+                )
 
             history = await msgs.list_history(conv.id, limit=_HISTORY_FETCH_LIMIT)
             history = [m for m in history if m.wa_message_id not in exclude]
@@ -2606,6 +2646,31 @@ class ConversationService:
         if isinstance(value, bool):
             return value
         return default
+
+    async def _automation_scope_blocks(
+        self, session: Any, merchant_id: UUID, conv: Any
+    ) -> bool:
+        """True se il bot deve tacere perché qui non è mai partita un'automazione.
+
+        Modalità `bot.auto_reply_scope = "solo_automazioni"` (ADR 0031): la
+        risposta automatica vale solo dove l'azienda ha già scritto per prima —
+        una campagna, un nodo della lavagnetta, un promemoria. Chi arriva a
+        freddo resta all'operatore.
+
+        Costa zero query: `conversations.last_automation_at` è già sulla riga
+        caricata, e per i merchant in `"tutti"` (il default) si esce prima
+        ancora di leggere la config della conversazione.
+
+        Degrada in apertura: `_resolve_optional_str` ritorna `None` a ogni
+        errore, e `None` diventa `"tutti"`. Se Redis è giù il bot si comporta
+        come oggi invece di ammutolire in massa.
+        """
+        scope = await self._resolve_optional_str(
+            session, merchant_id, ConfigKey.BOT_AUTO_REPLY_SCOPE
+        )
+        if (scope or "tutti") != "solo_automazioni":
+            return False
+        return conv.last_automation_at is None
 
     async def _resolve_optional_str(
         self, session: Any, merchant_id: UUID, key: ConfigKey

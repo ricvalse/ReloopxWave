@@ -195,6 +195,15 @@ const TEMPLATE_SECTIONS: TSection[] = [
         ],
       },
       { key: 'bot.auto_reply_enabled', label: 'Risposta automatica', kind: 'bool' },
+      {
+        key: 'bot.auto_reply_scope',
+        label: 'A chi risponde il bot',
+        kind: 'select',
+        options: [
+          { value: 'tutti', label: 'A tutti i contatti' },
+          { value: 'solo_automazioni', label: "Solo a chi ha ricevuto un'automazione" },
+        ],
+      },
     ],
   },
   {

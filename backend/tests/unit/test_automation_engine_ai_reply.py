@@ -177,7 +177,12 @@ async def test_ai_reply_persists_outbound_message_when_session(
             persisted.append(kw)
             return object()
 
+    class _FakeConvRepo:
+        def __init__(self, session): ...
+        async def touch_last_automation(self, conversation_id): ...
+
     monkeypatch.setattr(outbound, "MessageRepository", _FakeMessageRepo)
+    monkeypatch.setattr(outbound, "ConversationRepository", _FakeConvRepo)
 
     sender, orch, disp = _FakeSender(), _FakeOrchestrator(reply="Ciao!"), _FakeDispatcher()
     run_ctx = _run_ctx(within_window=True)

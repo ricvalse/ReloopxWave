@@ -326,6 +326,17 @@ export const SECTIONS: SectionDef[] = [
         help:
           'Quando attivo, il bot risponde automaticamente ai messaggi in arrivo. Disattivandolo metti in pausa il bot per tutti i contatti — i messaggi resteranno in attesa di una tua risposta dal pannello Conversazioni.',
       },
+      {
+        key: 'bot.auto_reply_scope',
+        label: 'A chi risponde il bot',
+        kind: 'select',
+        options: [
+          { value: 'tutti', label: 'A tutti i contatti' },
+          { value: 'solo_automazioni', label: "Solo a chi ha ricevuto un'automazione" },
+        ],
+        help:
+          'Con “Solo a chi ha ricevuto un\u2019automazione” il bot risponde da solo soltanto nelle conversazioni in cui è già partito un messaggio automatico: le tue campagne, i promemoria appuntamento, le riattivazioni. Chi ti scrive a freddo non riceve risposta automatica — il messaggio arriva comunque in Conversazioni e resta in attesa di una tua risposta. Attenzione: se hai un\u2019automazione con trigger “Messaggio ricevuto”, quella continua a partire per tutti — è la lavagnetta a decidere.',
+      },
       { key: 'bot.language', label: 'Lingua', kind: 'text', placeholder: 'it' },
       {
         key: 'bot.formality',
