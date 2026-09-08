@@ -1,4 +1,4 @@
-# ADR 0031 — Il bot propone l'appuntamento quando il lead diventa caldo
+# ADR 0032 — Il bot propone l'appuntamento quando il lead diventa caldo
 
 **Data:** 2026-09-08 · **Stato:** accettata (v1 implementata) · **Contesto:**
 richiesta merchant — *"vorrei usare la temperatura del lead così: il bot propone
@@ -104,6 +104,20 @@ smettere di forzare 100 — è fuori da questo ADR.
   precedente. Chi si scalda con l'ultimo messaggio e poi tace non è servito qui.
 - Costo: sui lead caldi il turno usa il loop dei tool (2 chiamate al modello
   invece di 1), e `router.py:106` instrada già i lead caldi sul modello grande.
+
+### Parità col playground (ADR 0009)
+
+`playground.py` costruisce il proprio `ConversationContext`, quindi il flag va
+passato anche lì — altrimenti il merchant accende l'interruttore, non vede
+cambiare nulla nell'anteprima, e la prima verifica reale finisce su un cliente.
+Nel playground non esistono stato FSM né `conversations.meta`, quindi i due
+cancelli che li usano non si applicano: ogni prova è una conversazione nuova,
+cioè il caso in cui entrambi passerebbero comunque.
+
+**Asimmetria dichiarata:** il playground non ha GHL, quindi l'orchestrator gira
+senza tool e la direttiva rende la variante *senza orari* ("chiedi che giorno
+preferisce"). In produzione, con calendario collegato, il bot cita orari veri.
+È la stessa asimmetria che ADR 0010 già accetta per le azioni simulate.
 
 ## Non fatto qui, deliberatamente
 

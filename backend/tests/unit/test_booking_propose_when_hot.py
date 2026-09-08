@@ -249,3 +249,26 @@ async def test_contatore_corrotto_non_esplode() -> None:
 @pytest.mark.asyncio
 async def test_meta_vuoto_e_il_caso_normale() -> None:
     assert await _gate(meta={}) is True
+
+
+# --------------------------------------------------------------------------
+# Parità col playground (ADR 0009)
+# --------------------------------------------------------------------------
+
+
+def test_il_playground_passa_la_proposta_al_contesto() -> None:
+    """Il playground costruisce il proprio `ConversationContext`: se dimentica
+    `propose_booking`, il merchant accende l'interruttore, non vede cambiare
+    nulla nell'anteprima, e la prima verifica reale finisce su un cliente vero.
+
+    Guardia strutturale — verifica che il campo sia cablato, senza istanziare
+    l'intero servizio (che vorrebbe DB, embedder e LLM).
+    """
+    import inspect
+
+    from ai_core import playground
+
+    src = inspect.getsource(playground)
+    assert "propose_booking=propose_booking" in src
+    assert "ConfigKey.BOOKING_PROPOSE_WHEN_HOT" in src
+    assert "ConfigKey.BOOKING_PROPOSE_INSTRUCTIONS" in src
