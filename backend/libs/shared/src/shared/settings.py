@@ -71,6 +71,29 @@ class Settings(BaseSettings):
             return "postgresql+asyncpg://" + v[len("postgres://") :]
         return v
 
+    # Dimensione del pool per PROCESSO. Il default è basso di proposito: il
+    # pooler Supabase in session mode concede **15 client in tutto**, e quel
+    # budget è condiviso da tutti i processi insieme — i due worker uvicorn
+    # dell'API, il worker arq, e (durante un deploy) anche il container vecchio
+    # che sta ancora servendo.
+    #
+    # Con i vecchi `pool_size=5 / max_overflow=10` bastavano tre processi a
+    # fermi per occupare tutti e 15 gli slot: una connessione in pool resta
+    # aperta anche quando è inattiva, quindi lo slot è occupato comunque. Il
+    # risultato era che `alembic upgrade head` all'avvio dell'API non otteneva
+    # **una** connessione, l'entrypoint moriva su `set -e`, Railway riavviava e
+    # il deploy finiva in FAILED senza che nulla fosse rotto nel codice.
+    #
+    # 2 + 3 lascia margine: a regime i tre processi ne tengono 6, e restano 9
+    # slot per i picchi, per il sovrapporsi dei container durante un deploy e
+    # per la migrazione. Alzarli ha senso solo dopo essere passati alla porta
+    # 6543 (transaction mode), dove il tetto è molto più alto.
+    db_pool_size: int = 2
+    db_max_overflow: int = 3
+    # Quanto un chiamante aspetta uno slot libero prima di arrendersi. Meglio
+    # aspettare che fallire: sotto picco la coda si smaltisce in fretta.
+    db_pool_timeout: int = 30
+
     supabase_kb_bucket: str = "kb-documents"
     supabase_ft_bucket: str = "ft-training-data"
     supabase_exports_bucket: str = "analytics-exports"
