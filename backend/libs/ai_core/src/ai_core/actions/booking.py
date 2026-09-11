@@ -863,7 +863,21 @@ class BookSlotHandler:
                 # failed), blindly forwarding it sends the customer in a loop —
                 # they pick it again, it fails again, forever.
                 rejected = slot_start.isoformat()
-                suggestions: list[str] = [s for s in raw_suggestions if s and s != rejected][:3]
+                candidates = [s for s in raw_suggestions if s and s != rejected]
+                # Cross-check against the calendar's actual booked events before
+                # offering these — see `_verified_free_slots`. If nothing survives,
+                # we say so honestly (empty `suggestions` → "can't book right now")
+                # instead of guessing with unverified reads.
+                verified = await _verified_free_slots(
+                    client,
+                    calendar_id=calendar_id,
+                    candidates=candidates,
+                    window_start_iso=window_start.isoformat(),
+                    window_end_iso=window_end.isoformat(),
+                    duration_min=duration_min,
+                    tz=tz,
+                )
+                suggestions: list[str] = verified[:3]
                 await _log_sync(
                     "booking.created",
                     "appointment",
@@ -1024,6 +1038,13 @@ class ProposeSlotsHandler:
             lookahead = action.payload.get("lookahead_days") or await config.resolve(
                 ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=turn_ctx.merchant_id
             )
+            duration = int(
+                action.payload.get("duration_min")
+                or await config.resolve(
+                    ConfigKey.BOOKING_DEFAULT_DURATION_MIN, merchant_id=turn_ctx.merchant_id
+                )
+                or 30
+            )
 
             async def _persist(bundle: GHLTokenBundle) -> None:
                 if not bundle.location_id:
@@ -1043,6 +1064,7 @@ class ProposeSlotsHandler:
                 calendar_id=str(calendar_id),
                 tz_name=str(tz_name),
                 lookahead_days=int(lookahead) if lookahead else 14,
+                duration_min=duration,
                 on_token_refresh=_persist,
             )
 
@@ -1071,6 +1093,7 @@ class ProposeSlotsHandler:
         calendar_id: str,
         tz_name: str,
         lookahead_days: int,
+        duration_min: int = 30,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> list[str]:
         client = GHLClient(
@@ -1091,8 +1114,21 @@ class ProposeSlotsHandler:
             slots = await client.get_free_slots(
                 calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat(), timezone=tz_name
             )
-            raw = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
-            return [s for s in raw if s]
+            raw = [s.get("startTime") or s.get("start") for s in slots if s]
+            candidates = [s for s in raw if s]
+            # Cross-check against the calendar's actual booked events before
+            # proactively offering these — same reasoning as `_try_book`'s
+            # alternatives (`_verified_free_slots`).
+            verified = await _verified_free_slots(
+                client,
+                calendar_id=calendar_id,
+                candidates=candidates,
+                window_start_iso=start.isoformat(),
+                window_end_iso=end.isoformat(),
+                duration_min=duration_min,
+                tz=tz,
+            )
+            return verified[:3]
         except IntegrationError:
             return []
         finally:
@@ -1127,6 +1163,62 @@ def _is_slot_conflict(e: IntegrationError) -> bool:
     slots. Status is carried in `IntegrationError.context['status']`."""
     status = e.context.get("status")
     return not isinstance(status, int) or status < 500
+
+
+async def _verified_free_slots(
+    client: GHLClient,
+    *,
+    calendar_id: str,
+    candidates: list[str],
+    window_start_iso: str,
+    window_end_iso: str,
+    duration_min: int,
+    tz: tzinfo,
+) -> list[str]:
+    """Cross-check `get_free_slots` candidates against the calendar's actual
+    booked events before offering them to the customer.
+
+    Production evidence (Ghilea, 2026-09-11): `get_free_slots` and
+    `create_booking` disagreed — the very slot GHL had just rejected as taken
+    came back as an "available" alternative on the next read, looping the
+    customer forever. `get_free_slots` is a computed/cached availability view;
+    `list_appointments` returns the actual booked events, so cross-referencing
+    catches a stale or wrong free-slots read that a naive re-query would not.
+    A candidate surviving this check is not a 100% guarantee (a concurrent
+    booking can still land in between), but it is materially more trustworthy
+    than the raw read alone.
+
+    Best-effort: if the events read itself fails, degrade to the unfiltered
+    `candidates` rather than silently offering nothing — a lookahead read
+    hiccup must not block every alternative.
+    """
+    try:
+        events = await client.list_appointments(
+            calendar_id, start_iso=window_start_iso, end_iso=window_end_iso
+        )
+    except IntegrationError as e:
+        logger.warning("book_slot.verify_alternatives_failed", error=str(e))
+        return candidates
+
+    busy: list[tuple[datetime, datetime]] = []
+    for ev in events:
+        if str(ev.get("status") or "").lower() == "cancelled":
+            continue
+        b_start = _parse_iso(ev.get("start_iso"), tz)
+        b_end = _parse_iso(ev.get("end_iso"), tz)
+        if b_start is not None and b_end is not None:
+            busy.append((b_start, b_end))
+
+    verified: list[str] = []
+    for c in candidates:
+        c_start = _parse_iso(c, tz)
+        if c_start is None:
+            continue
+        c_end = c_start + timedelta(minutes=duration_min)
+        if any(c_start < b_end and b_start < c_end for b_start, b_end in busy):
+            continue
+        verified.append(c)
+    return verified
 
 
 def _resolve_tz(tz_name: str) -> tzinfo:

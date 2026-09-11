@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_core.actions.booking import BookSlotHandler, ProposeSlotsHandler
+from ai_core.actions.booking import BookSlotHandler, ProposeSlotsHandler, _verified_free_slots
 from ai_core.conversation_service import TurnContext
 from ai_core.orchestrator import OrchestratorAction
 from db import ResolvedGHLIntegration
@@ -697,3 +697,130 @@ async def test_propose_slots_uses_composed_reply_when_router_is_wired(
     assert len(sender.calls) == 1
     assert sender.calls[0]["text"] == "Le andrebbe bene sabato mattina, verso le 9 o le 10?"
     assert "•" not in sender.calls[0]["text"]
+
+
+# ---- _verified_free_slots: alternatives are cross-checked, not just trusted ----
+
+
+def _tz():
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo("Europe/Rome")
+
+
+async def test_verified_free_slots_drops_a_candidate_that_overlaps_a_booked_event() -> None:
+    """The core fix: `get_free_slots` said these were free, but the calendar's
+    actual booked events (`list_appointments`) say otherwise for one of them —
+    it must not be offered to the customer as a "verified" alternative."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "confirmed",
+            }
+        ]
+    )
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=[
+            "2026-04-25T09:00:00+02:00",  # overlaps the booked event
+            "2026-04-25T11:00:00+02:00",  # clear
+        ],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T11:00:00+02:00"]
+
+
+async def test_verified_free_slots_ignores_cancelled_events() -> None:
+    """A cancelled appointment does not block the slot it used to occupy."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "cancelled",
+            }
+        ]
+    )
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=["2026-04-25T09:00:00+02:00"],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T09:00:00+02:00"]
+
+
+async def test_verified_free_slots_degrades_to_unfiltered_when_the_read_fails() -> None:
+    """A hiccup on the verification read must not block every alternative —
+    fall back to the (unverified) candidates rather than offering nothing."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(side_effect=IntegrationError("ghl down", status=503))
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=["2026-04-25T09:00:00+02:00", "2026-04-25T11:00:00+02:00"],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T09:00:00+02:00", "2026-04-25T11:00:00+02:00"]
+
+
+async def test_book_slot_taken_alternatives_are_cross_checked_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Wiring test: a candidate that `get_free_slots` calls free but that overlaps
+    a real booked event never reaches the customer, end-to-end through the
+    handler (not just at the `_verified_free_slots` unit level)."""
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=False)
+    # 09:00 is one of the fixture's 3 raw slots (see `_patch_ghl_client`) and is
+    # NOT the rejected 10:00 slot, so it would otherwise survive the dedup fix —
+    # but a real booked event covers it.
+    ghl_client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "confirmed",
+            }
+        ]
+    )
+    sender = FakeSender()
+
+    handler = BookSlotHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    text = sender.calls[0]["text"]
+    assert "09:00" not in text, "a slot covered by a real booked event must not be offered"
+    assert "11:00" in text
+    assert appt_calls == []
