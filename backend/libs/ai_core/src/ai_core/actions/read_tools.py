@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING
 
 from ai_core.actions.booking import (
     _format_human,
+    _ghl_error_detail,
     _next_business_hour,
     _parse_iso,
     _resolve_tz,
+    _verified_free_slots,
 )
 from ai_core.orchestrator import OrchestratorAction, ToolResult
 from config_resolver import ConfigKey, ConfigResolver
@@ -124,6 +126,12 @@ class GhlReadToolExecutor:
             lookahead = action.payload.get("lookahead_days") or await config.resolve(
                 ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=ctx.merchant_id
             )
+            duration = int(
+                await config.resolve(
+                    ConfigKey.BOOKING_DEFAULT_DURATION_MIN, merchant_id=ctx.merchant_id
+                )
+                or 30
+            )
             access_token = ghl.access_token
             refresh_token = ghl.refresh_token
             expires_at = ghl.expires_at
@@ -146,6 +154,7 @@ class GhlReadToolExecutor:
             tz_name=str(tz_name),
             lookahead_days=int(lookahead) if lookahead else 14,
             preferred_iso=preferred_iso,
+            duration_min=duration,
         )
 
         return ToolResult(
@@ -167,6 +176,7 @@ class GhlReadToolExecutor:
         tz_name: str,
         lookahead_days: int,
         preferred_iso: str | None,
+        duration_min: int = 30,
     ) -> list[str]:
         async def _persist(bundle: GHLTokenBundle) -> None:
             if not bundle.location_id:
@@ -204,8 +214,22 @@ class GhlReadToolExecutor:
                 calendar_id, start_iso=start.isoformat(), end_iso=end.isoformat(), timezone=tz_name
             )
             raw = [s.get("startTime") or s.get("start") for s in slots if s]
-            return [s for s in raw if s]
-        except IntegrationError:
+            candidates = [s for s in raw if s]
+            # Cross-check against the calendar's actual booked events — the AI
+            # reads this summary and states it as fact to the customer, so an
+            # unverified read here is worse than in the other call sites (see
+            # `_verified_free_slots` in `actions/booking.py`).
+            return await _verified_free_slots(
+                client,
+                calendar_id=calendar_id,
+                candidates=candidates,
+                window_start_iso=start.isoformat(),
+                window_end_iso=end.isoformat(),
+                duration_min=duration_min,
+                tz=tz,
+            )
+        except IntegrationError as e:
+            logger.warning("check_availability.ghl_error", error=_ghl_error_detail(e))
             return []
         finally:
             await client.close()

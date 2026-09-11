@@ -16,7 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_core.actions.booking import BookSlotHandler, ProposeSlotsHandler
+from ai_core.actions.booking import (
+    BookSlotHandler,
+    ProposeSlotsHandler,
+    _ghl_error_detail,
+    _verified_free_slots,
+)
 from ai_core.conversation_service import TurnContext
 from ai_core.orchestrator import OrchestratorAction
 from db import ResolvedGHLIntegration
@@ -222,7 +227,13 @@ async def test_book_slot_taken_proposes_alternatives(
     ghl_client.get_free_slots.assert_awaited_once()
     assert len(sender.calls) == 1
     assert "non è più disponibile" in sender.calls[0]["text"]
-    assert sender.calls[0]["text"].count("•") == 3
+    # The fixture's free-slots response includes the exact 10:00 slot that was
+    # just rejected as taken (reproduces a prod bug: GHL's free-slots read and
+    # its booking write disagreed, so the "alternative" kept re-offering the
+    # very instant that had just failed, looping the customer forever). The
+    # handler must drop it — 3 raw slots minus the rejected one = 2 bullets.
+    assert sender.calls[0]["text"].count("•") == 2
+    assert "10:00" not in sender.calls[0]["text"], "the rejected slot must not reappear"
     # No booking → nothing mirrored locally.
     assert appt_calls == []
 
@@ -561,3 +572,289 @@ async def test_booking_reminder_hours_fallback_when_flow_disabled(
         object(), merchant_id=uuid.uuid4(), config=FakeConfig(), fallback=[24]
     )
     assert hours == [72, 24]
+
+
+# ---- router wiring: real slot data goes to the model, not a fixed template ----
+
+
+class _FakeReplyClient:
+    def __init__(self, *, reply: str = "Ti va bene venerdì alle 10:45?") -> None:
+        self.reply = reply
+        self.chiamate: list[Any] = []
+
+    async def complete(self, *, messages, max_tokens=None, **kw):
+        from types import SimpleNamespace
+
+        self.chiamate.append(messages)
+        return SimpleNamespace(
+            content=self.reply, model="gpt-5-nano", tokens_in=1, tokens_out=1, latency_ms=1, raw={}
+        )
+
+
+class _FakeReplyRouter:
+    def __init__(self, client: _FakeReplyClient) -> None:
+        self.client = client
+
+    async def select(self, req):
+        return self.client
+
+
+async def test_book_slot_taken_uses_composed_reply_when_router_is_wired(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """With a router wired, the "slot taken" message is the model's own natural
+    text (built from the real alternatives), not the fixed `format_booking_confirmation`
+    template — this is the blocco-2 fix: no more hardcoded "Quello slot non è più
+    disponibile" bubble when the composer is available."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_ghl_client(monkeypatch, booking_ok=False)
+    sender = FakeSender()
+    client = _FakeReplyClient(reply="Quel momento è appena andato, ti va bene alle 9 o alle 11?")
+    router = _FakeReplyRouter(client)
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Quel momento è appena andato, ti va bene alle 9 o alle 11?"
+    # The fixed template's telltale markers must NOT appear — this is a composed
+    # sentence, not the bulleted form letter.
+    assert "•" not in sender.calls[0]["text"]
+    assert client.chiamate  # the composer was actually invoked
+
+
+async def test_book_slot_falls_back_to_template_when_composer_fails(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Fail-open: if the compose call errors, the deterministic template still
+    goes out — a booking outcome is never left unsent."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_ghl_client(monkeypatch, booking_ok=False)
+    sender = FakeSender()
+
+    class _BrokenRouter:
+        async def select(self, req):
+            raise RuntimeError("router unavailable")
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=_BrokenRouter(),
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert len(sender.calls) == 1
+    assert "non è più disponibile" in sender.calls[0]["text"]
+
+
+async def test_propose_slots_uses_composed_reply_when_router_is_wired(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """The proactive "here's what's free" offer is also composed, not the fixed
+    `format_slot_proposal` bulleted template — this is what used to show up in
+    the merchant inbox mislabeled "Automazione"."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    from ai_core.actions import booking as mod
+
+    client_ghl = AsyncMock()
+    client_ghl.get_free_slots = AsyncMock(
+        return_value=[
+            {"startTime": "2026-04-25T09:00:00+02:00"},
+            {"startTime": "2026-04-25T10:00:00+02:00"},
+            {"startTime": "2026-04-25T11:00:00+02:00"},
+        ]
+    )
+    client_ghl.close = AsyncMock()
+    monkeypatch.setattr(mod, "GHLClient", MagicMock(side_effect=lambda **kw: client_ghl))
+
+    sender = FakeSender()
+    client = _FakeReplyClient(reply="Le andrebbe bene sabato mattina, verso le 9 o le 10?")
+    router = _FakeReplyRouter(client)
+    handler = ProposeSlotsHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+    )
+    await handler(OrchestratorAction(kind="propose_slots", payload={}), turn_ctx)
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Le andrebbe bene sabato mattina, verso le 9 o le 10?"
+    assert "•" not in sender.calls[0]["text"]
+
+
+# ---- _verified_free_slots: alternatives are cross-checked, not just trusted ----
+
+
+def _tz():
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo("Europe/Rome")
+
+
+async def test_verified_free_slots_drops_a_candidate_that_overlaps_a_booked_event() -> None:
+    """The core fix: `get_free_slots` said these were free, but the calendar's
+    actual booked events (`list_appointments`) say otherwise for one of them —
+    it must not be offered to the customer as a "verified" alternative."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "confirmed",
+            }
+        ]
+    )
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=[
+            "2026-04-25T09:00:00+02:00",  # overlaps the booked event
+            "2026-04-25T11:00:00+02:00",  # clear
+        ],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T11:00:00+02:00"]
+
+
+async def test_verified_free_slots_ignores_cancelled_events() -> None:
+    """A cancelled appointment does not block the slot it used to occupy."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "cancelled",
+            }
+        ]
+    )
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=["2026-04-25T09:00:00+02:00"],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T09:00:00+02:00"]
+
+
+async def test_verified_free_slots_degrades_to_unfiltered_when_the_read_fails() -> None:
+    """A hiccup on the verification read must not block every alternative —
+    fall back to the (unverified) candidates rather than offering nothing."""
+    client = AsyncMock()
+    client.list_appointments = AsyncMock(side_effect=IntegrationError("ghl down", status=503))
+
+    result = await _verified_free_slots(
+        client,
+        calendar_id="CAL-1",
+        candidates=["2026-04-25T09:00:00+02:00", "2026-04-25T11:00:00+02:00"],
+        window_start_iso="2026-04-25T00:00:00+02:00",
+        window_end_iso="2026-04-26T00:00:00+02:00",
+        duration_min=30,
+        tz=_tz(),
+    )
+
+    assert result == ["2026-04-25T09:00:00+02:00", "2026-04-25T11:00:00+02:00"]
+
+
+async def test_book_slot_taken_alternatives_are_cross_checked_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Wiring test: a candidate that `get_free_slots` calls free but that overlaps
+    a real booked event never reaches the customer, end-to-end through the
+    handler (not just at the `_verified_free_slots` unit level)."""
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=False)
+    # 09:00 is one of the fixture's 3 raw slots (see `_patch_ghl_client`) and is
+    # NOT the rejected 10:00 slot, so it would otherwise survive the dedup fix —
+    # but a real booked event covers it.
+    ghl_client.list_appointments = AsyncMock(
+        return_value=[
+            {
+                "id": "evt-1",
+                "start_iso": "2026-04-25T09:00:00+02:00",
+                "end_iso": "2026-04-25T09:30:00+02:00",
+                "status": "confirmed",
+            }
+        ]
+    )
+    sender = FakeSender()
+
+    handler = BookSlotHandler(
+        kek_base64="unused", ghl_client_id="x", ghl_client_secret="y", reply_sender=sender
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    text = sender.calls[0]["text"]
+    assert "09:00" not in text, "a slot covered by a real booked event must not be offered"
+    assert "11:00" in text
+    assert appt_calls == []
+
+
+# ---- _ghl_error_detail: keep GHL's own explanation, not just the status ----
+
+
+def test_ghl_error_detail_keeps_status_and_response_body() -> None:
+    """`str(e)` alone is just "GHL POST ... failed (400)" — the actual reason
+    GHL gives (in the response body) was being discarded before it ever
+    reached a log line or `ghl_sync_log.error_detail`."""
+    e = IntegrationError(
+        "GHL POST /calendars/events/appointments failed (400)",
+        error_code="ghl_request_failed",
+        status=400,
+        body='{"message": "This calendar does not allow multiple appointments per contact"}',
+    )
+
+    detail = _ghl_error_detail(e)
+
+    assert "failed (400)" in detail
+    assert "status=400" in detail
+    assert "does not allow multiple appointments per contact" in detail
+
+
+def test_ghl_error_detail_tolerates_missing_context() -> None:
+    """No status/body on the error (e.g. a raised-by-hand error elsewhere) must
+    not crash — it just falls back to the plain message."""
+    e = IntegrationError("boom")
+
+    assert _ghl_error_detail(e) == "boom"
