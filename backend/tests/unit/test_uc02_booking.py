@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +21,7 @@ from ai_core.actions.booking import (
     BookSlotHandler,
     ProposeSlotsHandler,
     _ghl_error_detail,
+    _spread_candidates,
     _verified_free_slots,
 )
 from ai_core.conversation_service import TurnContext
@@ -858,3 +860,222 @@ def test_ghl_error_detail_tolerates_missing_context() -> None:
     e = IntegrationError("boom")
 
     assert _ghl_error_detail(e) == "boom"
+
+
+# ---- _spread_candidates: real choices, not the same instant three times ----
+
+
+async def test_spread_candidates_drops_options_too_close_to_the_previous_pick() -> None:
+    """GHL's raw free-slots granularity (5-10 min, independent of appointment
+    duration) must not read as three copies of the same half hour."""
+    candidates = [
+        "2026-04-25T10:00:00+02:00",
+        "2026-04-25T10:05:00+02:00",
+        "2026-04-25T10:10:00+02:00",
+        "2026-04-25T11:00:00+02:00",
+    ]
+
+    result = _spread_candidates(candidates, min_gap_minutes=30, tz=_tz())
+
+    assert result == ["2026-04-25T10:00:00+02:00", "2026-04-25T11:00:00+02:00"]
+
+
+async def test_spread_candidates_keeps_everything_already_spaced_out() -> None:
+    candidates = [
+        "2026-04-25T09:00:00+02:00",
+        "2026-04-25T10:00:00+02:00",
+        "2026-04-25T11:00:00+02:00",
+    ]
+
+    result = _spread_candidates(candidates, min_gap_minutes=30, tz=_tz())
+
+    assert result == candidates
+
+
+# ---- _persona_driven_reply: the bot's own persona, not a bolted-on composer ----
+
+
+def _patch_persona_pipeline(
+    monkeypatch, *, system_prompt: str = "SEI L'ASSISTENTE DI ACME."
+) -> Any:
+    """Wires the DB-facing calls `_persona_driven_reply` makes, independent of
+    `_patch_session` (which doesn't cover `MessageRepository` / the two
+    module-level prompt-assembly functions)."""
+    from ai_core.actions import booking as mod
+    from ai_core.playbook import PlaybookRuntime
+
+    class FakeMessageRepo:
+        def __init__(self, session): ...
+        async def list_history(self, conversation_id, *, limit=30):
+            return [
+                SimpleNamespace(role="user", content="Vorrei prenotare"),
+                SimpleNamespace(role="agent", content="Certo, quando le va bene?"),
+            ]
+
+    calls: dict[str, Any] = {}
+
+    async def fake_build_prompt(*, session, merchant_id):
+        calls["merchant_id"] = merchant_id
+        return system_prompt
+
+    async def fake_playbook(session, merchant_id):
+        return PlaybookRuntime()
+
+    monkeypatch.setattr(mod, "MessageRepository", FakeMessageRepo)
+    monkeypatch.setattr(mod, "build_cascade_system_prompt", fake_build_prompt)
+    monkeypatch.setattr(mod, "resolve_playbook_runtime", fake_playbook)
+    return calls
+
+
+class _FakeProactiveOrchestrator:
+    def __init__(
+        self,
+        *,
+        reply_text: str | None = "Perfetto, tutto confermato!",
+        error: Exception | None = None,
+    ):
+        self.reply_text = reply_text
+        self.error = error
+        self.calls: list[Any] = []
+
+    async def run_proactive(
+        self, ctx, *, objective, extra_instructions="", allowed_actions=None, force_model=None
+    ):
+        if self.error is not None:
+            raise self.error
+        self.calls.append(
+            {
+                "ctx": ctx,
+                "objective": objective,
+                "extra_instructions": extra_instructions,
+                "allowed_actions": allowed_actions,
+            }
+        )
+        return SimpleNamespace(
+            reply_text=self.reply_text or "",
+            actions=[],
+            model="x",
+            tokens_in=0,
+            tokens_out=0,
+            latency_ms=0,
+        )
+
+
+async def test_persona_driven_reply_uses_the_merchants_real_system_prompt(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext
+) -> None:
+    from ai_core.actions import booking as mod
+
+    _patch_session_stub_for_persona_reply(monkeypatch)
+    _patch_persona_pipeline(monkeypatch, system_prompt="SEI L'ASSISTENTE DI ACME. Formale.")
+    orchestrator = _FakeProactiveOrchestrator()
+
+    text = await mod._persona_driven_reply(
+        orchestrator, turn_ctx=turn_ctx, objective="conferma la prenotazione", facts="orario: 10:00"
+    )
+
+    assert text == "Perfetto, tutto confermato!"
+    call = orchestrator.calls[0]
+    assert call["ctx"].system_prompt == "SEI L'ASSISTENTE DI ACME. Formale."
+    assert len(call["ctx"].history) == 2
+    assert call["objective"] == "conferma la prenotazione"
+    assert call["extra_instructions"] == "orario: 10:00"
+    # No side effects from this one-shot nudge — nothing it emits gets dispatched.
+    assert call["allowed_actions"] == set()
+
+
+async def test_persona_driven_reply_returns_none_on_failure(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext
+) -> None:
+    from ai_core.actions import booking as mod
+
+    _patch_session_stub_for_persona_reply(monkeypatch)
+    _patch_persona_pipeline(monkeypatch)
+    orchestrator = _FakeProactiveOrchestrator(error=RuntimeError("model unavailable"))
+
+    text = await mod._persona_driven_reply(
+        orchestrator, turn_ctx=turn_ctx, objective="x", facts="y"
+    )
+
+    assert text is None
+
+
+def _patch_session_stub_for_persona_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ai_core.actions import booking as mod
+
+    @asynccontextmanager
+    async def fake_session(ctx):
+        yield SimpleNamespace()
+
+    class FakeConfig:
+        def __init__(self, session): ...
+        async def resolve(self, key, *, merchant_id):
+            return None
+
+    monkeypatch.setattr(mod, "tenant_session", fake_session)
+    monkeypatch.setattr(mod, "ConfigResolver", FakeConfig)
+
+
+async def test_book_slot_success_uses_persona_driven_reply_over_generic_composer(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """When an orchestrator is wired, it wins over the generic nano-composer —
+    the confirmation is written by the SAME persona/instructions the bot uses
+    for every other reply, not a separate bolted-on prompt."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_persona_pipeline(monkeypatch)
+    _patch_ghl_client(monkeypatch, booking_ok=True)
+    sender = FakeSender()
+    orchestrator = _FakeProactiveOrchestrator(reply_text="Fatto! Ci sentiamo venerdì alle 10.")
+    generic_client = _FakeReplyClient()
+    router = _FakeReplyRouter(generic_client)
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+        orchestrator=orchestrator,
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert sender.calls[0]["text"] == "Fatto! Ci sentiamo venerdì alle 10."
+    assert not generic_client.chiamate, (
+        "the generic composer must not run when the persona reply succeeds"
+    )
+
+
+async def test_book_slot_success_falls_back_to_generic_composer_when_persona_reply_fails(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_persona_pipeline(monkeypatch)
+    _patch_ghl_client(monkeypatch, booking_ok=True)
+    sender = FakeSender()
+    orchestrator = _FakeProactiveOrchestrator(error=RuntimeError("down"))
+    router = _FakeReplyRouter(_FakeReplyClient(reply="Prenotato, a presto!"))
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+        orchestrator=orchestrator,
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert sender.calls[0]["text"] == "Prenotato, a presto!"

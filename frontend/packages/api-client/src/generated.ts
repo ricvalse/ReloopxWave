@@ -2520,6 +2520,11 @@ export interface components {
              * @default 14
              */
             lookahead_days: number;
+            /**
+             * Alternative Slot Gap Min
+             * @default 30
+             */
+            alternative_slot_gap_min: number;
             /** Reminder Schedule */
             reminder_schedule?: number[];
             /**

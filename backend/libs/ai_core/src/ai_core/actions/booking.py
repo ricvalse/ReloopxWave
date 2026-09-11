@@ -24,7 +24,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.automations import resolve_send_plan
 from ai_core.booking_reply import compose_booking_reply
-from ai_core.orchestrator import OrchestratorAction
+from ai_core.conversation_service import build_cascade_system_prompt
+from ai_core.llm import ChatMessage
+from ai_core.orchestrator import ConversationContext, ConversationOrchestrator, OrchestratorAction
+from ai_core.playbook import resolve_playbook_runtime
 from ai_core.router import ModelRouter
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
@@ -109,6 +112,77 @@ async def send_action_reply(
     return wa_message_id
 
 
+async def _persona_driven_reply(
+    orchestrator: ConversationOrchestrator,
+    *,
+    turn_ctx: TurnContext,
+    objective: str,
+    facts: str,
+) -> str | None:
+    """The booking outcome, phrased by the SAME persona/instructions the bot
+    uses for every other reply in this conversation — not a separate generic
+    composer. Reuses exactly the context-assembly the automation engine's
+    `ai_reply` node uses (`build_cascade_system_prompt` + `resolve_playbook_runtime`
+    + real conversation history via `run_proactive`), so the confirmation sounds
+    like the merchant's own assistant, not a bolted-on template.
+
+    `allowed_actions=set()` on the `run_proactive` call: this is a one-shot
+    informational nudge, not a turn that should trigger further side effects —
+    nothing the model emits here gets dispatched (empty allowlist intersects to
+    nothing, see `_combine_allowlists`).
+
+    Best-effort: opens its own short-lived session (the caller's has usually
+    already closed by the time a confirmation goes out) and returns `None` on
+    any failure so the caller falls back to a simpler tier.
+    """
+    try:
+        worker_ctx = TenantContext(
+            tenant_id=turn_ctx.tenant_id,
+            merchant_id=turn_ctx.merchant_id,
+            role="worker",
+            actor_id=turn_ctx.merchant_id,
+        )
+        async with tenant_session(worker_ctx) as session:
+            messages = await MessageRepository(session).list_history(
+                turn_ctx.conversation_id, limit=30
+            )
+            system_prompt = await build_cascade_system_prompt(
+                session=session, merchant_id=turn_ctx.merchant_id
+            )
+            playbook = await resolve_playbook_runtime(session, turn_ctx.merchant_id)
+            assistant_name = await ConfigResolver(session).resolve(
+                ConfigKey.BOT_ASSISTANT_NAME, merchant_id=turn_ctx.merchant_id
+            )
+        history = [
+            ChatMessage(role="assistant" if m.role == "agent" else m.role, content=m.content)
+            for m in messages
+        ]
+        conv_ctx = ConversationContext(
+            merchant_id=turn_ctx.merchant_id,
+            tenant_id=turn_ctx.tenant_id,
+            lead_id=turn_ctx.lead_id,
+            lead_score=0,
+            hot_threshold=80,
+            system_prompt=system_prompt,
+            history=history,
+            kb_chunks=[],
+            variant_id=turn_ctx.variant_id,
+            allowed_actions=playbook.allowed_actions,
+            scoring_enabled=False,
+            directives=playbook.directives,
+            critical_keywords=playbook.critical_keywords,
+            assistant_name=assistant_name if isinstance(assistant_name, str) else None,
+        )
+        response = await orchestrator.run_proactive(
+            conv_ctx, objective=objective, extra_instructions=facts, allowed_actions=set()
+        )
+        text = (response.reply_text or "").strip()
+        return text or None
+    except Exception as e:
+        logger.warning("book_slot.persona_reply_failed", error=str(e))
+        return None
+
+
 async def _resolve_reminder_lead_hours(
     session: Any,
     *,
@@ -184,12 +258,14 @@ class BookSlotHandler:
         ghl_client_secret: str,
         reply_sender: ReplySender,
         router: ModelRouter | None = None,
+        orchestrator: ConversationOrchestrator | None = None,
     ) -> None:
         self._kek = kek_base64
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
         self._reply_sender = reply_sender
         self._router = router
+        self._orchestrator = orchestrator
 
     async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         # `dispatch()` swallows any exception raised here with just a log line
@@ -484,6 +560,13 @@ class BookSlotHandler:
                         ConfigKey.BOOKING_LOOKAHEAD_DAYS, merchant_id=turn_ctx.merchant_id
                     )
                     lookahead_days = int(lookahead_raw) if lookahead_raw else 14
+                    slot_gap_min = int(
+                        await config.resolve(
+                            ConfigKey.BOOKING_ALTERNATIVE_SLOT_GAP_MIN,
+                            merchant_id=turn_ctx.merchant_id,
+                        )
+                        or 30
+                    )
 
                     # Risolvi gli anticipi multi-reminder: grafo (system flow) → config.
                     reminder_lead_hours = await _resolve_reminder_lead_hours(
@@ -543,6 +626,7 @@ class BookSlotHandler:
                         new_stage_id=str(new_stage_id) if new_stage_id else None,
                         tz_name=str(tz_name) if tz_name else "Europe/Rome",
                         lookahead_days=lookahead_days,
+                        slot_gap_min=slot_gap_min,
                         custom_fields=custom_fields,
                         tags=tags,
                         on_token_refresh=_persist_tokens,
@@ -691,6 +775,7 @@ class BookSlotHandler:
         new_stage_id: str | None,
         tz_name: str = "Europe/Rome",
         lookahead_days: int = 14,
+        slot_gap_min: int = 30,
         custom_fields: list[dict[str, Any]] | None = None,
         tags: list[str] | None = None,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
@@ -889,7 +974,8 @@ class BookSlotHandler:
                     duration_min=duration_min,
                     tz=tz,
                 )
-                suggestions: list[str] = verified[:3]
+                spread = _spread_candidates(verified, min_gap_minutes=slot_gap_min, tz=tz)
+                suggestions: list[str] = spread[:3]
                 await _log_sync(
                     "booking.created",
                     "appointment",
@@ -983,7 +1069,18 @@ class BookSlotHandler:
         if outcome is None:
             return
         text = None
-        if self._router is not None:
+        # Tier 1: the bot's own persona/instructions (real system prompt +
+        # history + playbook), same as any other reply it writes.
+        if self._orchestrator is not None:
+            text = await _persona_driven_reply(
+                self._orchestrator,
+                turn_ctx=turn_ctx,
+                objective=_booking_situation(outcome),
+                facts=_booking_facts(outcome),
+            )
+        # Tier 2: a generic but still model-composed fallback (cheaper, no
+        # persona/history dependency) if the persona-driven turn failed.
+        if text is None and self._router is not None:
             text = await compose_booking_reply(
                 self._router,
                 merchant_id=turn_ctx.merchant_id,
@@ -991,6 +1088,8 @@ class BookSlotHandler:
                 situation=_booking_situation(outcome),
                 facts=_booking_facts(outcome),
             )
+        # Tier 3: the fixed Italian template — never leaves a booking outcome
+        # unsent.
         if text is None:
             text = format_booking_confirmation(
                 booked=outcome.booked,
@@ -1016,12 +1115,14 @@ class ProposeSlotsHandler:
         ghl_client_secret: str,
         reply_sender: ReplySender,
         router: ModelRouter | None = None,
+        orchestrator: ConversationOrchestrator | None = None,
     ) -> None:
         self._kek = kek_base64
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
         self._reply_sender = reply_sender
         self._router = router
+        self._orchestrator = orchestrator
 
     async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
@@ -1057,6 +1158,12 @@ class ProposeSlotsHandler:
                 )
                 or 30
             )
+            slot_gap_min = int(
+                await config.resolve(
+                    ConfigKey.BOOKING_ALTERNATIVE_SLOT_GAP_MIN, merchant_id=turn_ctx.merchant_id
+                )
+                or 30
+            )
 
             async def _persist(bundle: GHLTokenBundle) -> None:
                 if not bundle.location_id:
@@ -1077,22 +1184,29 @@ class ProposeSlotsHandler:
                 tz_name=str(tz_name),
                 lookahead_days=int(lookahead) if lookahead else 14,
                 duration_min=duration,
+                slot_gap_min=slot_gap_min,
                 on_token_refresh=_persist,
             )
 
         if suggestions:
+            situation = (
+                "Il cliente vuole prenotare ma non ha ancora indicato un "
+                "orario preciso: proponigli tu i prossimi orari davvero "
+                "liberi perché ne scelga uno."
+            )
+            facts = "Orari liberi: " + "; ".join(_format_human(s) for s in suggestions) + "."
             text = None
-            if self._router is not None:
+            if self._orchestrator is not None:
+                text = await _persona_driven_reply(
+                    self._orchestrator, turn_ctx=turn_ctx, objective=situation, facts=facts
+                )
+            if text is None and self._router is not None:
                 text = await compose_booking_reply(
                     self._router,
                     merchant_id=turn_ctx.merchant_id,
                     tenant_id=turn_ctx.tenant_id,
-                    situation=(
-                        "Il cliente vuole prenotare ma non ha ancora indicato un "
-                        "orario preciso: proponigli tu i prossimi orari davvero "
-                        "liberi perché ne scelga uno."
-                    ),
-                    facts="Orari liberi: " + "; ".join(_format_human(s) for s in suggestions) + ".",
+                    situation=situation,
+                    facts=facts,
                 )
             if text is None:
                 text = format_slot_proposal(suggestions)
@@ -1106,6 +1220,7 @@ class ProposeSlotsHandler:
         tz_name: str,
         lookahead_days: int,
         duration_min: int = 30,
+        slot_gap_min: int = 30,
         on_token_refresh: Callable[[GHLTokenBundle], Awaitable[None]] | None = None,
     ) -> list[str]:
         client = GHLClient(
@@ -1140,7 +1255,8 @@ class ProposeSlotsHandler:
                 duration_min=duration_min,
                 tz=tz,
             )
-            return verified[:3]
+            spread = _spread_candidates(verified, min_gap_minutes=slot_gap_min, tz=tz)
+            return spread[:3]
         except IntegrationError as e:
             logger.warning("propose_slots.ghl_error", error=_ghl_error_detail(e))
             return []
@@ -1253,6 +1369,28 @@ async def _verified_free_slots(
             continue
         verified.append(c)
     return verified
+
+
+def _spread_candidates(candidates: list[str], *, min_gap_minutes: int, tz: tzinfo) -> list[str]:
+    """Greedily keep candidates at least `min_gap_minutes` apart, in the given
+    order. GHL's free-slots read can return options a few minutes apart — its
+    own calendar-level slot interval, independent of the appointment duration
+    — so three raw entries can all fall inside the same real-world half hour.
+    Offering "10:00, 10:05, 10:10" back to a customer reads as the same
+    instant three times, not three actual choices.
+    """
+    picked: list[str] = []
+    last_start: datetime | None = None
+    gap = timedelta(minutes=min_gap_minutes)
+    for c in candidates:
+        start = _parse_iso(c, tz)
+        if start is None:
+            continue
+        if last_start is not None and start - last_start < gap:
+            continue
+        picked.append(c)
+        last_start = start
+    return picked
 
 
 def _resolve_tz(tz_name: str) -> tzinfo:
