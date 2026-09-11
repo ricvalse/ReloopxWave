@@ -208,6 +208,14 @@ export const SECTIONS: SectionDef[] = [
       { key: 'booking.default_duration_min', label: 'Durata default (min)', kind: 'int', min: 15, max: 240 },
       { key: 'booking.lookahead_days', label: 'Lookahead (giorni)', kind: 'int', min: 1, max: 60 },
       {
+        key: 'booking.alternative_slot_gap_min',
+        label: 'Distanza minima fra alternative proposte (min)',
+        kind: 'int',
+        min: 5,
+        max: 180,
+        help: 'Se il calendario propone orari troppo vicini fra loro (es. "10:00, 10:05, 10:10"), il bot ne mostra solo uno per ogni intervallo di questa durata.',
+      },
+      {
         key: 'booking.default_calendar_id',
         label: 'Calendario default',
         kind: 'calendar',
