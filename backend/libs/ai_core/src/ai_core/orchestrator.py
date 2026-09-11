@@ -254,6 +254,23 @@ class ConversationOrchestrator:
         # (belt-and-suspenders: the schema hint already omits them). None = all.
         if ctx.allowed_actions is not None:
             final_actions = [a for a in final_actions if a.kind in ctx.allowed_actions]
+        if _looks_like_false_booking_confirmation(
+            parsed.reply_text, {a.kind for a in final_actions}
+        ):
+            # `_NO_FALSE_CONFIRM_NOTE` above tells the model never to write "ho
+            # prenotato"/"la segno per" unless it actually emitted book_slot /
+            # reschedule_slot this turn — production has shown it doesn't always
+            # comply, and when it doesn't the customer is told an appointment
+            # exists that nothing ever attempted, with zero trace anywhere else
+            # (no analytics event, no ghl_sync_log row — the dispatcher never
+            # runs). This can't be fixed by rewriting the reply here (too easy to
+            # mangle a legitimate sentence); log it loudly so it's visible instead
+            # of only discoverable by manually reading the conversation later.
+            logger.warning(
+                "orchestrator.suspected_false_confirmation",
+                merchant_id=str(ctx.merchant_id),
+                tenant_id=str(ctx.tenant_id),
+            )
         return OrchestratorResponse(
             reply_text=parsed.reply_text,
             actions=final_actions,
@@ -714,6 +731,25 @@ _NO_FALSE_CONFIRM_NOTE = (
     "'appuntamento spostato'): scrivi una frase di passaggio ('procedo subito e ti "
     "confermo', 'un attimo che verifico')."
 )
+
+# Best-effort detector for a violation of `_NO_FALSE_CONFIRM_NOTE`: `reply_text`
+# reads like a booking confirmation but no booking-effecting action went out
+# this turn. Deliberately narrow (booking phrasing only, not a general honesty
+# check) and used for OBSERVABILITY ONLY — see the call site in `run()` — never
+# to rewrite or block the reply, which risks mangling a legitimate sentence.
+_FALSE_BOOKING_CONFIRM_RE = re.compile(
+    r"\b(ho prenotato|ti confermo l['a]|è confermat[oa]|ho fissato|ho spostato|"
+    r"la segno per|appuntamento confermato)\b",
+    re.IGNORECASE,
+)
+_BOOKING_EFFECT_KINDS = frozenset({"book_slot", "reschedule_slot"})
+
+
+def _looks_like_false_booking_confirmation(reply_text: str, action_kinds: set[str]) -> bool:
+    if action_kinds & _BOOKING_EFFECT_KINDS:
+        return False
+    return bool(_FALSE_BOOKING_CONFIRM_RE.search(reply_text))
+
 
 # Closing sentence of the booking note. Split out because it points at a read
 # tool: appending it when the tools are hidden would aim the model at an action

@@ -23,7 +23,9 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ai_core.automations import resolve_send_plan
+from ai_core.booking_reply import compose_booking_reply
 from ai_core.orchestrator import OrchestratorAction
+from ai_core.router import ModelRouter
 from config_resolver import ConfigKey, ConfigResolver
 from db import (
     AnalyticsRepository,
@@ -181,13 +183,52 @@ class BookSlotHandler:
         ghl_client_id: str,
         ghl_client_secret: str,
         reply_sender: ReplySender,
+        router: ModelRouter | None = None,
     ) -> None:
         self._kek = kek_base64
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
         self._reply_sender = reply_sender
+        self._router = router
 
     async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
+        # `dispatch()` swallows any exception raised here with just a log line
+        # (best-effort side effects, section header at the top of this file) —
+        # which used to mean a crash produced ZERO trace (no analytics event, no
+        # ghl_sync_log row) and left the customer believing an appointment exists
+        # that was never attempted. Catch everything at this boundary instead: an
+        # unexpected failure still gets a real analytics event with the actual
+        # error and a plain WhatsApp message, instead of pure silence.
+        try:
+            await self._handle(action, turn_ctx)
+        except Exception as e:
+            logger.warning(
+                "book_slot.unexpected_failure",
+                error=str(e),
+                merchant_id=str(turn_ctx.merchant_id),
+            )
+            try:
+                async with session_scope() as session:
+                    await AnalyticsRepository(session).emit(
+                        tenant_id=turn_ctx.tenant_id,
+                        merchant_id=turn_ctx.merchant_id,
+                        event_type="booking.failed",
+                        subject_type="lead",
+                        subject_id=turn_ctx.lead_id,
+                        variant_id=turn_ctx.variant_id,
+                        properties={
+                            "reason": "unexpected_error",
+                            "error": str(e)[:500],
+                            "conversation_id": str(turn_ctx.conversation_id),
+                        },
+                    )
+            except Exception as log_exc:  # pragma: no cover - defensive
+                logger.warning("book_slot.failure_log_failed", error=str(log_exc))
+            await self._send_confirmation(
+                turn_ctx, BookingOutcome(False, None, None, [], "unexpected_error")
+            )
+
+    async def _handle(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
             tenant_id=turn_ctx.tenant_id,
             merchant_id=turn_ctx.merchant_id,
@@ -815,14 +856,20 @@ class BookSlotHandler:
                     end_iso=window_end.isoformat(),
                     timezone=tz_name,
                 )
-                raw_suggestions = [s.get("startTime") or s.get("start") for s in slots[:3] if s]
-                suggestions: list[str] = [s for s in raw_suggestions if s]
+                raw_suggestions = [s.get("startTime") or s.get("start") for s in slots if s]
+                # Never re-offer the exact slot that GHL just rejected. When the
+                # free-slots read and the booking write disagree (seen in prod:
+                # the "alternative" GHL returns is the very instant that just
+                # failed), blindly forwarding it sends the customer in a loop —
+                # they pick it again, it fails again, forever.
+                rejected = slot_start.isoformat()
+                suggestions: list[str] = [s for s in raw_suggestions if s and s != rejected][:3]
                 await _log_sync(
                     "booking.created",
                     "appointment",
                     None,
                     status="error",
-                    error_detail="slot_taken",
+                    error_detail=str(e),
                     payload=booking_payload,
                     result={"suggested_slots": suggestions},
                 )
@@ -909,12 +956,22 @@ class BookSlotHandler:
     ) -> None:
         if outcome is None:
             return
-        text = format_booking_confirmation(
-            booked=outcome.booked,
-            slot_start_iso=outcome.slot_start_iso,
-            suggested=outcome.suggested,
-            local_only=outcome.local_only,
-        )
+        text = None
+        if self._router is not None:
+            text = await compose_booking_reply(
+                self._router,
+                merchant_id=turn_ctx.merchant_id,
+                tenant_id=turn_ctx.tenant_id,
+                situation=_booking_situation(outcome),
+                facts=_booking_facts(outcome),
+            )
+        if text is None:
+            text = format_booking_confirmation(
+                booked=outcome.booked,
+                slot_start_iso=outcome.slot_start_iso,
+                suggested=outcome.suggested,
+                local_only=outcome.local_only,
+            )
         await send_action_reply(self._reply_sender, turn_ctx, text)
 
 
@@ -932,11 +989,13 @@ class ProposeSlotsHandler:
         ghl_client_id: str,
         ghl_client_secret: str,
         reply_sender: ReplySender,
+        router: ModelRouter | None = None,
     ) -> None:
         self._kek = kek_base64
         self._client_id = ghl_client_id
         self._client_secret = ghl_client_secret
         self._reply_sender = reply_sender
+        self._router = router
 
     async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         worker_ctx = TenantContext(
@@ -988,9 +1047,22 @@ class ProposeSlotsHandler:
             )
 
         if suggestions:
-            await send_action_reply(
-                self._reply_sender, turn_ctx, format_slot_proposal(suggestions)
-            )
+            text = None
+            if self._router is not None:
+                text = await compose_booking_reply(
+                    self._router,
+                    merchant_id=turn_ctx.merchant_id,
+                    tenant_id=turn_ctx.tenant_id,
+                    situation=(
+                        "Il cliente vuole prenotare ma non ha ancora indicato un "
+                        "orario preciso: proponigli tu i prossimi orari davvero "
+                        "liberi perché ne scelga uno."
+                    ),
+                    facts="Orari liberi: " + "; ".join(_format_human(s) for s in suggestions) + ".",
+                )
+            if text is None:
+                text = format_slot_proposal(suggestions)
+            await send_action_reply(self._reply_sender, turn_ctx, text)
 
     async def _fetch_slots(
         self,
@@ -1188,3 +1260,31 @@ def format_booking_confirmation(
             f"{options}\nFammi sapere quale preferisci."
         )
     return "Al momento non riesco a completare la prenotazione. Ti ricontatteremo a brevissimo."
+
+
+def _booking_situation(outcome: BookingOutcome) -> str:
+    """One-line Italian framing for `compose_booking_reply` (`_send_confirmation`)."""
+    if outcome.booked:
+        return "Un tentativo di prenotazione è appena andato a buon fine: confermalo al cliente."
+    if outcome.suggested:
+        return (
+            "Il cliente aveva chiesto un orario preciso ma non è più disponibile: "
+            "diglielo con naturalezza e proponigli le alternative reali qui sotto."
+        )
+    return (
+        "Il tentativo di prenotazione non è andato a buon fine e non ci sono "
+        "alternative da proporre: avvisa il cliente che verrà ricontattato a breve."
+    )
+
+
+def _booking_facts(outcome: BookingOutcome) -> str:
+    """Real outcome data for `compose_booking_reply` (`_send_confirmation`)."""
+    if outcome.booked and outcome.slot_start_iso:
+        line = f"Orario confermato: {_format_human(outcome.slot_start_iso)}."
+        if outcome.local_only:
+            line += " Nota interna: salvato in agenda locale, sarà confermato da un operatore."
+        return line
+    if outcome.suggested:
+        opts = "; ".join(_format_human(s) for s in outcome.suggested)
+        return f"Alternative reali disponibili: {opts}."
+    return "Nessuna alternativa disponibile al momento."

@@ -222,7 +222,13 @@ async def test_book_slot_taken_proposes_alternatives(
     ghl_client.get_free_slots.assert_awaited_once()
     assert len(sender.calls) == 1
     assert "non è più disponibile" in sender.calls[0]["text"]
-    assert sender.calls[0]["text"].count("•") == 3
+    # The fixture's free-slots response includes the exact 10:00 slot that was
+    # just rejected as taken (reproduces a prod bug: GHL's free-slots read and
+    # its booking write disagreed, so the "alternative" kept re-offering the
+    # very instant that had just failed, looping the customer forever). The
+    # handler must drop it — 3 raw slots minus the rejected one = 2 bullets.
+    assert sender.calls[0]["text"].count("•") == 2
+    assert "10:00" not in sender.calls[0]["text"], "the rejected slot must not reappear"
     # No booking → nothing mirrored locally.
     assert appt_calls == []
 
@@ -561,3 +567,133 @@ async def test_booking_reminder_hours_fallback_when_flow_disabled(
         object(), merchant_id=uuid.uuid4(), config=FakeConfig(), fallback=[24]
     )
     assert hours == [72, 24]
+
+
+# ---- router wiring: real slot data goes to the model, not a fixed template ----
+
+
+class _FakeReplyClient:
+    def __init__(self, *, reply: str = "Ti va bene venerdì alle 10:45?") -> None:
+        self.reply = reply
+        self.chiamate: list[Any] = []
+
+    async def complete(self, *, messages, max_tokens=None, **kw):
+        from types import SimpleNamespace
+
+        self.chiamate.append(messages)
+        return SimpleNamespace(
+            content=self.reply, model="gpt-5-nano", tokens_in=1, tokens_out=1, latency_ms=1, raw={}
+        )
+
+
+class _FakeReplyRouter:
+    def __init__(self, client: _FakeReplyClient) -> None:
+        self.client = client
+
+    async def select(self, req):
+        return self.client
+
+
+async def test_book_slot_taken_uses_composed_reply_when_router_is_wired(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """With a router wired, the "slot taken" message is the model's own natural
+    text (built from the real alternatives), not the fixed `format_booking_confirmation`
+    template — this is the blocco-2 fix: no more hardcoded "Quello slot non è più
+    disponibile" bubble when the composer is available."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_ghl_client(monkeypatch, booking_ok=False)
+    sender = FakeSender()
+    client = _FakeReplyClient(reply="Quel momento è appena andato, ti va bene alle 9 o alle 11?")
+    router = _FakeReplyRouter(client)
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Quel momento è appena andato, ti va bene alle 9 o alle 11?"
+    # The fixed template's telltale markers must NOT appear — this is a composed
+    # sentence, not the bulleted form letter.
+    assert "•" not in sender.calls[0]["text"]
+    assert client.chiamate  # the composer was actually invoked
+
+
+async def test_book_slot_falls_back_to_template_when_composer_fails(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """Fail-open: if the compose call errors, the deterministic template still
+    goes out — a booking outcome is never left unsent."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    _patch_ghl_client(monkeypatch, booking_ok=False)
+    sender = FakeSender()
+
+    class _BrokenRouter:
+        async def select(self, req):
+            raise RuntimeError("router unavailable")
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=_BrokenRouter(),
+    )
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    assert len(sender.calls) == 1
+    assert "non è più disponibile" in sender.calls[0]["text"]
+
+
+async def test_propose_slots_uses_composed_reply_when_router_is_wired(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    """The proactive "here's what's free" offer is also composed, not the fixed
+    `format_slot_proposal` bulleted template — this is what used to show up in
+    the merchant inbox mislabeled "Automazione"."""
+    _patch_session(monkeypatch, ghl=ghl_bundle)
+    from ai_core.actions import booking as mod
+
+    client_ghl = AsyncMock()
+    client_ghl.get_free_slots = AsyncMock(
+        return_value=[
+            {"startTime": "2026-04-25T09:00:00+02:00"},
+            {"startTime": "2026-04-25T10:00:00+02:00"},
+            {"startTime": "2026-04-25T11:00:00+02:00"},
+        ]
+    )
+    client_ghl.close = AsyncMock()
+    monkeypatch.setattr(mod, "GHLClient", MagicMock(side_effect=lambda **kw: client_ghl))
+
+    sender = FakeSender()
+    client = _FakeReplyClient(reply="Le andrebbe bene sabato mattina, verso le 9 o le 10?")
+    router = _FakeReplyRouter(client)
+    handler = ProposeSlotsHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+        router=router,
+    )
+    await handler(OrchestratorAction(kind="propose_slots", payload={}), turn_ctx)
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["text"] == "Le andrebbe bene sabato mattina, verso le 9 o le 10?"
+    assert "•" not in sender.calls[0]["text"]
