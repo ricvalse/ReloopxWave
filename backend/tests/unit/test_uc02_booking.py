@@ -16,7 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ai_core.actions.booking import BookSlotHandler, ProposeSlotsHandler, _verified_free_slots
+from ai_core.actions.booking import (
+    BookSlotHandler,
+    ProposeSlotsHandler,
+    _ghl_error_detail,
+    _verified_free_slots,
+)
 from ai_core.conversation_service import TurnContext
 from ai_core.orchestrator import OrchestratorAction
 from db import ResolvedGHLIntegration
@@ -824,3 +829,32 @@ async def test_book_slot_taken_alternatives_are_cross_checked_end_to_end(
     assert "09:00" not in text, "a slot covered by a real booked event must not be offered"
     assert "11:00" in text
     assert appt_calls == []
+
+
+# ---- _ghl_error_detail: keep GHL's own explanation, not just the status ----
+
+
+def test_ghl_error_detail_keeps_status_and_response_body() -> None:
+    """`str(e)` alone is just "GHL POST ... failed (400)" — the actual reason
+    GHL gives (in the response body) was being discarded before it ever
+    reached a log line or `ghl_sync_log.error_detail`."""
+    e = IntegrationError(
+        "GHL POST /calendars/events/appointments failed (400)",
+        error_code="ghl_request_failed",
+        status=400,
+        body='{"message": "This calendar does not allow multiple appointments per contact"}',
+    )
+
+    detail = _ghl_error_detail(e)
+
+    assert "failed (400)" in detail
+    assert "status=400" in detail
+    assert "does not allow multiple appointments per contact" in detail
+
+
+def test_ghl_error_detail_tolerates_missing_context() -> None:
+    """No status/body on the error (e.g. a raised-by-hand error elsewhere) must
+    not crash — it just falls back to the plain message."""
+    e = IntegrationError("boom")
+
+    assert _ghl_error_detail(e) == "boom"

@@ -822,6 +822,18 @@ class BookSlotHandler:
                     tz_name=tz_name,
                 )
             except IntegrationError as e:
+                # Logged BEFORE branching so the real status/body from GHL is
+                # always visible (structlog → Sentry breadcrumb + Railway logs,
+                # per shared.observability) regardless of which path below runs
+                # — this is the detail `_log_sync`'s error_detail column also
+                # gets now, instead of a hardcoded "slot_taken" (or just the
+                # bare status-only message).
+                logger.warning(
+                    "book_slot.create_booking_failed",
+                    error=_ghl_error_detail(e),
+                    calendar_id=calendar_id,
+                    slot_start_iso=slot_start.isoformat(),
+                )
                 # A transient server error (5xx) is NOT a slot conflict — querying
                 # free slots would likely fail too, and proposing alternatives
                 # would be misleading. Fall back gracefully ("ti ricontatteremo").
@@ -831,7 +843,7 @@ class BookSlotHandler:
                         "appointment",
                         None,
                         status="error",
-                        error_detail=str(e),
+                        error_detail=_ghl_error_detail(e),
                         payload=booking_payload,
                     )
                     return BookingOutcome(
@@ -883,7 +895,7 @@ class BookSlotHandler:
                     "appointment",
                     None,
                     status="error",
-                    error_detail=str(e),
+                    error_detail=_ghl_error_detail(e),
                     payload=booking_payload,
                     result={"suggested_slots": suggestions},
                 )
@@ -954,14 +966,14 @@ class BookSlotHandler:
                 )
             return opp_id if isinstance(opp_id, str) else None
         except IntegrationError as e:
-            logger.warning("book_slot.opportunity_failed", error=str(e))
+            logger.warning("book_slot.opportunity_failed", error=_ghl_error_detail(e))
             if log_sync is not None:
                 await log_sync(
                     "opportunity.created",
                     "opportunity",
                     None,
                     status="error",
-                    error_detail=str(e),
+                    error_detail=_ghl_error_detail(e),
                 )
             return None
 
@@ -1129,7 +1141,8 @@ class ProposeSlotsHandler:
                 tz=tz,
             )
             return verified[:3]
-        except IntegrationError:
+        except IntegrationError as e:
+            logger.warning("propose_slots.ghl_error", error=_ghl_error_detail(e))
             return []
         finally:
             await client.close()
@@ -1165,6 +1178,27 @@ def _is_slot_conflict(e: IntegrationError) -> bool:
     return not isinstance(status, int) or status < 500
 
 
+def _ghl_error_detail(e: IntegrationError) -> str:
+    """Full-fidelity error text for a GHL call failure: `str(e)` alone (the
+    message `GHLClient._request` builds) is only "GHL POST <path> failed (400)"
+    — it carries the HTTP status but drops GHL's own explanation of WHY, which
+    lives in `IntegrationError.context['body']` (`resp.text[:500]`, set in
+    `integrations/ghl/client.py:_request`) and was previously discarded before
+    it ever reached a log line or `ghl_sync_log`. That's the piece needed to
+    tell "slot genuinely taken" apart from e.g. a calendar-level duplicate-
+    booking restriction, a bad field, or an auth issue — all of which currently
+    collapse into the same generic "slot_taken" handling upstream.
+    """
+    status = e.context.get("status")
+    body = e.context.get("body")
+    parts = [str(e)]
+    if status is not None:
+        parts.append(f"status={status}")
+    if body:
+        parts.append(f"body={body}")
+    return " | ".join(parts)
+
+
 async def _verified_free_slots(
     client: GHLClient,
     *,
@@ -1197,7 +1231,7 @@ async def _verified_free_slots(
             calendar_id, start_iso=window_start_iso, end_iso=window_end_iso
         )
     except IntegrationError as e:
-        logger.warning("book_slot.verify_alternatives_failed", error=str(e))
+        logger.warning("book_slot.verify_alternatives_failed", error=_ghl_error_detail(e))
         return candidates
 
     busy: list[tuple[datetime, datetime]] = []

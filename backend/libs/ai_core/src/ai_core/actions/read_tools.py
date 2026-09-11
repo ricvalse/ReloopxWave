@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ai_core.actions.booking import (
     _format_human,
+    _ghl_error_detail,
     _next_business_hour,
     _parse_iso,
     _resolve_tz,
@@ -227,7 +228,8 @@ class GhlReadToolExecutor:
                 duration_min=duration_min,
                 tz=tz,
             )
-        except IntegrationError:
+        except IntegrationError as e:
+            logger.warning("check_availability.ghl_error", error=_ghl_error_detail(e))
             return []
         finally:
             await client.close()
