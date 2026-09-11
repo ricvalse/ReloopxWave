@@ -19,6 +19,7 @@ from ai_core.actions.booking import (
     _next_business_hour,
     _parse_iso,
     _resolve_tz,
+    _spread_candidates,
     _verified_free_slots,
 )
 from ai_core.orchestrator import OrchestratorAction, ToolResult
@@ -132,6 +133,12 @@ class GhlReadToolExecutor:
                 )
                 or 30
             )
+            slot_gap_min = int(
+                await config.resolve(
+                    ConfigKey.BOOKING_ALTERNATIVE_SLOT_GAP_MIN, merchant_id=ctx.merchant_id
+                )
+                or 30
+            )
             access_token = ghl.access_token
             refresh_token = ghl.refresh_token
             expires_at = ghl.expires_at
@@ -160,7 +167,7 @@ class GhlReadToolExecutor:
         return ToolResult(
             "check_availability",
             True,
-            _availability_summary(free, preferred_iso, tz),
+            _availability_summary(free, preferred_iso, tz, min_gap_minutes=slot_gap_min),
             data={"free_slots": free},
         )
 
@@ -178,6 +185,10 @@ class GhlReadToolExecutor:
         preferred_iso: str | None,
         duration_min: int = 30,
     ) -> list[str]:
+        # NOTE: this returns the full verified (unspread) list on purpose —
+        # `_availability_summary`'s preferred-slot membership check needs the
+        # real candidate set, not a display-thinned one; spreading happens
+        # there, only for the "here's what's free" listing branch.
         async def _persist(bundle: GHLTokenBundle) -> None:
             if not bundle.location_id:
                 return
@@ -278,10 +289,18 @@ def _worker_ctx(ctx: ConversationContext) -> TenantContext:
     )
 
 
-def _availability_summary(free: list[str], preferred_iso: str | None, tz: tzinfo) -> str:
-    human = [_format_human(s) for s in free[:5]]
+def _availability_summary(
+    free: list[str], preferred_iso: str | None, tz: tzinfo, *, min_gap_minutes: int = 30
+) -> str:
     if not free:
         return "Nessuno slot libero nel periodo richiesto."
+    # Spread ONLY the displayed list — GHL's raw free-slots granularity (a few
+    # minutes apart) otherwise reads as the same instant repeated. The
+    # preferred-slot membership check below uses the full, unspread `free`
+    # list: it must not miss the exact requested minute just because an
+    # earlier candidate consumed its gap window.
+    display = _spread_candidates(free, min_gap_minutes=min_gap_minutes, tz=tz)[:5]
+    human = [_format_human(s) for s in display]
     if preferred_iso:
         pref = _parse_iso(preferred_iso, tz)
         is_free = any(_same_minute(_parse_iso(s, tz), pref) for s in free)

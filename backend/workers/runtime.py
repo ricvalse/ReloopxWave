@@ -117,6 +117,7 @@ def build_runtime(settings: Settings) -> Runtime:
         ghl_client_secret=settings.ghl_client_secret,
         reply_sender=sender,
         router=router,
+        orchestrator=orchestrator,
     )
     dispatcher.register(booking.kind, booking)
 
@@ -128,6 +129,7 @@ def build_runtime(settings: Settings) -> Runtime:
         ghl_client_secret=settings.ghl_client_secret,
         reply_sender=sender,
         router=router,
+        orchestrator=orchestrator,
     )
     dispatcher.register(propose_slots.kind, propose_slots)
 

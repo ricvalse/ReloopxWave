@@ -130,6 +130,13 @@ const TEMPLATE_SECTIONS: TSection[] = [
     fields: [
       { key: 'booking.default_duration_min', label: 'Durata default (min)', kind: 'int', min: 15, max: 240 },
       { key: 'booking.lookahead_days', label: 'Lookahead (giorni)', kind: 'int', min: 1, max: 60 },
+      {
+        key: 'booking.alternative_slot_gap_min',
+        label: 'Distanza minima fra alternative (min)',
+        kind: 'int',
+        min: 5,
+        max: 180,
+      },
     ],
   },
   {

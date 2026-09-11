@@ -148,6 +148,11 @@ class ConfigKey(StrEnum):
     BOOKING_DEFAULT_CALENDAR_ID = "booking.default_calendar_id"
     BOOKING_DEFAULT_DURATION_MIN = "booking.default_duration_min"
     BOOKING_LOOKAHEAD_DAYS = "booking.lookahead_days"
+    # Distanza minima (minuti) fra due slot proposti nella stessa lista di
+    # alternative. GHL può restituire disponibilità a grana molto fine (5-10
+    # min, indipendente dalla durata del servizio) — senza questo, "10:00,
+    # 10:05, 10:10" viene proposto come se fossero tre opzioni diverse.
+    BOOKING_ALTERNATIVE_SLOT_GAP_MIN = "booking.alternative_slot_gap_min"
     # Lista di ore di anticipo per i promemoria WhatsApp dell'appuntamento.
     # Es.: [24] → un solo reminder 24h prima; [48, 24] → due reminder.
     BOOKING_REMINDER_SCHEDULE = "booking.reminder_schedule"
@@ -416,6 +421,7 @@ SYSTEM_DEFAULTS: dict[ConfigKey, Any] = {
     ConfigKey.BOOKING_DEFAULT_CALENDAR_ID: None,
     ConfigKey.BOOKING_DEFAULT_DURATION_MIN: 30,
     ConfigKey.BOOKING_LOOKAHEAD_DAYS: 14,
+    ConfigKey.BOOKING_ALTERNATIVE_SLOT_GAP_MIN: 30,
     ConfigKey.BOOKING_REMINDER_SCHEDULE: [24],
     ConfigKey.BOOKING_ENABLED: True,
     ConfigKey.BOOKING_PROPOSE_WHEN_HOT: False,
@@ -792,6 +798,11 @@ class BookingConfig(_StrictModel):
     default_calendar_id: str | None = None
     default_duration_min: int = Field(30, ge=15, le=240)
     lookahead_days: int = Field(14, ge=1, le=60)
+    # Distanza minima fra due slot nella stessa lista di alternative proposte al
+    # cliente. Indipendente da `default_duration_min`: un servizio da 10 minuti
+    # non deve far leggere "10:00, 10:05, 10:10" come tre orari diversi quando
+    # in pratica sono la stessa mezz'ora.
+    alternative_slot_gap_min: int = Field(30, ge=5, le=180)
     # Ore di anticipo per ogni promemoria WhatsApp. Es.: [48, 24] → due reminder.
     # Max 5 voci; valori in ore (1-168). Duplicati vengono ignorati.
     reminder_schedule: list[int] = Field(default_factory=lambda: [24], max_length=5)
