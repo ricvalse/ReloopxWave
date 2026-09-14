@@ -245,6 +245,26 @@ class ConversationRepository:
         await self._session.flush()
         return conv
 
+    async def update_wa_phone_number_id(
+        self, conversation_id: UUID, wa_phone_number_id: str
+    ) -> None:
+        """Repoint a conversation at the merchant's current WhatsApp channel.
+
+        A conversation stamps `wa_phone_number_id` once, at creation. If the
+        merchant later rotates its WhatsApp number (a new `integrations` row
+        replaces the old one), every pre-existing conversation keeps pointing at
+        the retired `phone_number_id` forever — nothing re-syncs it on its own —
+        so any proactive send (automation engine, CRM-triggered flow) resolves no
+        channel and silently never fires. Called from the two places that
+        discover the mismatch: `_handle_crm_create` when it matches an existing
+        lead, and `automation_run`'s channel-resolution fallback.
+        """
+        await self._session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(wa_phone_number_id=wa_phone_number_id)
+        )
+
     async def touch_last_message(self, conversation_id: UUID) -> None:
         now = datetime.now(tz=UTC)
         await self._session.execute(

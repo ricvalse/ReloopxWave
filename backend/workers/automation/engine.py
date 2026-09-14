@@ -447,6 +447,19 @@ async def automation_run(
         needs_channel = any(n.type in _CUSTOMER_FACING_NODES for n in automation.nodes)
         wa = await integrations.resolve_whatsapp(run_ctx.wa_phone_number_id)
         if wa is None and needs_channel:
+            # The conversation may predate a WhatsApp channel rotation: it
+            # stamped `wa_phone_number_id` once, at creation, and nothing
+            # re-syncs it on its own, so it can keep pointing at a retired
+            # number indefinitely. Fall back to the merchant's *current*
+            # channel and self-heal the record so this run — and every one
+            # after it — stops silently going nowhere.
+            wa = await integrations.resolve_whatsapp_by_merchant(UUID(merchant_id))
+            if wa is not None and wa.phone_number_id and run_ctx.conversation_id is not None:
+                await ConversationRepository(session).update_wa_phone_number_id(
+                    run_ctx.conversation_id, wa.phone_number_id
+                )
+                run_ctx.wa_phone_number_id = wa.phone_number_id
+        if wa is None and needs_channel:
             return {"skipped": "no_channel"}
 
         # ADR 0030 — gli orari di risposta valgono anche qui, se il merchant lo
