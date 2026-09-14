@@ -631,14 +631,24 @@ async def handle_ghl_event(
 
     # locationId -> merchant. Unknown/unlinked location → nothing to do.
     async with session_scope() as session:
-        mid = await GHLMarketplaceRepository(
-            session, kek_base64=settings.integrations_kek_base64
-        ).merchant_id_for_location(str(location_id))
+        repo = GHLMarketplaceRepository(session, kek_base64=settings.integrations_kek_base64)
+        mid = await repo.merchant_id_for_location(str(location_id))
+        if mid is None:
+            link_status, location_name, company_id = await repo.describe_unlinked_location(
+                str(location_id)
+            )
     if mid is None:
-        logger.info(
+        # pending_link = the location installed our app and has a name on file,
+        # but no admin ever linked it to a merchant — every event, including
+        # this one, is silently dropped until someone does. Loud on purpose.
+        log = logger.warning if link_status == "pending_link" else logger.info
+        log(
             "ghl.event.unknown_location",
             location_id=str(location_id),
             event_type=event_type,
+            link_status=link_status,
+            location_name=location_name,
+            company_id=company_id,
             actor="system:ghl_webhook",
         )
         return {"matched": False, "reason": "unknown_location", "event_type": event_type}

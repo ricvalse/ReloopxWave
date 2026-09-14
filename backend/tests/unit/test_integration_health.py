@@ -15,11 +15,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar
 
 import pytest
 import workers.scheduler.integration_health as mod
 
+from db import GHLLocationSummary
 from shared import IntegrationError
 
 
@@ -34,8 +36,11 @@ class FakeLoc:
 class FakeRepo:
     """One shared instance backing every `GHLMarketplaceRepository(...)` call."""
 
-    def __init__(self, locations: list[FakeLoc]) -> None:
+    def __init__(
+        self, locations: list[FakeLoc], pending: list[GHLLocationSummary] | None = None
+    ) -> None:
         self._locations = locations
+        self._pending = pending or []
         # (location_id, healthy, mark_error) per mark call.
         self.marks: list[tuple[str, bool, bool | None]] = []
 
@@ -53,6 +58,9 @@ class FakeRepo:
 
     async def set_location_token(self, **kwargs: Any) -> None:
         return None
+
+    async def list_pending_link_locations(self) -> list[GHLLocationSummary]:
+        return self._pending
 
 
 class FakeGHLClient:
@@ -166,6 +174,47 @@ async def test_unauthorized_after_refresh_marks_error(monkeypatch: pytest.Monkey
 
     assert (checked, broken) == (1, 1)
     assert ("loc-1", False, True) in repo.marks
+
+
+async def test_pending_link_locations_are_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A location stuck in `pending_link` drops every webhook silently (ADR
+    0016 gap) — the daily health check must count it and log its name so an
+    admin can act without a DB query."""
+    pending = [
+        GHLLocationSummary(
+            location_id="loc-old",
+            location_name="Salone Bella Vita",
+            status="pending_link",
+            merchant_id=None,
+            company_id="comp-1",
+            expires_at=None,
+            created_at=datetime(2026, 1, 1),
+        ),
+        GHLLocationSummary(
+            location_id="loc-new",
+            location_name=None,
+            status="pending_link",
+            merchant_id=None,
+            company_id="comp-2",
+            expires_at=None,
+            created_at=datetime(2026, 9, 1),
+        ),
+    ]
+    repo = FakeRepo([], pending=pending)
+    _install_repo(monkeypatch, repo)
+
+    count = await mod._report_pending_link_locations(FakeSettings())
+
+    assert count == 2
+
+
+async def test_no_pending_link_locations_reports_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = FakeRepo([], pending=[])
+    _install_repo(monkeypatch, repo)
+
+    count = await mod._report_pending_link_locations(FakeSettings())
+
+    assert count == 0
 
 
 async def test_ghl_health_skips_when_no_credentials() -> None:
