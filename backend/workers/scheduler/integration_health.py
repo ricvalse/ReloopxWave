@@ -86,8 +86,44 @@ async def integration_health_check(ctx: dict[str, object]) -> dict[str, int]:
     checked += ghl_checked
     broken += ghl_broken
 
+    pending_link = await _report_pending_link_locations(settings)
+
     logger.info("integrations.health.summary", checked=checked, broken=broken)
-    return {"checked": checked, "broken": broken}
+    return {"checked": checked, "broken": broken, "ghl_pending_link": pending_link}
+
+
+async def _report_pending_link_locations(settings: Settings) -> int:
+    """Surface locations stuck in `pending_link` (ADR 0016 gap, `#GAP-ghl-link`).
+
+    An installed-but-unlinked location silently drops every marketplace
+    webhook (`ghl.event.unknown_location`) — the merchant's CRM triggers
+    (`crm_lead_created`/`crm_opportunity_created`) never fire, and nothing
+    tells anyone until the merchant complains. This runs daily alongside the
+    rest of the GHL health check and puts the backlog in the logs with the
+    location's display name, so it's actionable without a DB query."""
+    async with session_scope() as session:
+        rows = await GHLMarketplaceRepository(
+            session, kek_base64=settings.integrations_kek_base64
+        ).list_pending_link_locations()
+
+    if not rows:
+        return 0
+
+    oldest_first = sorted(rows, key=lambda r: r.created_at or datetime.min.replace(tzinfo=UTC))
+    logger.warning(
+        "integrations.ghl.pending_link.backlog",
+        count=len(rows),
+        oldest=[
+            {
+                "location_id": r.location_id,
+                "location_name": r.location_name,
+                "company_id": r.company_id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in oldest_first[:20]
+        ],
+    )
+    return len(rows)
 
 
 async def _check_one(

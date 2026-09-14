@@ -53,6 +53,7 @@ class GHLLocationSummary:
     merchant_id: UUID | None
     company_id: str
     expires_at: int | None
+    created_at: datetime | None = None
 
 
 def _agency_aad(tenant_id: UUID, company_id: str) -> bytes:
@@ -336,6 +337,24 @@ class GHLMarketplaceRepository:
         row = await self._get_location(location_id)
         return row.merchant_id if row is not None else None
 
+    async def describe_unlinked_location(
+        self, location_id: str
+    ) -> tuple[str, str | None, str | None]:
+        """Diagnostic follow-up for a `merchant_id_for_location` miss.
+
+        Every ADR 0016 trigger (`crm_lead_created`/`crm_opportunity_created`)
+        silently dies here until someone links the location in the admin UI —
+        and that link step is easy to miss because nothing flags the drop. This
+        distinguishes the two ways a webhook goes unmatched: `pending_link`
+        (the app installed for this location and we have its name, but no admin
+        ever linked it to a merchant — actionable right now, every event since
+        install has been dropped) vs `not_installed` (no row at all — a GHL
+        sub-account outside our app, safe noise). No token decrypt."""
+        row = await self._get_location(location_id)
+        if row is None:
+            return "not_installed", None, None
+        return row.status, row.location_name, row.company_id
+
     async def resolve_location_by_merchant(self, merchant_id: UUID) -> ResolvedLocationToken | None:
         stmt = select(GHLLocationToken).where(
             GHLLocationToken.merchant_id == merchant_id,
@@ -401,6 +420,7 @@ class GHLMarketplaceRepository:
             merchant_id=row.merchant_id,
             company_id=row.company_id,
             expires_at=int(row.expires_at.timestamp()) if row.expires_at else None,
+            created_at=row.created_at,
         )
 
     async def list_locations(self, tenant_id: UUID) -> list[GHLLocationSummary]:
@@ -418,6 +438,31 @@ class GHLMarketplaceRepository:
                 merchant_id=r.merchant_id,
                 company_id=r.company_id,
                 expires_at=int(r.expires_at.timestamp()) if r.expires_at else None,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+
+    async def list_pending_link_locations(self) -> list[GHLLocationSummary]:
+        """Cross-tenant: every location stuck in `pending_link` (ADR 0016 gap).
+
+        These installed our app and have a name on file, but no admin ever
+        linked them to a merchant — every marketplace webhook for them has been
+        silently dropped (`ghl.event.unknown_location`) since install. Used by
+        the daily `integration_health_check` cron to surface the backlog
+        instead of waiting for a merchant to notice their automations never
+        fire."""
+        stmt = select(GHLLocationToken).where(GHLLocationToken.status == "pending_link")
+        rows = (await self._session.execute(stmt)).scalars()
+        return [
+            GHLLocationSummary(
+                location_id=r.location_id,
+                location_name=r.location_name,
+                status=r.status,
+                merchant_id=r.merchant_id,
+                company_id=r.company_id,
+                expires_at=int(r.expires_at.timestamp()) if r.expires_at else None,
+                created_at=r.created_at,
             )
             for r in rows
         ]

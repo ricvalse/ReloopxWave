@@ -439,3 +439,92 @@ async def test_crm_create_skips_emit_for_opted_out_lead(
 
 async def handle_ghl_event_call(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return await mod.handle_ghl_event({}, str(uuid.uuid4()), event_type, payload)
+
+
+class _FakeLogger:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("info", event, kwargs))
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("warning", event, kwargs))
+
+
+async def test_pending_link_location_logs_warning_with_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A location that installed the app but was never linked (ADR 0016 gap)
+    must drop the webhook the same as before, but log loudly (WARNING) with
+    the location's name so it's actionable straight from the logs."""
+
+    class FakeMarketplaceRepoUnlinked:
+        def __init__(self, session: Any, *, kek_base64: str) -> None: ...
+
+        async def merchant_id_for_location(self, location_id: str) -> None:
+            return None
+
+        async def describe_unlinked_location(
+            self, location_id: str
+        ) -> tuple[str, str | None, str | None]:
+            return "pending_link", "Salone Bella Vita", "comp-1"
+
+    fake_logger = _FakeLogger()
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=None, capture=capture)
+    monkeypatch.setattr(mod, "GHLMarketplaceRepository", FakeMarketplaceRepoUnlinked)
+    monkeypatch.setattr(mod, "logger", fake_logger)
+
+    res = await handle_ghl_event_call("OpportunityCreate", {"id": "OPP-1"})
+
+    assert res == {
+        "matched": False,
+        "reason": "unknown_location",
+        "event_type": "OpportunityCreate",
+    }
+    assert fake_logger.calls == [
+        (
+            "warning",
+            "ghl.event.unknown_location",
+            {
+                "location_id": fake_logger.calls[0][2]["location_id"],
+                "event_type": "OpportunityCreate",
+                "link_status": "pending_link",
+                "location_name": "Salone Bella Vita",
+                "company_id": "comp-1",
+                "actor": "system:ghl_webhook",
+            },
+        )
+    ]
+
+
+async def test_not_installed_location_logs_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unrecognised location (no row at all — not our merchant) stays a
+    quiet INFO log, not a WARNING: there's nothing to link, nothing to act on."""
+
+    class FakeMarketplaceRepoUnknown:
+        def __init__(self, session: Any, *, kek_base64: str) -> None: ...
+
+        async def merchant_id_for_location(self, location_id: str) -> None:
+            return None
+
+        async def describe_unlinked_location(
+            self, location_id: str
+        ) -> tuple[str, str | None, str | None]:
+            return "not_installed", None, None
+
+    fake_logger = _FakeLogger()
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=None, capture=capture)
+    monkeypatch.setattr(mod, "GHLMarketplaceRepository", FakeMarketplaceRepoUnknown)
+    monkeypatch.setattr(mod, "logger", fake_logger)
+
+    await handle_ghl_event_call("ContactUpdate", {"id": "C9"})
+
+    assert len(fake_logger.calls) == 1
+    level, event, fields = fake_logger.calls[0]
+    assert level == "info"
+    assert event == "ghl.event.unknown_location"
+    assert fields["link_status"] == "not_installed"
+    assert fields["location_name"] is None
