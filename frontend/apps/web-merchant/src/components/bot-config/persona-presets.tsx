@@ -12,11 +12,11 @@ type FormState = Record<string, unknown>;
 export function PersonaPresets({
   form,
   onApplyValues,
-  onAppendPhrase,
+  onTogglePhrase,
 }: {
   form: FormState;
   onApplyValues: (values: Record<string, unknown>) => void;
-  onAppendPhrase: (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => void;
+  onTogglePhrase: (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => void;
 }) {
   const presetsQuery = useQuery({
     queryKey: ['bot-config', 'tone-presets'],
@@ -55,7 +55,7 @@ export function PersonaPresets({
         <CardTitle>Stile rapido</CardTitle>
         <p className="text-sm text-muted-foreground">
           Parti da un preset di tono, poi affina nei campi qui sotto. Le regole suggerite si
-          aggiungono alle liste “da preferire / da evitare”.
+          aggiungono alle liste “da preferire / da evitare”: cliccale di nuovo per rimuoverle.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -71,6 +71,7 @@ export function PersonaPresets({
                   key={p.id}
                   type="button"
                   title={p.description}
+                  aria-pressed={active}
                   onClick={() => onApplyValues(p.values as Record<string, unknown>)}
                   className={
                     'rounded-full border px-3 py-1 text-sm transition-colors ' +
@@ -92,13 +93,13 @@ export function PersonaPresets({
               title="Regole da preferire"
               phrases={rules.do}
               current={currentDo}
-              onAdd={(ph) => onAppendPhrase('bot.do_phrases', ph)}
+              onToggle={(ph) => onTogglePhrase('bot.do_phrases', ph)}
             />
             <RuleChips
               title="Regole da evitare"
               phrases={rules.dont}
               current={currentDont}
-              onAdd={(ph) => onAppendPhrase('bot.dont_phrases', ph)}
+              onToggle={(ph) => onTogglePhrase('bot.dont_phrases', ph)}
             />
           </div>
         ) : null}
@@ -111,12 +112,12 @@ function RuleChips({
   title,
   phrases,
   current,
-  onAdd,
+  onToggle,
 }: {
   title: string;
   phrases: string[];
   current: string[];
-  onAdd: (phrase: string) => void;
+  onToggle: (phrase: string) => void;
 }) {
   return (
     <div>
@@ -127,23 +128,36 @@ function RuleChips({
         {phrases.map((ph) => {
           const added = current.includes(ph);
           return (
+            // A toggle, not a one-way switch: the chip used to be `disabled`
+            // once added, so a rule turned on by mistake could only be undone
+            // from the phrase list further down the page.
             <button
               key={ph}
               type="button"
-              disabled={added}
-              onClick={() => onAdd(ph)}
+              aria-pressed={added}
+              title={added ? 'Clicca per rimuovere la regola' : 'Clicca per aggiungere la regola'}
+              onClick={() => onToggle(ph)}
               className={
-                'rounded-full border px-3 py-1 text-left text-xs transition-colors ' +
+                'group rounded-full border px-3 py-1 text-left text-xs transition-colors ' +
                 // Tokens, not a fixed Tailwind palette: the app boots in dark
                 // mode, where emerald-50 on emerald-700 is an unreadable light
                 // chip glued onto a dark card. Outlined rather than filled —
                 // "already added" is a quiet state, not a call to action.
                 (added
-                  ? 'cursor-default border-success text-success'
+                  ? 'border-success text-success hover:border-destructive hover:text-destructive'
                   : 'border-dashed border-input hover:bg-accent')
               }
             >
-              {added ? '✓ ' : '+ '}
+              <span aria-hidden className="inline-block w-3 text-center">
+                {added ? (
+                  <>
+                    <span className="group-hover:hidden">✓</span>
+                    <span className="hidden group-hover:inline">×</span>
+                  </>
+                ) : (
+                  '+'
+                )}
+              </span>{' '}
               {ph}
             </button>
           );
