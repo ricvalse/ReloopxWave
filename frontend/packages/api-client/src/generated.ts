@@ -998,6 +998,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/ai-resume-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume Ai Bulk
+         * @description Clear the soft-pause on every stuck thread in the merchant's inbox.
+         *
+         *     Scoped to `ctx.merchant_id` (not `agency_admin`-wide): this is the inbox's
+         *     "Riattiva tutte" action, one merchant's threads at a time. Deliberately
+         *     narrower than the per-conversation `ai-resume`: `resume_paused_bulk` only
+         *     touches threads with NO handoff record (`handoff_at IS NULL`) — a real
+         *     human handoff always needs the single-conversation endpoint, after an
+         *     operator has actually looked at that thread.
+         */
+        post: operations["resume_ai_bulk_conversations_ai_resume_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{conversation_id}/ai-takeover": {
         parameters: {
             query?: never;
@@ -6927,6 +6954,39 @@ export interface operations {
             };
         };
     };
+    resume_ai_bulk_conversations_ai_resume_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     takeover_ai_conversations__conversation_id__ai_takeover_post: {
         parameters: {
             query?: never;
@@ -9377,6 +9437,7 @@ export enum ApiPaths {
     update_note_conversations__conversation_id__notes_patch = "/conversations/{conversation_id}/notes",
     pause_ai_conversations__conversation_id__ai_pause_post = "/conversations/{conversation_id}/ai-pause",
     resume_ai_conversations__conversation_id__ai_resume_post = "/conversations/{conversation_id}/ai-resume",
+    resume_ai_bulk_conversations_ai_resume_bulk_post = "/conversations/ai-resume-bulk",
     takeover_ai_conversations__conversation_id__ai_takeover_post = "/conversations/{conversation_id}/ai-takeover",
     reschedule_appointments__appointment_id__reschedule_post = "/appointments/{appointment_id}/reschedule",
     cancel_appointments__appointment_id__cancel_post = "/appointments/{appointment_id}/cancel",

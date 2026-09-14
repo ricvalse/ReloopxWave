@@ -1,6 +1,7 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { useConversationsContext } from '../lib/context';
 import { CONV_LIST_KEY } from './use-conversations';
 import type { Conversation } from '../types';
@@ -41,14 +42,17 @@ function restoreSnapshot(
 
 /** POST to a conversation endpoint with the caller's Supabase JWT. Shared with
  *  the bot takeover switch (`use-toggle-auto-reply`), which hits the same
- *  ai-resume / ai-takeover pair. */
-export async function authedConversationPost(
+ *  ai-resume / ai-takeover pair. Generic over the response body: every
+ *  per-conversation endpoint returns the updated `Conversation` (the default),
+ *  but a merchant-wide action like `ai-resume-bulk` returns its own summary
+ *  shape instead. */
+export async function authedConversationPost<T = Conversation>(
   supabase: ReturnType<typeof useConversationsContext>['supabase'],
   apiBaseUrl: string,
   path: string,
   body?: unknown,
   getAccessToken?: () => Promise<string | null>,
-): Promise<Conversation> {
+): Promise<T> {
   const token = getAccessToken
     ? await getAccessToken()
     : (await supabase.auth.getSession()).data.session?.access_token ?? null;
@@ -70,7 +74,7 @@ export async function authedConversationPost(
     }
     throw new Error(detail || `HTTP ${res.status}`);
   }
-  return (await res.json()) as Conversation;
+  return (await res.json()) as T;
 }
 
 /** Soft-pause the bot for `hours` (auto-resumes). Optimistically patches the cache. */
@@ -126,6 +130,46 @@ export function useAiResume() {
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.snapshot) restoreSnapshot(queryClient, ctx.snapshot);
+    },
+  });
+}
+
+interface ResumeBulkResult {
+  resumed: string[];
+  count: number;
+}
+
+/** Hand every soft-paused thread back to the bot in one call ("Riattiva
+ *  tutte"). Deliberately narrower than the per-conversation resume: the
+ *  backend only clears threads with no handoff record at all — a real
+ *  human handoff still needs someone to open that thread and resolve it
+ *  on purpose. No optimistic patch (the affected set isn't known until the
+ *  response comes back); the list just refetches on success. */
+export function useAiResumeBulk() {
+  const { supabase, apiBaseUrl, getAccessToken } = useConversationsContext();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () =>
+      authedConversationPost<ResumeBulkResult>(
+        supabase,
+        apiBaseUrl,
+        '/conversations/ai-resume-bulk',
+        undefined,
+        getAccessToken,
+      ),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: CONV_LIST_KEY });
+      toast.success(
+        result.count > 0
+          ? `${result.count} conversazion${result.count === 1 ? 'e riattivata' : 'i riattivate'}`
+          : 'Nessuna conversazione in pausa da riattivare',
+      );
+    },
+    onError: (err) => {
+      toast.error('Impossibile riattivare le conversazioni', {
+        description: (err as Error).message ?? 'Errore sconosciuto',
+      });
     },
   });
 }
