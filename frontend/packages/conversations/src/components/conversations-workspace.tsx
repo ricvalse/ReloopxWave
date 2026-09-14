@@ -1,8 +1,20 @@
 'use client';
 
-import { cn, EmptyState, Input, Sheet, SheetContent, SheetTitle } from '@reloop/ui';
-import { MessageSquare, Search } from 'lucide-react';
+import {
+  Button,
+  cn,
+  EmptyState,
+  Input,
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@reloop/ui';
+import { Bot, MessageSquare, Search } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { useAiResumeBulk } from '../hooks/use-ai-pause';
 import { useConversations } from '../hooks/use-conversations';
 import { useDeleteConversation } from '../hooks/use-delete-conversation';
 import { useSendMessage } from '../hooks/use-send-message';
@@ -50,6 +62,7 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
   const threadQuery = useThread(selectedId);
   const sendMutation = useSendMessage();
   const deleteMutation = useDeleteConversation();
+  const resumeBulkMutation = useAiResumeBulk();
 
   const conversations = conversationsQuery.data ?? [];
 
@@ -106,13 +119,33 @@ export function ConversationsWorkspace({ selectedId, onSelect }: ConversationsWo
           isMobile && 'w-full',
         )}
       >
-        <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
+        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
           <h2 className="text-sm font-semibold tracking-tight">Conversazioni</h2>
-          {conversations.length > 0 && (
-            <span className="text-[11px] tabular-nums text-muted-foreground">
-              {conversations.length}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {conversations.length > 0 && (
+              <span className="text-[11px] tabular-nums text-muted-foreground">
+                {conversations.length}
+              </span>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground"
+                  disabled={resumeBulkMutation.isPending}
+                  onClick={() => resumeBulkMutation.mutate()}
+                  aria-label="Riattiva tutte le conversazioni in pausa"
+                >
+                  <Bot className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[220px] text-center">
+                Riattiva tutte le conversazioni in pausa (eco da telefono, pausa manuale). Gli
+                handoff con un operatore vanno riattivati singolarmente.
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </div>
         <div className="space-y-2 border-b border-border p-3">
           <div className="relative">

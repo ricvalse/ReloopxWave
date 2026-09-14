@@ -438,6 +438,33 @@ async def resume_ai(
     return _conv_to_dict(conv)
 
 
+@router.post("/ai-resume-bulk")
+async def resume_ai_bulk(
+    ctx: CurrentContext,
+    session: DBSession,
+) -> dict[str, Any]:
+    """Clear the soft-pause on every stuck thread in the merchant's inbox.
+
+    Scoped to `ctx.merchant_id` (not `agency_admin`-wide): this is the inbox's
+    "Riattiva tutte" action, one merchant's threads at a time. Deliberately
+    narrower than the per-conversation `ai-resume`: `resume_paused_bulk` only
+    touches threads with NO handoff record (`handoff_at IS NULL`) — a real
+    human handoff always needs the single-conversation endpoint, after an
+    operator has actually looked at that thread.
+    """
+    if ctx.merchant_id is None:
+        raise PermissionDeniedError("Merchant context required", error_code="no_merchant_context")
+
+    resumed_ids = await ConversationRepository(session).resume_paused_bulk(ctx.merchant_id)
+    await session.commit()
+    logger.info(
+        "conversations.ai_resumed_bulk",
+        merchant_id=str(ctx.merchant_id),
+        count=len(resumed_ids),
+    )
+    return {"resumed": [str(cid) for cid in resumed_ids], "count": len(resumed_ids)}
+
+
 @router.post("/{conversation_id}/ai-takeover")
 async def takeover_ai(
     conversation_id: UUID,

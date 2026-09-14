@@ -723,6 +723,56 @@ class ConversationRepository:
             {"conversation_id": str(conversation_id)},
         )
 
+    async def resume_paused_bulk(self, merchant_id: UUID) -> list[UUID]:
+        """Clear the soft-pause timer on every stuck thread, merchant-wide.
+
+        The exact inverse-of-a-claim field set as `resolve_handoff` (kept in
+        sync by hand — a raw-SQL helper shared via an f-strung fragment trips
+        ruff's S608 and isn't worth a noqa for two call sites), scoped wider:
+        every conversation for this merchant, not just one.
+
+        Deliberately narrower in WHERE than `resolve_handoff` is in scope:
+        only conversations with NO handoff record at all (`handoff_at IS
+        NULL`) are touched. A bulk click reviews nothing per-thread, so it
+        must never silently resolve a REAL human handoff the operator hasn't
+        looked at — that stays a one-at-a-time `resolve_handoff` call, made
+        after actually seeing the thread. This only catches the soft-pause
+        case (phone-echo, the timed "disattiva AI" toggle): `ai_disabled_until`
+        set in the future with nothing else going on.
+
+        Returns the ids of the conversations it resumed (empty if none were
+        stuck), for the caller to log/report a count.
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE conversations
+                SET auto_reply = true,
+                    ai_disabled_until = NULL,
+                    handoff_resolved_at = now(),
+                    current_state = CASE
+                        WHEN current_state = 'ESCALATED'
+                        THEN coalesce(
+                            nullif(meta ->> 'state_before_handoff', 'ESCALATED'),
+                            'QUALIFYING'
+                        )
+                        ELSE current_state
+                    END,
+                    meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                        'escalated', false,
+                        'handoff_resolved_at', now()::text
+                    )
+                WHERE merchant_id = :merchant_id
+                  AND handoff_at IS NULL
+                  AND ai_disabled_until IS NOT NULL
+                  AND ai_disabled_until > now()
+                RETURNING id
+                """
+            ),
+            {"merchant_id": str(merchant_id)},
+        )
+        return [row[0] for row in result.fetchall()]
+
     async def mark_no_answer_fired(
         self, conversation_id: UUID, automation_id: UUID, anchor: datetime
     ) -> None:
