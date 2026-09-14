@@ -531,11 +531,11 @@ async def _handle_crm_create(
         conv_phone = lead.phone or phone
         if conv_phone:
             convs = ConversationRepository(session)
+            integrations = IntegrationRepository(
+                session, kek_base64=settings.integrations_kek_base64
+            )
             conv = await convs.get_active(merchant_id=mid, wa_contact_phone=conv_phone)
             if conv is None:
-                integrations = IntegrationRepository(
-                    session, kek_base64=settings.integrations_kek_base64
-                )
                 wa = await integrations.resolve_whatsapp_by_merchant(mid)
                 if wa is not None and wa.phone_number_id:
                     conv = await convs.create(
@@ -544,8 +544,24 @@ async def _handle_crm_create(
                         wa_phone_number_id=wa.phone_number_id,
                         wa_contact_phone=conv_phone,
                     )
-            elif conv.lead_id is None:
-                conv.lead_id = lead.id
+            else:
+                if conv.lead_id is None:
+                    conv.lead_id = lead.id
+                # A conversation stamps `wa_phone_number_id` once, at creation.
+                # If the merchant later rotates its WhatsApp channel, this
+                # pre-existing conversation keeps pointing at the retired
+                # number forever — nothing else re-syncs it — so every
+                # proactive send off this lead (the automation engine) resolves
+                # no channel and silently never fires. This CRM match is the
+                # one point such a conversation gets touched again; re-sync it.
+                wa = await integrations.resolve_whatsapp_by_merchant(mid)
+                if (
+                    wa is not None
+                    and wa.phone_number_id
+                    and conv.wa_phone_number_id != wa.phone_number_id
+                ):
+                    await convs.update_wa_phone_number_id(conv.id, wa.phone_number_id)
+                    conv.wa_phone_number_id = wa.phone_number_id
 
         tenant_id = await _tenant_id_for_merchant(session, mid)
         if tenant_id is not None and conv is not None and lead.opted_out_at is None:

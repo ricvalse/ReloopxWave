@@ -41,6 +41,7 @@ class FakeConv:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     lead_id: uuid.UUID | None = None
     meta: dict | None = None
+    wa_phone_number_id: str | None = None
 
 
 class _FakeWA:
@@ -106,6 +107,14 @@ def _patch(
 
         async def touch_last_message(self, conversation_id):
             capture["touched"] = conversation_id
+
+        async def update_wa_phone_number_id(self, conversation_id, wa_phone_number_id):
+            capture["resynced_conv"] = {
+                "id": conversation_id,
+                "wa_phone_number_id": wa_phone_number_id,
+            }
+            if active_conv is not None and active_conv.id == conversation_id:
+                active_conv.wa_phone_number_id = wa_phone_number_id
 
     class FakeIntegrationRepo:
         def __init__(self, session, *, kek_base64): ...
@@ -293,6 +302,41 @@ async def test_contact_create_existing_lead_syncs_without_emitting(
     assert res["created"] is False
     assert res["emitted"] == []
     assert capture["contact_fields"] == {"name": "Anna", "email": None}
+
+
+async def test_contact_create_existing_conv_resyncs_stale_wa_phone_number_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A conversation created before the merchant last rotated WhatsApp channel
+    # (a new `integrations` row replacing the old one) keeps stamping the
+    # retired phone_number_id forever unless something notices — this is the
+    # one point a CRM-matched lead touches its conversation again.
+    lead = FakeLead(ghl_contact_id="C1", phone="393330000000", meta={})
+    conv = FakeConv(lead_id=lead.id, wa_phone_number_id="OLD_RETIRED_ID")
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, active_conv=conv, capture=capture)
+
+    await handle_ghl_event_call(
+        "ContactCreate", {"id": "C1", "firstName": "Anna", "phone": "+393330000000"}
+    )
+
+    assert capture["resynced_conv"] == {"id": conv.id, "wa_phone_number_id": "PN1"}
+    assert conv.wa_phone_number_id == "PN1"
+
+
+async def test_contact_create_existing_conv_already_current_does_not_resync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lead = FakeLead(ghl_contact_id="C1", phone="393330000000", meta={})
+    conv = FakeConv(lead_id=lead.id, wa_phone_number_id="PN1")
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, active_conv=conv, capture=capture)
+
+    await handle_ghl_event_call(
+        "ContactCreate", {"id": "C1", "firstName": "Anna", "phone": "+393330000000"}
+    )
+
+    assert "resynced_conv" not in capture
 
 
 async def test_opportunity_create_without_phone_requeues_once(
