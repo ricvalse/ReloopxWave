@@ -139,7 +139,7 @@ export function BotConfigPanel() {
     setDirty(new Set());
   };
 
-  // Apply a tone preset (dotted keys → values) and/or append a suggested rule,
+  // Apply a tone preset (dotted keys → values) and/or toggle a suggested rule,
   // routing through the same form/dirty machinery so Save persists them.
   const applyValues = (values: Record<string, unknown>) => {
     setForm((prev) => ({ ...prev, ...values }));
@@ -149,11 +149,17 @@ export function BotConfigPanel() {
       return next;
     });
   };
-  const appendPhrase = (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => {
+  // Toggle: a rule clicked a second time comes back off, so a mis-click is
+  // undoable from the chip itself and not only from the phrase list below.
+  const togglePhrase = (key: 'bot.do_phrases' | 'bot.dont_phrases', phrase: string) => {
     setForm((prev) => {
       const current = Array.isArray(prev[key]) ? (prev[key] as string[]) : [];
-      if (current.includes(phrase)) return prev;
-      return { ...prev, [key]: [...current, phrase] };
+      return {
+        ...prev,
+        [key]: current.includes(phrase)
+          ? current.filter((p) => p !== phrase)
+          : [...current, phrase],
+      };
     });
     setDirty((prev) => new Set(prev).add(key));
   };
@@ -220,7 +226,7 @@ export function BotConfigPanel() {
           <PersonaPresets
             form={form}
             onApplyValues={applyValues}
-            onAppendPhrase={appendPhrase}
+            onTogglePhrase={togglePhrase}
           />
 
           {VISIBLE_SECTIONS.map((s) => (
