@@ -298,6 +298,26 @@ export const ACTION_DEFS: TypeDef[] = [
     ],
   },
   {
+    type: 'move_pipeline',
+    label: 'Avanza in pipeline',
+    description:
+      'Sposta l’opportunità GHL nello stage configurato (Impostazioni → GHL qualified stage ID). Se l’opportunità non esiste ancora la crea direttamente in quello stage.',
+    fields: [
+      {
+        key: 'stage_id',
+        label: 'Stage GHL (opzionale)',
+        kind: 'text',
+        placeholder: 'Vuoto = stage qualificato configurato nelle impostazioni',
+      },
+      {
+        key: 'reason',
+        label: 'Motivo (nota sul contatto GHL, opzionale)',
+        kind: 'text',
+        placeholder: 'es. lead qualificato da questo flusso',
+      },
+    ],
+  },
+  {
     type: 'emit_outcome',
     label: 'Registra esito',
     description:
@@ -419,6 +439,8 @@ export function nodeSummary(kind: NodeKind, type: string, config: Record<string,
       return `${config.field ?? ''}${config.value ? ': ' + String(config.value) : ''}${
         config.ghl_note ? (config.ghl_note_summary ? ' + nota AI' : ' + nota') : ''
       }`;
+    if (type === 'move_pipeline')
+      return config.stage_id ? `stage ${config.stage_id}` : 'stage configurato';
     if (type === 'human_handoff') return String(config.reason || 'operatore umano');
     if (type === 'notify_slack') return config.text ? String(config.text) : 'Slack';
     if (type === 'send_message') return String(config.text ?? '');

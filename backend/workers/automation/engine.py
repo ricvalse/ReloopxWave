@@ -36,6 +36,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ai_core.actions.pipeline import MovePipelineHandler
 from ai_core.automations import (
     _ASYNC_CONDITION_TYPES,
     _ATOMIC_CONDITION_TYPES,
@@ -47,7 +48,7 @@ from ai_core.automations import (
 from ai_core.conversation_service import TurnContext, build_cascade_system_prompt
 from ai_core.crm_summary import build_transcript, summarize_for_crm
 from ai_core.llm import ChatMessage
-from ai_core.orchestrator import ConversationContext
+from ai_core.orchestrator import ConversationContext, OrchestratorAction
 from ai_core.playbook import PlaybookRuntime, resolve_playbook_runtime
 from ai_core.response_hours import resolve_automation_hours
 from ai_core.router import RoutingRequest
@@ -826,6 +827,8 @@ async def _do_action(
         return await _do_set_lead_field(
             node, cfg, run_ctx, session=session, settings=settings, router=router
         )
+    if node.type == "move_pipeline":
+        return await _do_move_pipeline(node, cfg, run_ctx, settings=settings)
     if node.type == "emit_outcome":
         return await _do_emit_outcome(node, cfg, run_ctx, session=session)
     if node.type == "set_conversation_profile":
@@ -1646,6 +1649,59 @@ async def _maybe_add_ghl_note(
         )
     except Exception as e:
         logger.warning("automation.set_lead_field.note_failed", node=node.node_key, error=str(e))
+
+
+async def _do_move_pipeline(
+    node: Any,
+    cfg: dict[str, Any],
+    run_ctx: RunContext,
+    *,
+    settings: Any,
+) -> bool:
+    """Advance the GHL opportunity to a pipeline stage without the AI (ADR 0033).
+
+    Builds the same `OrchestratorAction`/`TurnContext` pair the AI orchestrator
+    would and hands it to `MovePipelineHandler` directly — no `ai_deps` here on
+    purpose: those are only assembled when the flow has an `ai_reply`/`ai_check`
+    node (`_flow_uses_ai`), and this node must work in a flow that has neither.
+    An empty `stage_id` lets the handler fall back to the merchant's configured
+    `pipeline.qualified_stage_id`, same as the AI-dispatched path.
+    """
+    if run_ctx.lead_id is None or run_ctx.conversation_id is None:
+        logger.info("automation.move_pipeline.skipped", node=node.node_key, reason="no_lead")
+        return False
+    payload: dict[str, Any] = {}
+    stage_id = str(cfg.get("stage_id") or "").strip()
+    if stage_id:
+        payload["stage_id"] = stage_id
+    reason = str(cfg.get("reason") or "").strip()
+    if reason:
+        payload["reason"] = reason
+    turn_ctx = TurnContext(
+        tenant_id=run_ctx.tenant_id,
+        merchant_id=run_ctx.merchant_id,
+        lead_id=run_ctx.lead_id,
+        conversation_id=run_ctx.conversation_id,
+        lead_phone=run_ctx.phone,
+        phone_number_id=run_ctx.wa_phone_number_id,
+        api_key=run_ctx.api_key,
+        waba_base_url=run_ctx.waba_base_url,
+    )
+    handler = MovePipelineHandler(
+        kek_base64=settings.integrations_kek_base64,
+        ghl_client_id=settings.ghl_client_id,
+        ghl_client_secret=settings.ghl_client_secret,
+    )
+    try:
+        await handler(OrchestratorAction(kind="move_pipeline", payload=payload), turn_ctx)
+    except Exception as e:
+        # Lo stesso confine di errore di `ActionDispatcher.dispatch`: una GHL
+        # down non deve abortire il resto del walk (a differenza di qui, questo
+        # nodo non passa dal dispatcher, quindi il confine va ricreato a mano).
+        logger.warning("automation.move_pipeline.failed", node=node.node_key, error=str(e))
+    else:
+        logger.info("automation.move_pipeline", node=node.node_key)
+    return False
 
 
 async def _do_emit_outcome(
