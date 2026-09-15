@@ -129,6 +129,13 @@ ACTION_TYPES = (
     # cache su `conversations.meta`); nel testo personalizzato lo si posiziona con
     # {{conversation.summary}}.
     "set_lead_field",
+    # Move the GHL opportunity to a pipeline stage without involving the AI
+    # (ADR 0033) — a deterministic counterpart to the `move_pipeline` action the
+    # AI may already dispatch via `ai_reply.allowed_actions`, same handler
+    # (`MovePipelineHandler`), same behaviour (stage fallback to the merchant's
+    # configured `pipeline.qualified_stage_id`, create-vs-move, GHL note).
+    # cfg: {"stage_id": str|None, "reason": str|None}
+    "move_pipeline",
     # Hand the conversation to a human operator (takeover), as an explicit flow step.
     # cfg: {"reason": str}
     "human_handoff",

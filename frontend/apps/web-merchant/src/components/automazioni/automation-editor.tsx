@@ -83,6 +83,7 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
         ghl_note_text: '',
         ghl_note_summary: false,
       };
+    if (type === 'move_pipeline') return { stage_id: '', reason: '' };
     if (type === 'human_handoff') return { reason: '' };
     if (type === 'notify_slack') return { text: '' };
   }
