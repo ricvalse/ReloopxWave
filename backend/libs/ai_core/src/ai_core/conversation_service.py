@@ -71,7 +71,7 @@ from db.repositories.services import (
     BusinessHourRepository,
     ServiceRepository,
 )
-from shared import get_logger
+from shared import get_logger, normalize_phone
 
 logger = get_logger(__name__)
 
@@ -897,6 +897,12 @@ class ConversationService:
         is on) the captured context for the inline reply path. Idempotent on
         `wa_message_id`: a redelivered webhook reuses the existing row.
         """
+        # Same normalisation the GHL ingestion path applies (ADR 0035) — 360dialog's
+        # `from` is normally already digits-only, but going through the identical
+        # function keeps the two identity sources provably consistent instead of
+        # relying on the platform's raw format matching what GHL happened to send.
+        from_phone = normalize_phone(from_phone) or from_phone
+
         # Resolve tenant/merchant from phone_number_id. Uses an unscoped session
         # because the integrations row is needed before we have a tenant context.
         resolved = await self._resolve_integration(phone_number_id)
@@ -1326,6 +1332,10 @@ class ConversationService:
         ripresa: stesso percorso, ma il prompt deve sapere che sta riprendendo
         una conversazione lasciata in sospeso, non rispondendo a caldo.
         """
+        # Same normalisation as handle_inbound_persist (ADR 0035) — keeps this
+        # phase-2 lookup keyed identically to the phase-1 row it's resuming.
+        from_phone = normalize_phone(from_phone) or from_phone
+
         resolved = await self._resolve_integration(phone_number_id)
         if resolved is None:
             return InboundResult(handled=False, reason="no_integration")
@@ -2364,6 +2374,10 @@ class ConversationService:
         Idempotent on `wa_message_id`: if the row already exists we return
         without writing, so 360dialog retries are safe.
         """
+        # Same normalisation as the inbound path (ADR 0035) — an echo must land
+        # on the same Lead/Conversation identity a customer-sent inbound would.
+        customer_phone = normalize_phone(customer_phone) or customer_phone
+
         resolved = await self._resolve_integration(phone_number_id)
         if resolved is None:
             return PhoneEchoResult(handled=False, reason="no_integration")

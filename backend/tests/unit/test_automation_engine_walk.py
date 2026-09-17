@@ -205,6 +205,117 @@ async def test_walk_wait_honours_unit_days() -> None:
     assert _outcome.sent == 0
 
 
+# --- pattern: crm_lead_created + Thank-You-Page precompiled message ---------
+#
+# `lead.crm_created` (ADR 0016) carries no reference to any WhatsApp message —
+# the GHL webhook and the 360dialog inbound webhook are two independent races.
+# A `wait` before the check is what makes the check reliable: it re-runs
+# `_resolve_context` on fresh state, so by the time the condition is evaluated
+# the Thank-You-Page precompiled message (if any) has had time to land. This
+# reproduces that continuation by walking twice, exactly like
+# `automation_run` does across a deferred job.
+
+
+def _thank_you_page_automation() -> Any:
+    return _automation(
+        nodes=[
+            _node("wait", "action", "wait", {"minutes": 2}),
+            _node(
+                "asked_already",
+                "condition",
+                "condition_group",
+                {
+                    "operator": "or",
+                    "clauses": [{"type": "message_contains", "keywords": ["appuntamento"]}],
+                },
+            ),
+            _node(
+                "booking_template",
+                "action",
+                "send_template",
+                {"template_id": str(uuid4())},
+            ),
+            _node(
+                "welcome_template",
+                "action",
+                "send_template",
+                {"template_id": str(uuid4())},
+            ),
+        ],
+        edges=[
+            _edge("wait", "asked_already"),
+            _edge("asked_already", "booking_template", "true"),
+            _edge("asked_already", "welcome_template", "false"),
+        ],
+    )
+
+
+def _thank_you_page_templates() -> _FakeTemplates:
+    # Both nodes reference distinct template_ids but this fake ignores the id
+    # and always returns the same approved template — the test only cares
+    # about *which node* fires, tracked separately below via a spy sender.
+    return _FakeTemplates(
+        SimpleNamespace(
+            name="tpl",
+            status="approved",
+            language="it",
+            variables=[],
+            body="corpo",
+            header_type="NONE",
+            header_image_url=None,
+        )
+    )
+
+
+async def test_crm_trigger_wait_then_defers_before_checking_the_reply() -> None:
+    """Step 1 (t=0, trigger time): nothing about the Thank-You-Page message can
+    be known yet, so the flow must not decide anything — it only defers."""
+    outcome = await _walk(
+        _thank_you_page_automation(),
+        _run_ctx(within_window=False),
+        start_keys=["wait"],
+        sender=_FakeSender(),
+        templates=_thank_you_page_templates(),
+    )
+    assert outcome.sent == 0
+    assert outcome.deferrals == [(2, ["asked_already"])]
+
+
+async def test_crm_trigger_routes_straight_to_booking_when_reply_already_landed() -> None:
+    """Step 2 (continuation, after the wait): the precompiled Thank-You-Page
+    message ("Ciao, ho visto la promo volevo fissare l'appuntamento") has been
+    persisted by the time the deferred job re-resolves context — the booking
+    template fires and the generic welcome never does."""
+    ctx = _run_ctx(within_window=True)
+    ctx.last_message = "Ciao, ho visto la promo volevo fissare l'appuntamento"
+    sender = _FakeSender()
+    outcome = await _walk(
+        _thank_you_page_automation(),
+        ctx,
+        start_keys=["asked_already"],
+        sender=sender,
+        templates=_thank_you_page_templates(),
+    )
+    assert outcome.sent == 1
+    assert sender.templates == ["tpl"]  # booking_template fired
+
+
+async def test_crm_trigger_falls_back_to_welcome_when_no_appointment_ask() -> None:
+    """Ordinary new lead, no Thank-You-Page message: normal welcome flow."""
+    ctx = _run_ctx(within_window=False)
+    ctx.last_message = ""
+    sender = _FakeSender()
+    outcome = await _walk(
+        _thank_you_page_automation(),
+        ctx,
+        start_keys=["asked_already"],
+        sender=sender,
+        templates=_thank_you_page_templates(),
+    )
+    assert outcome.sent == 1
+    assert sender.templates == ["tpl"]  # welcome_template fired (only node reached)
+
+
 # --- _do_action: send_message 24h window ------------------------------------
 
 

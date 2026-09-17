@@ -13,6 +13,7 @@ A graph is `nodes` + `edges` as plain dicts:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,21 @@ GHL_NOTE_MAX_LEN = 4000
 # numerato diventerebbe stringa vuota in silenzio - la stessa trappola che il
 # testo libero ha gia' pagato ("Ciao , il team HR..."). Meglio rifiutarlo.
 _NUMBERED_SLOT_RE = re.compile(r"\{\{\s*\d+\s*\}\}")
+
+
+def _fold_text(value: str) -> str:
+    """Lowercase + strip diacritics for a case/accent-insensitive comparison.
+
+    Un `message_contains` che confronta byte per byte perde la risposta piu'
+    comune del canale: l'italiano scritto su WhatsApp oscilla fra "si" e "sì"
+    (autocorrezione, tastiera, fretta) a seconda di chi digita. Un merchant che
+    configura una sola grafia perderebbe silenziosamente l'altra meta' delle
+    risposte affermative — la lavagnetta non lo segnala in nessun modo, il ramo
+    "vero" semplicemente non scatta mai.
+    """
+    decomposed = unicodedata.normalize("NFKD", value.lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
 
 _VALID_TYPES: dict[str, set[str]] = {
     "trigger": set(TRIGGER_TYPES),
@@ -282,13 +298,25 @@ def _action_config_errors(node: dict[str, Any]) -> list[str]:
 
 
 def _condition_config_errors(node: dict[str, Any]) -> list[str]:
-    """Validate condition config. `ai_check` and `condition_group` are checked;
-    other atomic conditions stay lax, matching the existing behaviour."""
+    """Validate condition config. `ai_check`, `message_contains` and
+    `condition_group` are checked; other atomic conditions stay lax, matching
+    the existing behaviour."""
     ntype = node.get("type")
     if ntype == "ai_check":
         cfg = node.get("config") or {}
         if not str(cfg.get("prompt", "")).strip():
             return [f"node {node.get('node_key')!r}: ai_check needs a prompt"]
+        return []
+    # Un `message_contains` con la lista parole chiave vuota valuta sempre False
+    # (`any()` su un iterabile vuoto): il salvataggio passa, il ramo "vero" non
+    # scatta mai e non c'è log ne' errore che lo segnali — esattamente il
+    # comportamento osservato nell'incidente Ghilea del 21/07 (nessun keyword
+    # configurato sul nodo che doveva riconoscere una risposta affermativa).
+    if ntype == "message_contains":
+        cfg = node.get("config") or {}
+        keywords = cfg.get("keywords")
+        if not isinstance(keywords, list) or not any(str(k).strip() for k in keywords):
+            return [f"node {node.get('node_key')!r}: message_contains needs at least one keyword"]
         return []
     # I riferimenti a entità del merchant sono obbligatori: un nodo che punta a
     # una statistica o a un profilo inesistente passerebbe validazione e poi
@@ -334,6 +362,10 @@ def _condition_config_errors(node: dict[str, Any]) -> list[str]:
             return [f"node {key!r}: conversation_profile clause needs a profile_id"]
         if ctype == "last_touch_node" and not str(clause.get("node_key", "")).strip():
             return [f"node {key!r}: last_touch_node clause needs a node_key"]
+        if ctype == "message_contains" and not any(
+            str(k).strip() for k in (clause.get("keywords") or [])
+        ):
+            return [f"node {key!r}: message_contains clause needs at least one keyword"]
     return []
 
 
@@ -404,8 +436,8 @@ def _evaluate_atomic(node_type: str, cfg: dict[str, Any], context: dict[str, Any
     if node_type == "time_of_day":
         return _within_time_window(context.get("minutes_of_day"), cfg.get("from"), cfg.get("to"))
     if node_type == "message_contains":
-        text = str(context.get("last_message", "")).lower()
-        keywords = [str(k).lower() for k in (cfg.get("keywords") or [])]
+        text = _fold_text(str(context.get("last_message", "")))
+        keywords = [_fold_text(str(k)) for k in (cfg.get("keywords") or [])]
         return any(k and k in text for k in keywords)
     if node_type == "conversation_profile":
         wanted = str(cfg.get("profile_id") or "").strip()
