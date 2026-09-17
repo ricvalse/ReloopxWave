@@ -2088,10 +2088,19 @@ async def _latest_outbound_attribution(
 async def _latest_conversation_for_lead(
     session: AsyncSession, lead_id: UUID
 ) -> Conversation | None:
+    """La conversazione "attuale" per questo lead — deve essere la STESSA che
+    trova `ConversationRepository.get_active`/`get_active_or_reopen_latest`
+    (entrambe ordinano per `started_at`), altrimenti l'automazione manda su una
+    riga e la risposta del lead arriva su un'altra (ADR 0036). Ordinare per
+    `last_message_at` (com'era) faceva perdere sempre una conversazione appena
+    creata da `_handle_crm_create` — `last_message_at` è NULL finché non le
+    arriva un messaggio — a favore di una più vecchia con storico, anche se
+    quella vecchia non era piu' la conversazione "corrente".
+    """
     stmt = (
         select(Conversation)
         .where(Conversation.lead_id == lead_id)
-        .order_by(Conversation.last_message_at.desc().nullslast())
+        .order_by(Conversation.started_at.desc())
         .limit(1)
     )
     return (await session.execute(stmt)).scalars().first()

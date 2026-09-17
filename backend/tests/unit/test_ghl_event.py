@@ -99,6 +99,9 @@ def _patch(
         async def get_active(self, *, merchant_id, wa_contact_phone):
             return active_conv
 
+        async def get_active_or_reopen_latest(self, *, merchant_id, wa_contact_phone):
+            return active_conv
+
         async def create(self, *, merchant_id, lead_id, wa_phone_number_id, wa_contact_phone):
             conv = FakeConv(lead_id=lead_id)
             capture["created_conv"] = conv
@@ -337,6 +340,33 @@ async def test_contact_create_existing_conv_already_current_does_not_resync(
     )
 
     assert "resynced_conv" not in capture
+
+
+async def test_contact_create_reuses_conversation_via_reopen_latest_not_get_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0036: must call `get_active_or_reopen_latest`, not `get_active`.
+
+    `get_active` (status='active' only) finds nothing for a lead whose thread
+    was closed by `close_idle_conversations`, and `_handle_crm_create` then
+    provisions a brand-new, EMPTY conversation — which the automation engine's
+    `_latest_conversation_for_lead` (ordered by `last_message_at`) loses to the
+    old one with history, while the lead's WhatsApp reply (via
+    `get_active_or_reopen_latest`, ordered by `started_at`) lands on the new
+    one. Automation and reply split across two rows — the Ghilea 2026-09-17
+    incident, four conversations for one lead. Reusing whatever
+    `get_active_or_reopen_latest` returns — active or not — closes the gap.
+    """
+    lead = FakeLead(ghl_contact_id="C1", phone="393330000000", meta={})
+    conv = FakeConv(lead_id=lead.id, wa_phone_number_id="PN1")
+    capture: dict[str, Any] = {}
+    _patch(monkeypatch, lead=lead, active_conv=conv, capture=capture)
+
+    await handle_ghl_event_call(
+        "ContactCreate", {"id": "C1", "firstName": "Anna", "phone": "+393330000000"}
+    )
+
+    assert "created_conv" not in capture, "must reuse the existing thread, not fork a new one"
 
 
 async def test_opportunity_create_without_phone_requeues_once(
