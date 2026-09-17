@@ -83,7 +83,7 @@ function defaultConfig(kind: NodeKind, type: string): Record<string, unknown> {
         ghl_note_text: '',
         ghl_note_summary: false,
       };
-    if (type === 'move_pipeline') return { stage_id: '', reason: '' };
+    if (type === 'move_pipeline') return { pipeline_id: '', stage_id: '', reason: '' };
     if (type === 'human_handoff') return { reason: '' };
     if (type === 'notify_slack') return { text: '' };
   }
@@ -378,8 +378,13 @@ function NodeConfigPanel({
   const def = findDef(data.kind, data.type);
   const config = data.config || {};
   // With the GHL pipelines loaded, the CRM trigger's manual id fields are
-  // replaced by the dropdown picker below (fallback: manual fields).
-  const usePipelinePicker = data.type === 'crm_opportunity_created' && pipelines.length > 0;
+  // replaced by the dropdown picker below (fallback: manual fields). Same
+  // deal for "Avanza in pipeline": a hand-typed GHL id is exactly what the
+  // dropdown exists to avoid (production ask: "non voglio che sia hardcoded").
+  const usePipelinePicker =
+    (data.type === 'crm_opportunity_created' || data.type === 'move_pipeline') &&
+    pipelines.length > 0;
+  const pipelinePickerMode = data.type === 'move_pipeline' ? 'target' : 'filter';
   const visibleFields = (def?.fields ?? []).filter((f) => {
     if (usePipelinePicker && (f.key === 'pipeline_id' || f.key === 'stage_id')) return false;
     // Il testo della nota compare solo quando la nota è accesa. La spunta invece
@@ -434,6 +439,7 @@ function NodeConfigPanel({
           pipelineId={String(config.pipeline_id ?? '')}
           stageId={String(config.stage_id ?? '')}
           onChange={onChange}
+          mode={pipelinePickerMode}
         />
       )}
 
@@ -464,22 +470,42 @@ function NodeConfigPanel({
   );
 }
 
-// Pipeline/stage filter for the CRM trigger, fed by GET /integrations/ghl/pipelines.
-// Empty selection = any pipeline / any stage (the dispatcher only filters on
-// non-empty trigger_config values).
+// Pipeline/stage picker fed by GET /integrations/ghl/pipelines, shared by two
+// unrelated uses that need different copy:
+//   - 'filter' (CRM trigger): empty = any pipeline/stage — the dispatcher only
+//     filters on non-empty trigger_config values.
+//   - 'target' (Avanza in pipeline): empty = the merchant's configured
+//     qualified pipeline/stage, not "any" — this picks WHERE the lead goes,
+//     it doesn't filter anything.
 function PipelineFilterPicker({
   pipelines,
   pipelineId,
   stageId,
   onChange,
+  mode = 'filter',
 }: {
   pipelines: Pipeline[];
   pipelineId: string;
   stageId: string;
   onChange: (key: string, value: unknown) => void;
+  mode?: 'filter' | 'target';
 }) {
   const selectClass = 'h-9 w-full rounded-md border border-input bg-background px-2 text-sm';
   const selected = pipelines.find((p) => p.id === pipelineId);
+  const copy =
+    mode === 'target'
+      ? {
+          pipelineEmpty: 'Pipeline configurata nelle impostazioni',
+          stageLabel: 'Stage di destinazione',
+          stageEmpty: 'Stage qualificato configurato nelle impostazioni',
+          help: 'Il lead viene spostato in questa pipeline/stage. Vuoto = quelli configurati in Impostazioni.',
+        }
+      : {
+          pipelineEmpty: 'Qualsiasi pipeline',
+          stageLabel: "Stage d'ingresso",
+          stageEmpty: 'Qualsiasi stage',
+          help: "L'automazione parte solo per opportunity create nella pipeline/stage scelti.",
+        };
   return (
     <>
       <div className="space-y-1">
@@ -492,7 +518,7 @@ function PipelineFilterPicker({
             onChange('stage_id', ''); // stages belong to a pipeline: reset on switch
           }}
         >
-          <option value="">Qualsiasi pipeline</option>
+          <option value="">{copy.pipelineEmpty}</option>
           {pipelines.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name ?? p.id}
@@ -501,23 +527,21 @@ function PipelineFilterPicker({
         </select>
       </div>
       <div className="space-y-1">
-        <Label className="text-xs">Stage d&apos;ingresso</Label>
+        <Label className="text-xs">{copy.stageLabel}</Label>
         <select
           className={selectClass}
           value={stageId}
           disabled={!selected}
           onChange={(e) => onChange('stage_id', e.target.value)}
         >
-          <option value="">Qualsiasi stage</option>
+          <option value="">{copy.stageEmpty}</option>
           {(selected?.stages ?? []).map((s) => (
             <option key={s.id} value={s.id}>
               {s.name ?? s.id}
             </option>
           ))}
         </select>
-        <p className="text-[10px] text-muted-foreground">
-          L&apos;automazione parte solo per opportunity create nella pipeline/stage scelti.
-        </p>
+        <p className="text-[10px] text-muted-foreground">{copy.help}</p>
       </div>
     </>
   );
