@@ -1037,6 +1037,53 @@ async def test_silent_handoff_says_nothing_to_the_customer_but_notifies_the_oper
     assert escalations[0].handoff_claimed is True
 
 
+def _book_slot_response(reply_text: str = "Un attimo che verifico.") -> OrchestratorResponse:
+    return OrchestratorResponse(
+        reply_text=reply_text,
+        actions=[
+            OrchestratorAction(
+                kind="book_slot",
+                payload={"preferred_start_iso": "2026-09-21T10:00:00+02:00"},
+            )
+        ],
+        model="gpt-5-mini",
+        tokens_in=10,
+        tokens_out=5,
+        latency_ms=10,
+    )
+
+
+async def test_book_slot_turn_says_nothing_the_dispatcher_confirms(
+    monkeypatch: pytest.MonkeyPatch, service
+) -> None:
+    """Un turno che emette book_slot non manda la sua `reply_text` sul filo —
+    l'unico messaggio visibile è quello che il dispatcher compone con l'esito
+    vero (production evidence: Ghilea/Riccardo, 2026-09-17 — prima "Un attimo
+    che verifico.", poi 15-20s dopo il messaggio reale: due invii per un solo
+    evento). L'azione viene comunque dispacciata."""
+    svc, sender, dispatcher, _conv, _lead = service
+
+    bookings: list = []
+
+    async def spy_book(action, ctx):
+        bookings.append(action)
+
+    dispatcher.register("book_slot", spy_book)
+
+    svc._orchestrator.run = AsyncMock(return_value=_book_slot_response())
+
+    await svc.handle_inbound(
+        phone_number_id="PNID-1",
+        from_phone="39333000000",
+        text="Va bene",
+        wa_message_id="wamid.booksilent.1",
+    )
+
+    assert sender.calls == []  # nessuna frase-ponte sul filo
+    assert len(bookings) == 1  # ma la scrittura vera parte comunque
+    assert bookings[0].kind == "book_slot"
+
+
 async def test_configured_handoff_message_wins_over_the_model_text(
     monkeypatch: pytest.MonkeyPatch, service
 ) -> None:

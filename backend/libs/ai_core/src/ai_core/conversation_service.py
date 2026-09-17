@@ -401,6 +401,15 @@ _SENTIMENT_POSITIVE_NO_BOOKING = (
 # percorso indifferente al nome, incluse le allowlist già salvate dai merchant.
 _HANDOFF_ACTION_KINDS: frozenset[str] = frozenset({"handoff_human", "escalate_human"})
 
+# Azioni di scrittura booking il cui esito vero arriva solo dopo il dispatch
+# (BookSlotHandler / RescheduleSlotHandler / CancelSlotHandler, tutte dopo
+# l'invio della risposta — vedi il commento su `dispatcher.dispatch` più
+# sotto). Un turno che le emette non manda `reply_text` come messaggio a sé:
+# il messaggio visibile è quello che il dispatcher compone con l'esito reale
+# (per book_slot, via `_persona_driven_reply`), non una frase-ponte del
+# modello scritta prima di sapere se la prenotazione è andata a buon fine.
+_BOOKING_CONFIRM_KINDS: frozenset[str] = frozenset({"book_slot", "reschedule_slot", "cancel_slot"})
+
 _LLM_FAILURE_MESSAGE = (
     "Grazie per il tuo messaggio! Lo passo subito a un nostro operatore che ti "
     "risponderà a brevissimo."
@@ -1987,6 +1996,19 @@ class ConversationService:
                         )
                         if handoff_message:
                             response.reply_text = handoff_message
+
+            # Prenotazione silenziosa: il modello scrive comunque una
+            # `reply_text` (lo schema la richiede non vuota — vedi la nota
+            # aggiornata su `_NO_FALSE_CONFIRM_NOTE`), ma non deve raggiungere
+            # il cliente come messaggio a sé. `dispatcher.dispatch` più sotto
+            # esegue comunque l'azione e manda IL messaggio, composto con
+            # l'esito vero (production evidence: Ghilea/Riccardo, 2026-09-17
+            # — il cliente vedeva "Un attimo che verifico." seguito 15-20s
+            # dopo dal messaggio reale, due invii per un solo evento).
+            if not suppress_reply and any(
+                a.kind in _BOOKING_CONFIRM_KINDS for a in response.actions
+            ):
+                suppress_reply = True
 
             # Sentiment (UC-04 input / UC-05 signal): cheap gpt-5-nano call on the
             # inbound text. Best-effort — never blocks the reply. Updates the lead
