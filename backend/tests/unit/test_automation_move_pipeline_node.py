@@ -118,6 +118,20 @@ async def test_passes_stage_override_and_reason(monkeypatch: pytest.MonkeyPatch)
     assert action.payload == {"stage_id": "stage-42", "reason": "qualificato dal flusso"}
 
 
+async def test_passes_pipeline_id_alongside_stage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Uno stage appartiene a una pipeline: scelto dalla tendina pipeline+stage,
+    il pipeline_id deve arrivare all'handler insieme allo stage_id, o rischia di
+    essere risolto da lead.meta/config invece che dal valore scelto sul nodo."""
+    monkeypatch.setattr(engine, "MovePipelineHandler", _FakeHandler)
+    rc = _run_ctx()
+    cfg = {"pipeline_id": "  pipe-1  ", "stage_id": "stage-42"}
+
+    await engine._do_move_pipeline(_node(cfg), cfg, rc, settings=_settings())
+
+    action, _ = _FakeHandler.instances[0].calls[0]
+    assert action.payload == {"pipeline_id": "pipe-1", "stage_id": "stage-42"}
+
+
 async def test_handler_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine, "MovePipelineHandler", _RaisingHandler)
     rc = _run_ctx()

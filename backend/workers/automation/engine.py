@@ -1674,6 +1674,13 @@ async def _do_move_pipeline(
     stage_id = str(cfg.get("stage_id") or "").strip()
     if stage_id:
         payload["stage_id"] = stage_id
+    # Uno stage appartiene a UNA pipeline: se il merchant lo ha scelto dalla
+    # tendina (pipeline+stage), va inoltrato insieme, o l'handler potrebbe
+    # risolvere una pipeline diversa da quella a cui lo stage appartiene
+    # davvero (fallback su lead.meta/config invece del valore scelto qui).
+    pipeline_id = str(cfg.get("pipeline_id") or "").strip()
+    if pipeline_id:
+        payload["pipeline_id"] = pipeline_id
     reason = str(cfg.get("reason") or "").strip()
     if reason:
         payload["reason"] = reason

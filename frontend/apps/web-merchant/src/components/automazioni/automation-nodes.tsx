@@ -301,8 +301,14 @@ export const ACTION_DEFS: TypeDef[] = [
     type: 'move_pipeline',
     label: 'Avanza in pipeline',
     description:
-      'Sposta l’opportunità GHL nello stage configurato (Impostazioni → GHL qualified stage ID). Se l’opportunità non esiste ancora la crea direttamente in quello stage.',
+      'Sposta l’opportunità GHL nella pipeline/stage scelti qui sotto. Vuoto = stage qualificato configurato in Impostazioni. Se l’opportunità non esiste ancora la crea direttamente in quello stage.',
     fields: [
+      {
+        key: 'pipeline_id',
+        label: 'ID pipeline (opzionale)',
+        kind: 'text',
+        placeholder: 'Vuoto = pipeline configurata nelle impostazioni',
+      },
       {
         key: 'stage_id',
         label: 'Stage GHL (opzionale)',
