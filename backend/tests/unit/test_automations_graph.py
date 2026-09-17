@@ -85,6 +85,71 @@ def test_validate_action_config_required() -> None:
     assert any("wait needs minutes > 0" in e for e in validate_graph(waiting, []).errors)
 
 
+def test_validate_rejects_message_contains_without_keywords() -> None:
+    """An empty keyword list makes `evaluate_condition` fail closed forever —
+    silently, with no error and no log line (this is the Ghilea 2026-07-21
+    incident's second bug: the graph's `message_contains` clauses never had a
+    real keyword). The save must reject it instead of letting a dead branch
+    through."""
+    empty_list = [
+        _trigger(),
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "message_contains",
+            "config": {"keywords": []},
+        },
+    ]
+    assert any(
+        "message_contains needs at least one keyword" in e
+        for e in validate_graph(empty_list, []).errors
+    )
+
+    blank_only = [
+        _trigger(),
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "message_contains",
+            "config": {"keywords": ["  ", ""]},
+        },
+    ]
+    assert any(
+        "message_contains needs at least one keyword" in e
+        for e in validate_graph(blank_only, []).errors
+    )
+
+    ok = [
+        _trigger(),
+        {
+            "node_key": "c",
+            "kind": "condition",
+            "type": "message_contains",
+            "config": {"keywords": ["si"]},
+        },
+    ]
+    assert validate_graph(ok, []).ok
+
+
+def test_validate_rejects_message_contains_clause_without_keywords() -> None:
+    group = [
+        _trigger(),
+        {
+            "node_key": "g",
+            "kind": "condition",
+            "type": "condition_group",
+            "config": {
+                "operator": "or",
+                "clauses": [{"type": "message_contains", "keywords": []}],
+            },
+        },
+    ]
+    assert any(
+        "message_contains clause needs at least one keyword" in e
+        for e in validate_graph(group, []).errors
+    )
+
+
 def test_validate_allows_branch_edges_from_condition() -> None:
     nodes = [
         _trigger(),
@@ -127,6 +192,22 @@ def test_evaluate_conditions() -> None:
     )
     # Unknown condition type fails closed.
     assert not evaluate_condition("astrology", {}, {})
+
+
+def test_message_contains_ignores_accents() -> None:
+    """Italian affirmative replies wobble on the accent ("sì" vs "si") depending
+    on the lead's keyboard/autocorrect. A merchant configuring one spelling must
+    still catch the other — this is what silently killed the Ghilea "Nuovo lead"
+    flow's reply-matching branch."""
+    assert evaluate_condition(
+        "message_contains", {"keywords": ["si"]}, {"last_message": "Sì, certo!"}
+    )
+    assert evaluate_condition(
+        "message_contains", {"keywords": ["sì"]}, {"last_message": "si va bene"}
+    )
+    assert evaluate_condition(
+        "message_contains", {"keywords": ["perché"]}, {"last_message": "perche non oggi"}
+    )
 
 
 def test_condition_group_and_or() -> None:
