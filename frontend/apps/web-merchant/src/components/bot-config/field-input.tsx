@@ -1,10 +1,13 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import type { components } from '@reloop/api-client';
 import { Input, Select, Switch, Textarea, WeeklyHoursEditor, useListDraft } from '@reloop/ui';
 import { getApiClient } from '@/lib/api';
 import { useMerchantId } from '@/hooks/use-merchant-id';
 import type { FieldDef } from './sections';
+
+type Pipeline = components['schemas']['PipelineOut'];
 
 /**
  * The controls for one config field.
@@ -96,6 +99,14 @@ export function FieldInput({
 
   if (field.kind === 'calendar') {
     return <CalendarFieldInput value={value} disabled={disabled} onChange={onChange} />;
+  }
+
+  if (field.kind === 'ghl-pipeline') {
+    return <GhlPipelineFieldInput value={value} disabled={disabled} onChange={onChange} />;
+  }
+
+  if (field.kind === 'ghl-stage') {
+    return <GhlStageFieldInput value={value} disabled={disabled} onChange={onChange} />;
   }
 
   if (field.kind === 'weekly-hours') {
@@ -264,6 +275,122 @@ function CalendarFieldInput({
       {options.map((c) => (
         <option key={c.id} value={c.id}>
           {c.name || c.id}
+        </option>
+      ))}
+      {current && !hasCurrent ? <option value={current}>{current} (corrente)</option> : null}
+    </Select>
+  );
+}
+
+// Shared by the two GHL pipeline/stage fields below. Scoped by merchantId in
+// both the query key and the request param — an unscoped key would keep
+// serving one merchant's pipelines after a context switch in the same tab
+// (see CalendarFieldInput above, which already gets this right).
+function useGhlPipelines(merchantId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['ghl', 'pipelines', merchantId],
+    enabled: !!merchantId,
+    queryFn: async (): Promise<Pipeline[]> => {
+      const api = getApiClient();
+      const { data, error } = await api.GET('/integrations/ghl/pipelines', {
+        params: { query: { merchant_id: merchantId! } },
+      });
+      if (error) throw new Error(typeof error === 'string' ? error : JSON.stringify(error));
+      return (data as { pipelines: Pipeline[] }).pipelines;
+    },
+  });
+}
+
+function GhlPipelineFieldInput({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: unknown;
+  disabled: boolean;
+  onChange: (v: unknown) => void;
+}) {
+  const { merchantId } = useMerchantId();
+  const pipelines = useGhlPipelines(merchantId);
+  const current = value === null || value === undefined ? '' : String(value);
+  const options = pipelines.data ?? [];
+
+  // GHL not connected (or no pipelines): fall back to a manual id input so the
+  // pipeline config still works without the picker.
+  if (!pipelines.isLoading && !pipelines.isError && options.length === 0) {
+    return (
+      <Input
+        type="text"
+        disabled={disabled}
+        value={current}
+        onChange={(e) => onChange(e.target.value || null)}
+        placeholder="Pipeline ID (GHL non collegato)"
+      />
+    );
+  }
+
+  const hasCurrent = options.some((p) => p.id === current);
+  return (
+    <Select
+      disabled={disabled || pipelines.isLoading}
+      value={current}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">{pipelines.isLoading ? 'Caricamento…' : '— Seleziona pipeline —'}</option>
+      {options.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name ?? p.id}
+        </option>
+      ))}
+      {current && !hasCurrent ? <option value={current}>{current} (corrente)</option> : null}
+    </Select>
+  );
+}
+
+// One flat Pipeline → Stage select across every pipeline, not filtered by the
+// sibling `pipeline.default_pipeline_id` field: FieldInput renders each field
+// independently with no access to the rest of the form, and a merchant with a
+// handful of pipelines is better served by an unfiltered list than by a
+// picker that silently can't see its own sibling's value.
+function GhlStageFieldInput({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: unknown;
+  disabled: boolean;
+  onChange: (v: unknown) => void;
+}) {
+  const { merchantId } = useMerchantId();
+  const pipelines = useGhlPipelines(merchantId);
+  const current = value === null || value === undefined ? '' : String(value);
+  const stages = (pipelines.data ?? []).flatMap((p) =>
+    (p.stages ?? []).map((s) => ({ id: s.id, label: `${p.name ?? p.id} → ${s.name ?? s.id}` })),
+  );
+
+  if (!pipelines.isLoading && !pipelines.isError && stages.length === 0) {
+    return (
+      <Input
+        type="text"
+        disabled={disabled}
+        value={current}
+        onChange={(e) => onChange(e.target.value || null)}
+        placeholder="Stage ID (GHL non collegato)"
+      />
+    );
+  }
+
+  const hasCurrent = stages.some((s) => s.id === current);
+  return (
+    <Select
+      disabled={disabled || pipelines.isLoading}
+      value={current}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">{pipelines.isLoading ? 'Caricamento…' : '— Seleziona stage —'}</option>
+      {stages.map((s) => (
+        <option key={s.id} value={s.id}>
+          {s.label}
         </option>
       ))}
       {current && !hasCurrent ? <option value={current}>{current} (corrente)</option> : null}

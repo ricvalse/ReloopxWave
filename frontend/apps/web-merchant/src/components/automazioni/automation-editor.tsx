@@ -20,6 +20,7 @@ import type { components } from '@reloop/api-client';
 import { Button, Card, CardContent, Input, Label, Textarea, useListDraft } from '@reloop/ui';
 import { Trash2 } from 'lucide-react';
 import { apiErrorMessage, getApiClient } from '@/lib/api';
+import { useMerchantId } from '@/hooks/use-merchant-id';
 import { useOutcomeOptions, useProfileOptions } from './use-reference-options';
 import {
   ACTION_DEFS,
@@ -155,13 +156,21 @@ export function AutomationEditor({
     [templates.data],
   );
 
-  // GHL pipelines for the CRM-trigger picker; empty when GHL isn't connected,
-  // so the trigger config degrades to the manual id fields.
+  // GHL pipelines for the CRM-trigger + "Avanza in pipeline" pickers; empty
+  // when GHL isn't connected, so the config degrades to the manual id fields.
+  // Scoped by merchantId in both the query key and the request param — an
+  // unscoped key ('ghl-pipelines' alone) would keep serving one merchant's
+  // pipelines after a context switch in the same tab (production report:
+  // pipelines shown that don't belong to the merchant being edited).
+  const { merchantId } = useMerchantId();
   const ghlPipelines = useQuery({
-    queryKey: ['ghl-pipelines'],
+    queryKey: ['ghl', 'pipelines', merchantId],
+    enabled: !!merchantId,
     queryFn: async (): Promise<Pipeline[]> => {
       const api = getApiClient();
-      const { data, error } = await api.GET('/integrations/ghl/pipelines');
+      const { data, error } = await api.GET('/integrations/ghl/pipelines', {
+        params: { query: { merchant_id: merchantId! } },
+      });
       if (error) throw new Error(apiErrorMessage(error));
       return (data as { pipelines: Pipeline[] }).pipelines;
     },
