@@ -768,11 +768,13 @@ _MEDIA_VIEWABLE_NO_HANDOFF_TAIL = "Un'immagine da sola NON è un motivo per hand
 
 _NO_FALSE_CONFIRM_NOTE = (
     "IMPORTANTE — niente false conferme: per book_slot / reschedule_slot / "
-    "cancel_slot / propose_slots la conferma reale (con l'esito vero: prenotato, "
-    "slot occupato + alternative, spostato...) viene inviata dal sistema DOPO il "
-    "tuo messaggio. Quindi in `reply_text` NON dire che è già fatto ('ho prenotato', "
-    "'appuntamento spostato'): scrivi una frase di passaggio ('procedo subito e ti "
-    "confermo', 'un attimo che verifico')."
+    "cancel_slot la conferma reale (con l'esito vero: prenotato, slot occupato + "
+    "alternative, spostato...) viene composta e inviata dal sistema DOPO questo "
+    "turno, quando l'esito è noto. Il `reply_text` di QUESTO turno non arriva mai "
+    "al cliente — non serve una frase di passaggio ('un attimo che verifico'), "
+    "basta un testo qualsiasi non vuoto (lo schema lo richiede). Per propose_slots "
+    "vale comunque la regola generale: NON dire che è già fatto ('ho prenotato', "
+    "'appuntamento spostato') finché il sistema non l'ha confermato."
 )
 
 # Best-effort detector for a violation of `_NO_FALSE_CONFIRM_NOTE`: `reply_text`
