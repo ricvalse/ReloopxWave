@@ -215,6 +215,7 @@ class ConversationOrchestrator:
         model_used = client.model
         iterations = max(1, max_iterations)
         parsed = _StructuredResponse(reply_text="", actions=[])
+        ran_check_availability = False
 
         for iteration in range(iterations):
             result = await self._complete(client, messages)
@@ -243,9 +244,51 @@ class ConversationOrchestrator:
                     )
                 break
 
+            if any(a.kind == "check_availability" for a in read_actions):
+                ran_check_availability = True
             observations = await self._run_read_tools(read_actions, ctx, tool_executor)
             messages.append(ChatMessage(role="assistant", content=result.content))
             messages.append(ChatMessage(role="user", content=observations))
+
+        # Guardia indipendente dalla scelta del modello (production evidence:
+        # Ghilea 2026-09-17 — un pattern settimanale scritto nel playbook del
+        # merchant ha fatto "calcolare" al modello un giorno concreto invece di
+        # leggerlo dal calendario, senza mai chiamare `check_availability`). Se
+        # la risposta propone un giorno/orario concreto e questo turno non ha
+        # mai eseguito una lettura reale, la si forza QUI — non la si richiede
+        # al modello, la si esegue — e si rigenera la risposta finale una sola
+        # volta. Esclusa quando il turno emette già `book_slot`/`reschedule_slot`:
+        # quel percorso si verifica da sé contro GHL al momento della scrittura
+        # (vedi `_verified_free_slots`), e un'altra lettura qui sarebbe una
+        # chiamata GHL ridondante.
+        provisional_kinds = {a.kind for a in parsed.actions if a.kind not in READ_TOOL_KINDS}
+        if (
+            not ran_check_availability
+            and _proposes_unverified_time(parsed.reply_text)
+            and not (provisional_kinds & _BOOKING_EFFECT_KINDS)
+        ):
+            if tool_executor is not None:
+                forced = [OrchestratorAction(kind="check_availability", payload={})]
+                observations = await self._run_read_tools(forced, ctx, tool_executor)
+                messages.append(ChatMessage(role="assistant", content=result.content))
+                messages.append(ChatMessage(role="user", content=observations))
+                result = await self._complete(client, messages)
+                total_in += result.tokens_in
+                total_out += result.tokens_out
+                total_latency += result.latency_ms
+                model_used = result.model
+                parsed = _parse_structured(result.content)
+            else:
+                # Nessun loop di tool disponibile in questo turno (single-shot
+                # legacy): non c'è modo di verificare ora. Non si riscrive il
+                # testo (troppo facile rovinare una frase legittima) — si logga
+                # rumorosamente, come per `_looks_like_false_booking_confirmation`
+                # qui sotto.
+                logger.warning(
+                    "orchestrator.unverified_time_proposal_blocked",
+                    merchant_id=str(ctx.merchant_id),
+                    tenant_id=str(ctx.tenant_id),
+                )
 
         # Read-only tool calls were handled in the loop — never forward them to
         # the post-turn action dispatcher.
@@ -749,6 +792,33 @@ def _looks_like_false_booking_confirmation(reply_text: str, action_kinds: set[st
     if action_kinds & _BOOKING_EFFECT_KINDS:
         return False
     return bool(_FALSE_BOOKING_CONFIRM_RE.search(reply_text))
+
+
+# Giorni della settimana in italiano, duplicati qui (invece di importarli da
+# `actions/booking.py`) per non introdurre un import circolare: `booking.py`
+# importa già da questo modulo.
+_WEEKDAYS_IT: tuple[str, ...] = (
+    "lunedì",
+    "martedì",
+    "mercoledì",
+    "giovedì",
+    "venerdì",
+    "sabato",
+    "domenica",
+)
+
+# Detector per `run()`: un nome di giorno o un orario esplicito ("alle 9",
+# "alle 9:00") nel testo della risposta è trattato come una proposta concreta.
+# Deliberatamente ampio — un falso positivo costa solo un giro extra di
+# verifica, un falso negativo lascia passare un orario inventato.
+_UNVERIFIED_TIME_RE = re.compile(
+    r"\b(" + "|".join(_WEEKDAYS_IT) + r")\b|\balle\s+\d{1,2}([:.,]\d{2})?\b",
+    re.IGNORECASE,
+)
+
+
+def _proposes_unverified_time(reply_text: str) -> bool:
+    return bool(_UNVERIFIED_TIME_RE.search(reply_text))
 
 
 # Closing sentence of the booking note. Split out because it points at a read

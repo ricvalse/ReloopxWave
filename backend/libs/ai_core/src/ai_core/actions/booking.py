@@ -320,6 +320,23 @@ class BookSlotHandler:
             ghl_sync = GhlSyncRepository(session)
             config = ConfigResolver(session)
 
+            # Idempotency: reject a second booking-write for this lead within
+            # the window (see `LeadRepository.claim_booking_action`). Two
+            # inbound messages a few seconds apart can each independently
+            # decide `book_slot` before either dispatch has completed —
+            # production evidence: Ghilea, 2026-09-17, the second attempt
+            # failed against GHL as "slot taken" by its OWN first success,
+            # then confused the customer with a phantom re-confirmation. The
+            # first claimant already handles the GHL write and the customer
+            # message; a duplicate silently no-ops here.
+            if not await leads.claim_booking_action(turn_ctx.lead_id):
+                logger.info(
+                    "book_slot.duplicate_skipped",
+                    merchant_id=str(turn_ctx.merchant_id),
+                    lead_id=str(turn_ctx.lead_id),
+                )
+                return
+
             # Default reminder schedule (ore di anticipo); aggiornato sotto
             # se il merchant ha una configurazione personalizzata.
             reminder_lead_hours: list[int] = [24]
@@ -636,6 +653,12 @@ class BookSlotHandler:
                         lead_id=turn_ctx.lead_id,
                         conversation_id=turn_ctx.conversation_id,
                     )
+
+            if outcome and outcome.reason == "booking_error":
+                # Transient GHL failure (5xx), not a real conflict — release
+                # the idempotency claim so a legitimate retry a few seconds
+                # later isn't blocked for the rest of the window.
+                await leads.release_booking_claim(turn_ctx.lead_id)
 
             # GHL ha fallito per errore transitorio ma lo slot era confermato — salva internamente.
             if outcome and outcome.reason == "booking_error" and outcome.slot_start_iso:

@@ -219,6 +219,10 @@ async def test_booking_event_carries_variant_id(monkeypatch: pytest.MonkeyPatch)
 
     class FakeLeadRepo:
         def __init__(self, session): ...
+        async def claim_booking_action(self, lead_id, *, window_s=45):
+            return True
+
+        async def release_booking_claim(self, lead_id): ...
         async def get_by_phone(self, *, merchant_id, phone):
             return None
 

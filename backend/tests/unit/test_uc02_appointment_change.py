@@ -56,7 +56,13 @@ def _appt(start: datetime, *, minutes: int = 30) -> SimpleNamespace:
     )
 
 
-def _patch(monkeypatch, *, upcoming: list[Any], op_result: AppointmentOpResult | None = None):
+def _patch(
+    monkeypatch,
+    *,
+    upcoming: list[Any],
+    op_result: AppointmentOpResult | None = None,
+    claim_ok: bool = True,
+):
     """Patch the handler's DB + service touchpoints. Returns the list that
     records calls into the appointment_ops service."""
     if op_result is None:
@@ -72,6 +78,11 @@ def _patch(monkeypatch, *, upcoming: list[Any], op_result: AppointmentOpResult |
         async def list_upcoming_for_lead(self, *, merchant_id, lead_id, now):
             return upcoming
 
+    class FakeLeadRepo:
+        def __init__(self, session): ...
+        async def claim_booking_action(self, lead_id, *, window_s=45):
+            return claim_ok
+
     op_calls: list[dict] = []
 
     async def fake_reschedule(session, appt, **kw):
@@ -84,6 +95,7 @@ def _patch(monkeypatch, *, upcoming: list[Any], op_result: AppointmentOpResult |
 
     monkeypatch.setattr(mod, "tenant_session", fake_session)
     monkeypatch.setattr(mod, "AppointmentRepository", FakeAppointmentRepo)
+    monkeypatch.setattr(mod, "LeadRepository", FakeLeadRepo)
     monkeypatch.setattr(mod, "reschedule_appointment", fake_reschedule)
     monkeypatch.setattr(mod, "cancel_appointment", fake_cancel)
     return op_calls
@@ -178,3 +190,29 @@ async def test_reschedule_ambiguous_asks(monkeypatch, turn_ctx) -> None:
     )
     assert op_calls == []
     assert "più appuntamenti" in sender.calls[0]["text"]
+
+
+# ---- idempotency (duplicate booking-action claim) -------------------------
+
+
+async def test_cancel_skips_when_duplicate_claim(monkeypatch, turn_ctx) -> None:
+    appt = _appt(datetime(2026, 8, 1, 10, 0, tzinfo=UTC))
+    op_calls = _patch(monkeypatch, upcoming=[appt], claim_ok=False)
+    sender = FakeSender()
+    await _cancel_handler(sender)(OrchestratorAction(kind="cancel_slot", payload={}), turn_ctx)
+    assert op_calls == []
+    assert sender.calls == []
+
+
+async def test_reschedule_skips_when_duplicate_claim(monkeypatch, turn_ctx) -> None:
+    appt = _appt(datetime(2026, 8, 1, 10, 0, tzinfo=UTC))
+    op_calls = _patch(monkeypatch, upcoming=[appt], claim_ok=False)
+    sender = FakeSender()
+    await _resched_handler(sender)(
+        OrchestratorAction(
+            kind="reschedule_slot", payload={"preferred_start_iso": "2026-08-05T09:00:00"}
+        ),
+        turn_ctx,
+    )
+    assert op_calls == []
+    assert sender.calls == []

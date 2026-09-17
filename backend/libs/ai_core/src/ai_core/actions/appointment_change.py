@@ -22,7 +22,7 @@ from ai_core.actions.booking import (
     send_action_reply,
 )
 from ai_core.orchestrator import OrchestratorAction
-from db import AppointmentRepository, TenantContext, tenant_session
+from db import AppointmentRepository, LeadRepository, TenantContext, tenant_session
 from db.models import Appointment
 from shared import get_logger
 
@@ -72,6 +72,17 @@ class CancelSlotHandler:
     async def __call__(self, action: OrchestratorAction, turn_ctx: TurnContext) -> None:
         text = "Al momento non riesco a gestire la cancellazione. Ti ricontattiamo a breve."
         async with tenant_session(_worker_ctx(turn_ctx)) as session:
+            leads = LeadRepository(session)
+            # Idempotency: see `LeadRepository.claim_booking_action` — a
+            # duplicate cancel_slot from an unrelated follow-up message
+            # silently no-ops instead of re-cancelling/double-messaging.
+            if not await leads.claim_booking_action(turn_ctx.lead_id):
+                logger.info(
+                    "cancel_slot.duplicate_skipped",
+                    merchant_id=str(turn_ctx.merchant_id),
+                    lead_id=str(turn_ctx.lead_id),
+                )
+                return
             appts = AppointmentRepository(session)
             upcoming = await appts.list_upcoming_for_lead(
                 merchant_id=turn_ctx.merchant_id,
@@ -124,6 +135,17 @@ class RescheduleSlotHandler:
         new_start_iso = action.payload.get("preferred_start_iso")
         text = "Al momento non riesco a spostare l'appuntamento. Ti ricontattiamo a breve."
         async with tenant_session(_worker_ctx(turn_ctx)) as session:
+            leads = LeadRepository(session)
+            # Idempotency: see `LeadRepository.claim_booking_action` — a
+            # duplicate reschedule_slot from an unrelated follow-up message
+            # silently no-ops instead of re-moving/double-messaging.
+            if not await leads.claim_booking_action(turn_ctx.lead_id):
+                logger.info(
+                    "reschedule_slot.duplicate_skipped",
+                    merchant_id=str(turn_ctx.merchant_id),
+                    lead_id=str(turn_ctx.lead_id),
+                )
+                return
             appts = AppointmentRepository(session)
             upcoming = await appts.list_upcoming_for_lead(
                 merchant_id=turn_ctx.merchant_id,

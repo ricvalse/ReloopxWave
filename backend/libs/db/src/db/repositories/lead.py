@@ -422,3 +422,56 @@ class LeadRepository:
             ),
             {"lead_id": str(lead_id), "v": value},
         )
+
+    async def claim_booking_action(self, lead_id: UUID, *, window_s: int = 45) -> bool:
+        """Atomic idempotency claim before a booking write (book_slot /
+        reschedule_slot / cancel_slot) touches GHL.
+
+        Production evidence (Ghilea, 2026-09-17): two customer messages 15s
+        apart each started an independent orchestrator turn, and both decided
+        `book_slot` for the same slot — the second turn had no way to know the
+        first booking was already in flight (GHL's own confirmation landed
+        almost at the same instant the second turn's reply was generated). The
+        second write failed as "slot taken" against its own first success,
+        triggering a confusing round of alternates and a phantom confirmation
+        to the customer.
+
+        Same atomic-UPDATE-wins pattern as `ConversationRepository.claim_handoff`:
+        the row lock serializes concurrent claimants and only one UPDATE
+        matches. Returns True when this caller won the claim (proceed with the
+        GHL write); False when another booking action was already claimed for
+        this lead within `window_s` seconds (treat as a duplicate — skip the
+        write, skip a second customer message, the winner already handles
+        both).
+        """
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE leads
+                SET meta = coalesce(meta, '{}'::jsonb) || jsonb_build_object(
+                    'booking_action_claimed_at', now()::text
+                )
+                WHERE id = :lead_id
+                  AND (
+                    meta->>'booking_action_claimed_at' IS NULL
+                    OR now() - (meta->>'booking_action_claimed_at')::timestamptz
+                       > (:window_s * interval '1 second')
+                  )
+                RETURNING id
+                """
+            ),
+            {"lead_id": str(lead_id), "window_s": window_s},
+        )
+        return result.first() is not None
+
+    async def release_booking_claim(self, lead_id: UUID) -> None:
+        """Clear a `claim_booking_action` claim after a transient failure (5xx,
+        unexpected exception) so a legitimate retry isn't blocked for the rest
+        of the window. NOT called on a definitive outcome (booked, or a real
+        "slot taken" rejection from GHL) — those should keep blocking a
+        same-lead duplicate for the remainder of the window.
+        """
+        await self._session.execute(
+            text("UPDATE leads SET meta = meta - 'booking_action_claimed_at' WHERE id = :lead_id"),
+            {"lead_id": str(lead_id)},
+        )

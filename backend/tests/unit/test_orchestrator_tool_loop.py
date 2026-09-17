@@ -140,6 +140,84 @@ async def test_read_tool_stripped_and_loop_capped() -> None:
     assert resp.actions == []  # read tool stripped, nothing for the dispatcher
 
 
+async def test_unverified_time_proposal_forces_check_availability() -> None:
+    # Production evidence (Ghilea, 2026-09-17): the model proposed a concrete
+    # day/time straight from playbook text, never calling `check_availability`
+    # — even with a single iteration budget that never reaches the model's own
+    # tool-use loop. The orchestrator must force a real check before the reply
+    # leaves this turn, regenerating it from the grounded observation.
+    contents = [
+        json.dumps(
+            {
+                "reply_text": "Le propongo giovedì 24 settembre alle 9:00.",
+                "actions": [{"kind": "none"}],
+            }
+        ),
+        json.dumps(
+            {
+                "reply_text": "Le confermo lunedì 21 settembre alle 10:00.",
+                "actions": [{"kind": "none"}],
+            }
+        ),
+    ]
+    client = FakeClient(contents)
+    executor = FakeToolExecutor(summary="Lunedì 21/09 alle 10:00 è LIBERO.")
+    orch = ConversationOrchestrator(FakeRouter(client))
+
+    resp = await orch.run(_ctx(), "la mattina", tool_executor=executor, max_iterations=1)
+
+    # The model never asked for the tool; the orchestrator called it anyway.
+    assert len(executor.calls) == 1
+    assert executor.calls[0].kind == "check_availability"
+    # Two LLM calls: the original (rejected) proposal + the regenerated one.
+    assert len(client.calls) == 2
+    second_call_texts = [m.content for m in client.calls[1]]
+    assert any("RISULTATO STRUMENTI" in t for t in second_call_texts)
+    assert any("LIBERO" in t for t in second_call_texts)
+    assert resp.reply_text == "Le confermo lunedì 21 settembre alle 10:00."
+
+
+async def test_unverified_time_proposal_without_executor_is_logged_not_blocked() -> None:
+    # No tool executor at all (single-shot mode) → nothing can be verified this
+    # turn. The reply passes through unchanged (never rewritten — see the
+    # comment at the call site), the caller just gets no grounding guarantee.
+    content = json.dumps(
+        {"reply_text": "Le propongo giovedì 24 settembre alle 9:00.", "actions": [{"kind": "none"}]}
+    )
+    client = FakeClient([content])
+    orch = ConversationOrchestrator(FakeRouter(client))
+
+    resp = await orch.run(_ctx(), "la mattina")
+
+    assert len(client.calls) == 1
+    assert resp.reply_text == "Le propongo giovedì 24 settembre alle 9:00."
+
+
+async def test_booking_write_this_turn_skips_forced_check() -> None:
+    # book_slot fires this turn on a structured preferred_start_iso, not free
+    # text — the write path verifies against GHL itself at dispatch time, so
+    # forcing another check_availability here would just be a redundant call.
+    contents = [
+        json.dumps(
+            {
+                "reply_text": "Procedo con giovedì 24 settembre alle 9:00.",
+                "actions": [
+                    {"kind": "book_slot", "payload": {"preferred_start_iso": "2026-09-24T09:00:00"}}
+                ],
+            }
+        )
+    ]
+    client = FakeClient(contents)
+    executor = FakeToolExecutor()
+    orch = ConversationOrchestrator(FakeRouter(client))
+
+    resp = await orch.run(_ctx(), "prenotami", tool_executor=executor, max_iterations=1)
+
+    assert executor.calls == []
+    assert len(client.calls) == 1
+    assert [a.kind for a in resp.actions] == ["book_slot"]
+
+
 async def test_write_actions_pass_through_loop() -> None:
     # A turn that grounds then books: read tool stripped, book_slot kept.
     contents = [

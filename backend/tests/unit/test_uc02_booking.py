@@ -65,7 +65,9 @@ def ghl_bundle(turn_ctx: TurnContext) -> ResolvedGHLIntegration:
     )
 
 
-def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[dict]:
+def _patch_session(
+    monkeypatch, *, ghl: ResolvedGHLIntegration | None, claim_ok: bool = True
+) -> list[dict]:
     """Replace the action-handler's DB touchpoints with fakes.
 
     Returns the list that records `AppointmentRepository.record_booking` calls so
@@ -96,6 +98,10 @@ def _patch_session(monkeypatch, *, ghl: ResolvedGHLIntegration | None) -> list[d
 
     class FakeLeadRepo:
         def __init__(self, session): ...
+        async def claim_booking_action(self, lead_id, *, window_s=45):
+            return claim_ok
+
+        async def release_booking_claim(self, lead_id): ...
         async def update_score(self, lead_id, *, score, reasons): ...
         async def get_by_phone(self, *, merchant_id, phone):
             return None
@@ -202,6 +208,37 @@ async def test_book_slot_happy_path(
     assert mirrored["calendar_id"] == "CAL-1"
     assert mirrored["start_at"].isoformat() == "2026-04-25T10:00:00+02:00"
     assert mirrored["end_at"].isoformat() == "2026-04-25T10:30:00+02:00"
+
+
+async def test_book_slot_skips_when_duplicate_claim(
+    monkeypatch: pytest.MonkeyPatch, turn_ctx: TurnContext, ghl_bundle: ResolvedGHLIntegration
+) -> None:
+    # Production evidence (Ghilea, 2026-09-17): a second book_slot for the same
+    # lead within the idempotency window must never reach GHL nor send a second
+    # customer message — the winning claimant already handles both.
+    appt_calls = _patch_session(monkeypatch, ghl=ghl_bundle, claim_ok=False)
+    ghl_client = _patch_ghl_client(monkeypatch, booking_ok=True)
+    sender = FakeSender()
+
+    handler = BookSlotHandler(
+        kek_base64="unused",
+        ghl_client_id="x",
+        ghl_client_secret="y",
+        reply_sender=sender,
+    )
+
+    await handler(
+        OrchestratorAction(
+            kind="book_slot",
+            payload={"preferred_start_iso": "2026-04-25T10:00:00+02:00"},
+        ),
+        turn_ctx,
+    )
+
+    ghl_client.upsert_contact.assert_not_awaited()
+    ghl_client.create_booking.assert_not_awaited()
+    assert sender.calls == []
+    assert appt_calls == []
 
 
 async def test_book_slot_taken_proposes_alternatives(
