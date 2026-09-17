@@ -527,6 +527,18 @@ async def _handle_crm_create(
         # A cold CRM lead has no conversation yet, but the automation engine
         # resolves its send context (wa_phone_number_id) from one — same
         # provisioning the failed-call takeover does.
+        #
+        # `get_active_or_reopen_latest`, not `get_active`: a re-fired CRM trigger
+        # (the opportunity re-enters the pipeline stage, a workflow re-runs) is
+        # common for a lead who already replied once — by then `close_idle_conversations`
+        # has usually already closed the previous thread. `get_active` (status='active'
+        # only) would find nothing and provision a brand-new, EMPTY conversation
+        # every time; the automation then sends into it via `_latest_conversation_for_lead`
+        # (ordered by `last_message_at`, so the empty new row loses to the old one with
+        # history) while the lead's reply lands on it via `get_active_or_reopen_latest`
+        # (ordered by `started_at`, so it wins) — automation and reply split across two
+        # rows, silently. Same fix on both ends: reuse the one thread instead of forking
+        # a new one (ADR 0036; Ghilea incident 2026-09-17, 4 conversations for one lead).
         conv = None
         conv_phone = lead.phone or phone
         if conv_phone:
@@ -534,7 +546,9 @@ async def _handle_crm_create(
             integrations = IntegrationRepository(
                 session, kek_base64=settings.integrations_kek_base64
             )
-            conv = await convs.get_active(merchant_id=mid, wa_contact_phone=conv_phone)
+            conv = await convs.get_active_or_reopen_latest(
+                merchant_id=mid, wa_contact_phone=conv_phone
+            )
             if conv is None:
                 wa = await integrations.resolve_whatsapp_by_merchant(mid)
                 if wa is not None and wa.phone_number_id:
