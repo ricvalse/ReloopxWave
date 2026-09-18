@@ -133,6 +133,40 @@ async def test_install_idempotent_on_location_id(two_tenants: TwoTenants) -> Non
         assert len(rows) == 1
 
 
+async def test_relink_replaces_previous_location(two_tenants: TwoTenants) -> None:
+    """Re-linking a merchant to a new location must unlink the old one — a
+    merchant is never left with two `active` rows (`resolve_location_by_merchant`
+    filters on `merchant_id` alone and raises `MultipleResultsFound` on a
+    second active match, breaking the merchant's whole GHL integration)."""
+    t1, m1, _t2, _m2 = two_tenants
+    c1 = f"comp-{uuid.uuid4().hex[:8]}"
+    loc1 = f"loc-{uuid.uuid4().hex[:8]}"
+    loc2 = f"loc-{uuid.uuid4().hex[:8]}"
+    await _seed_agency(t1.id, c1)
+    await _seed_location(t1.id, c1, loc1, merchant_id=m1.id)
+    await _seed_location(t1.id, c1, loc2, merchant_id=m1.id)
+
+    async with session_scope() as session:
+        rows = {
+            row.location_id: row
+            for row in (
+                await session.execute(
+                    select(GHLLocationToken).where(GHLLocationToken.location_id.in_([loc1, loc2]))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert rows[loc1].merchant_id is None
+        assert rows[loc1].status == "pending_link"
+        assert rows[loc2].merchant_id == m1.id
+        assert rows[loc2].status == "active"
+
+        resolved = await IntegrationRepository(session, kek_base64=_KEK).resolve_ghl(m1.id)
+        assert resolved is not None
+        assert resolved.location_id == loc2
+
+
 def _admin_ctx(tenant_id: uuid.UUID) -> TenantContext:
     return TenantContext(
         tenant_id=tenant_id,
