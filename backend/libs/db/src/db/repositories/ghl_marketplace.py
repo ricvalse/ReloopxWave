@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import GHLAgencyInstall, GHLLocationToken
@@ -239,9 +239,38 @@ class GHLMarketplaceRepository:
         return row
 
     async def link_location(self, *, location_id: str, merchant_id: UUID) -> bool:
+        """Link a GHL location to a merchant — replacing any previous link.
+
+        `merchant_id` carries no uniqueness constraint (only `location_id`
+        does), so nothing used to stop a merchant ending up linked to two
+        locations at once — an admin re-linking to a new location just added a
+        second active row instead of moving the existing one. That's not a
+        harmless duplicate: `resolve_location_by_merchant` filters on
+        `merchant_id` alone and calls `scalar_one_or_none()`, which raises
+        `MultipleResultsFound` on a second active row — breaking booking,
+        pipeline moves and calendar/pipeline listing for that merchant
+        entirely, not just picking the wrong one. Re-linking must therefore
+        unlink whatever this merchant was pointed at before, the same way
+        `unlink_location` does it, so it always ends up with at most one.
+        """
         row = await self._get_location(location_id)
         if row is None:
             return False
+        stale_stmt = (
+            update(GHLLocationToken)
+            .where(
+                GHLLocationToken.merchant_id == merchant_id,
+                GHLLocationToken.location_id != location_id,
+            )
+            .values(
+                merchant_id=None,
+                status=case(
+                    (GHLLocationToken.status == "active", "pending_link"),
+                    else_=GHLLocationToken.status,
+                ),
+            )
+        )
+        await self._session.execute(stale_stmt)
         row.merchant_id = merchant_id
         if row.secret_ciphertext is not None and row.status != "revoked":
             row.status = "active"
